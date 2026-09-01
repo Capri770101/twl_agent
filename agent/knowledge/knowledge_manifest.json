@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "description": "花卉智能体知识库清单。核心知识来自本地 JSON，扩展知识可由开源数据集或外部 API 导入。",
+  "core_domains": [
+    "flower",
+    "style",
+    "scene",
+    "pairing",
+    "budget",
+    "packaging"
+  ],
+  "extended_sources": [
+    {
+      "name": "PlantFlowerDatasets",
+      "type": "dataset",
+      "status": "recommended",
+      "usage": "补充花材、养护、生长、花语、问答",
+      "license": "需按原项目许可确认后再入库"
+    },
+    {
+      "name": "flower-db",
+      "type": "repository",
+      "status": "recommended",
+      "usage": "补充盆栽种植、养护管理、病虫害知识",
+      "license": "需按原项目许可确认后再入库"
+    },
+    {
+      "name": "Flower-Knowledge-Graph-Visualization",
+      "type": "repository",
+      "status": "optional",
+      "usage": "补充图谱关系、花语、场景与实体关联",
+      "license": "需按原项目许可确认后再入库"
+    },
+    {
+      "name": "flora-atlas",
+      "type": "repository",
+      "status": "optional",
+      "usage": "补充城市市花、季节、场景故事",
+      "license": "MIT"
+    }
+  ],
+  "recommended_schema": {
+    "entity_type": "flower",
+    "required_fields": [
+      "id",
+      "name",
+      "aliases",
+      "tags",
+      "source"
+    ],
+    "optional_fields": [
+      "flower_language",
+      "care",
+      "season",
+      "colors",
+      "price_tier",
+      "pairing_notes",
+      "scene",
+      "bloom_months",
+      "maintenance_notes"
+    ]
+  }
+}

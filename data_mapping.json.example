@@ -1,0 +1,49 @@
+﻿{
+  "write_enabled": false,
+  "plan": {
+    "table": "plans",
+    "columns": {
+      "id": "id",
+      "name": "name",
+      "price": "price",
+      "desc": "desc",
+      "image": "effect_image_url",
+      "merchant": "merchant_name",
+      "tags": "tags"
+    }
+  },
+  "shop": {
+    "table": "shops",
+    "columns": {
+      "id": "id",
+      "name": "name",
+      "rating": "rating",
+      "distance_km": "distance_km",
+      "price_range": "price_range",
+      "lat": "lat",
+      "lng": "lng"
+    }
+  },
+  "order": {
+    "table": "orders",
+    "columns": {
+      "id": "order_id",
+      "user_id": "user_id",
+      "plan_id": "plan_id",
+      "total_price": "total_price",
+      "status": "status",
+      "created_at": "created_at"
+    }
+  },
+  "order_items": {
+    "table": "order_items",
+    "columns": {
+      "id": "id",
+      "order_id": "order_id",
+      "plan_id": "plan_id",
+      "name": "name",
+      "price": "price",
+      "qty": "qty"
+    }
+  }
+}

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "P_COLOR_MONO",
+    "type": "color",
+    "condition": "同色系搭配",
+    "recommendation": "选 1 主花色 + 同色系深浅配材（如粉玫瑰+浅粉洋桔梗+白满天星），最安全不易翻车。"
+  },
+  {
+    "id": "P_COLOR_ANALOGOUS",
+    "type": "color",
+    "condition": "邻近色搭配",
+    "recommendation": "色环相邻两色（粉+紫、黄+橙），活泼又不冲突，适合年轻/生日场景。"
+  },
+  {
+    "id": "P_COLOR_CONTRAST",
+    "type": "color",
+    "condition": "对比色搭配",
+    "recommendation": "红+绿、紫+黄等对比色需以单一主花统一，配材降饱和，避免艳俗。"
+  },
+  {
+    "id": "P_SHAPE_FOCAL",
+    "type": "shape",
+    "condition": "焦点花结构",
+    "recommendation": "1-2 种主花做焦点（玫瑰/百合/绣球），配材与填充围绕，叶材勾边，层次才立得住。"
+  },
+  {
+    "id": "P_SHAPE_LINE",
+    "type": "shape",
+    "condition": "线条感",
+    "recommendation": "加入线条花材（尤加利枝、银叶菊）拉开纵向线条，避免一团糊。"
+  },
+  {
+    "id": "P_OCC_MOTHER",
+    "type": "occasion",
+    "condition": "送母亲 / 母亲节",
+    "recommendation": "首选康乃馨，配玫瑰+满天星；色调温馨粉白，寓意感恩母爱。"
+  },
+  {
+    "id": "P_OCC_BIRTHDAY",
+    "type": "occasion",
+    "condition": "生日 / 庆祝",
+    "recommendation": "明亮色系（非洲菊/向日葵/郁金香），搭配活泼，传递快乐能量。"
+  },
+  {
+    "id": "P_OCC_LOVE",
+    "type": "occasion",
+    "condition": "恋人 / 告白 / 纪念日",
+    "recommendation": "红/粉玫瑰为主花，配洋桔梗提升精致度，香槟色显高级。"
+  },
+  {
+    "id": "P_OCC_GETWELL",
+    "type": "occasion",
+    "condition": "探病 / 祝福",
+    "recommendation": "清淡色系（百合/小雏菊/尤加利），避浓香与过敏花粉，寓意早日康复。"
+  },
+  {
+    "id": "P_OCC_APOLOGY",
+    "type": "occasion",
+    "condition": "道歉 / 和解",
+    "recommendation": "柔和粉紫调（洋桔梗/勿忘我），传递真诚与歉意。"
+  },
+  {
+    "id": "P_RECIP_SELF",
+    "type": "recipient",
+    "condition": "送自己 / 悦己",
+    "recommendation": "随性自然风或 ins 风，选自己喜欢的色，不必拘泥寓意。"
+  },
+  {
+    "id": "P_RECIP_FRIEND",
+    "type": "recipient",
+    "condition": "送朋友 / 闺蜜",
+    "recommendation": "明亮活泼（非洲菊/向日葵/小雏菊），轻松不沉重。"
+  }
+]
