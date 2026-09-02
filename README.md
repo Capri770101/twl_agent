@@ -104,13 +104,24 @@ python scripts/test_agent_local.py
 
 ## ⚙️ 环境配置
 
-### 必填配置
+### 必填配置（二选一）
+
+**方式一：OpenAI 兼容接口**
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
 | `LLM_API_KEY` | LLM API 密钥 | `sk-xxx` |
 | `LLM_BASE_URL` | LLM API 地址 | `https://api.openai.com/v1` |
 | `LLM_MODEL` | 模型名称 | `gpt-4o-mini` |
+
+**方式二：hy 大模型（推荐）**
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `HY_API_KEY` | hy 大模型 API 密钥 | `sk-xxx` |
+| `HY_BASE_URL` | hy 大模型 API 地址 | `https://tokenhub.tencentmaas.com/v1/responses` |
+| `HY_LLM_MODEL` | LLM 模型名称 | `hy3` |
+| `HY_IMAGE_MODEL` | 图像生成模型名称 | `Hy-Image-3.0` |
 
 ### 可选配置
 
@@ -130,6 +141,7 @@ python scripts/test_agent_local.py
 
 | 提供商 | Base URL | 模型示例 |
 |--------|----------|----------|
+| hy 大模型（推荐） | `https://tokenhub.tencentmaas.com/v1/responses` | `hy3` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
@@ -139,6 +151,7 @@ python scripts/test_agent_local.py
 
 | 提供商 | Base URL | 模型示例 |
 |--------|----------|----------|
+| hy 大模型（推荐） | `https://tokenhub.tencentmaas.com/v1/responses` | `Hy-Image-3.0` |
 | Flux | `https://api.bfl.ml/v1` | `flux-schnell` |
 | DALL-E | `https://api.openai.com/v1` | `dall-e-3` |
 | 可灵 | `https://api.klingai.com/v1` | `kling-v1` |
@@ -672,7 +685,4 @@ MIT License
 
 欢迎提交 Issue 和 Pull Request！
 
-## 📞 联系方式
 
-- 项目主页：https://github.com/your-username/flora_agent_package
-- 问题反馈：https://github.com/your-username/flora_agent_package/issues

@@ -39,9 +39,19 @@ class LLMBudgetExceeded(RuntimeError):
     """LLM token 预算超限，调用方应降级并提示用户。"""
 
 def _providers() -> list[dict[str, str]]:
-    """返回 provider 列表：primary 在前，extra（llm_providers JSON）在后。"""
+    """返回 provider 列表：primary 在前，hy大模型在后，extra（llm_providers JSON）在最后。"""
     primary = {'name': 'primary', 'base_url': settings.llm_base_url, 'api_key': settings.llm_api_key, 'model': settings.llm_model}
     extras: list[dict[str, str]] = []
+    
+    # 添加hy大模型作为备选provider
+    if settings.HY_API_KEY:
+        extras.append({
+            'name': 'hy',
+            'base_url': settings.HY_BASE_URL,
+            'api_key': settings.HY_API_KEY,
+            'model': settings.HY_LLM_MODEL
+        })
+    
     if settings.llm_providers:
         try:
             data = json.loads(settings.llm_providers)
@@ -55,6 +65,8 @@ def _providers() -> list[dict[str, str]]:
 
 def _llm_configured() -> bool:
     if settings.llm_api_key:
+        return True
+    if settings.HY_API_KEY:
         return True
     if settings.llm_providers:
         try:
@@ -162,7 +174,7 @@ def _try_providers(messages: list[dict[str, Any]], tools: list[dict[str, Any]] |
 def call_llm(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, stream: bool=False, response_format: dict[str, Any] | None=None, user_id: str | None=None) -> Any:
     """统一的 LLM 调用入口（live-only，多 provider + 重试 + 熔断 + 预算）。"""
     if not _llm_configured():
-        raise RuntimeError('未配置 LLM_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 llm_providers）后启动。')
+        raise RuntimeError('未配置 LLM_API_KEY 或 HY_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 HY_API_KEY/llm_providers）后启动。')
     if settings.llm_cost_enabled:
         allowed, reason = budget.check(user_id)
         if not allowed:
@@ -172,7 +184,7 @@ def call_llm(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=
 def call_llm_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, user_id: str | None=None) -> Any:
     """流式 LLM 调用，返回 OpenAI Stream 对象（调用方自行迭代 chunk）。"""
     if not _llm_configured():
-        raise RuntimeError('未配置 LLM_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 llm_providers）后启动。')
+        raise RuntimeError('未配置 LLM_API_KEY 或 HY_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 HY_API_KEY/llm_providers）后启动。')
     if settings.llm_cost_enabled:
         allowed, reason = budget.check(user_id)
         if not allowed:

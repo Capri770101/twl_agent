@@ -32,8 +32,14 @@ class Settings(BaseSettings):
     LLM_REQUEST_TIMEOUT: float = 120.0
     LLM_TEMPERATURE: float = 0.3
 
+    # ── hy大模型 ──
+    HY_API_KEY: str = ""
+    HY_BASE_URL: str = "https://tokenhub.tencentmaas.com/v1/responses"
+    HY_LLM_MODEL: str = "hy3"
+    HY_IMAGE_MODEL: str = "Hy-Image-3.0"
+
     # ── 图像生成 ──
-    IMAGE_PROVIDER: str = "mock"  # mock / flux / dall-e / kling / comfyui
+    IMAGE_PROVIDER: str = "mock"  # mock / flux / dall-e / kling / comfyui / hy
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = ""
     IMAGE_MODEL: str = ""
