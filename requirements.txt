@@ -9,3 +9,10 @@ python-dotenv>=1.0.0
 # LLM
 openai>=1.6.0
 httpx>=0.25.0
+
+# 数据库：生产使用 PostgreSQL；禁止生产 SQLite
+psycopg[binary]>=3.2.0
+
+# 认证与 MCP
+PyJWT>=2.8.0
+mcp[cli]>=1.12.4,<2.0.0

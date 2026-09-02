@@ -108,6 +108,31 @@ async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict
             return diy
     return None
 
+async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None = None) -> str:
+    """为方案提交 AI 生图任务，返回 task_id / poll / result_url。
+
+    - plan：'latest' / 'latest_diy' / 空 → 解析为会话最近方案（见 _resolve_session_plan）。
+    - prompt 优先取方案的 effect_prompt（花材/色彩/形态/包装与方案一致），缺失时回退到描述。
+    - 存储：PNG 由 backend/storage.tasks 异步生成并写入 data/generated/，
+      result_url 形如 /generated/{task_id}.png（经 /generated 静态挂载访问）。
+    - 返回 JSON 字符串，供 agent 的 image_task 渲染器解析。
+    """
+    plan_obj = await _resolve_session_plan(plan, _context)
+    if not plan_obj:
+        return json.dumps({'error': '未找到可生图的方案，请先设计或选择方案'}, ensure_ascii=False)
+    prompt = (plan_obj.get('effect_prompt') or plan_obj.get('desc') or plan_obj.get('name') or '花束').strip()
+    if not prompt:
+        return json.dumps({'error': '方案缺少可生图的描述信息'}, ensure_ascii=False)
+    task_id = await tasks.create_image_task(prompt, user_id=(_context or {}).get('user_id'))
+    result: dict[str, Any] = {'task_id': task_id, 'poll': f'/tasks/{task_id}'}
+    try:
+        st = await tasks.get_image_task(task_id, user_id=(_context or {}).get('user_id'))
+        if st.get('status') == 'done' and st.get('result_url'):
+            result['result_url'] = st['result_url']
+    except Exception:
+        logger.debug('[tools] 生图任务即时查询失败 task_id=%s', task_id)
+    return json.dumps(result, ensure_ascii=False)
+
 @register_tool(name='search_plans', description='搜索商家预设花卉方案（含名称、价格、描述、效果图 URL）；会结合当前会话的结构化需求（预算/色系/风格）做软过滤。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词，如 康乃馨 / 玫瑰 / 母亲；留空则浏览全部'}}, 'required': ['keyword']}, inject_context=True, tags=['plan'])
 async def search_plans(keyword: str, _context: dict | None=None) -> str:
     """搜索商家预设方案（按关键词搜索；有定位时限定配送范围内店铺的方案）。

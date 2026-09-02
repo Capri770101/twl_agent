@@ -9,7 +9,11 @@
 - [快速开始](#快速开始)
 - [环境配置](#环境配置)
 - [API 接口文档](#api-接口文档)
-- [微信小程序接入](#微信小程序接入)
+- [部署前必须配置的内容](#部署前必须配置的内容)
+- [完整业务流程](#完整业务流程)
+- [平台接入契约](#平台接入契约)
+- [前端对接契约](#前端对接契约-frontend-contract)
+- [Vibe Coding 快速理解](#vibe-coding-快速理解)
 - [知识库管理](#知识库管理)
 - [部署指南](#部署指南)
 - [常见问题](#常见问题)
@@ -131,8 +135,9 @@ python scripts/test_agent_local.py
 | `PORT` | 服务端口 | `8000` |
 | `DATABASE_URL` | 数据库连接串 | SQLite |
 | `IMAGE_PROVIDER` | 图像生成提供商 | `mock` |
-| `WX_APPID` | 微信小程序 AppID | - |
-| `WX_SECRET` | 微信小程序 AppSecret | - |
+| `IMAGE_PUBLIC_BASE_URL` | 生图结果公网前缀（CDN/对象存储域名），留空用本服务 `/generated` | - |
+| `WECHAT_APPID` | 微信小程序 AppID（兼容 `WX_APPID`） | - |
+| `WECHAT_SECRET` | 微信小程序 AppSecret（兼容 `WX_SECRET`） | - |
 | `TENCENT_MAP_KEY` | 腾讯地图密钥 | - |
 | `REDIS_URL` | Redis 连接串 | - |
 | `ALLOWED_ORIGINS` | CORS 允许域名 | `*` |
@@ -157,6 +162,14 @@ python scripts/test_agent_local.py
 | 可灵 | `https://api.klingai.com/v1` | `kling-v1` |
 | ComfyUI | `http://localhost:8188` | 本地部署 |
 
+> 注：当前代码已实现 `mock` 与 `hy` 两个 provider（见 `backend/storage/tasks.py`）；Flux / DALL-E / 可灵 / ComfyUI 为**预留声明**，接入前需按同一接口补充实现，否则设置后仍会走 mock。
+
+**生图结果存储**：PNG 写入本地 `data/generated/{task_id}.png`，经本服务 `GET /generated/{task_id}.png`（已静态挂载）访问；`/chat` 的 `image_task` 数据里 `result_url` 即该地址。若生产环境把图片托管到 CDN/对象存储，配置 `IMAGE_PUBLIC_BASE_URL=https://你的域名`，`result_url` 会自动带上公网前缀。
+
+**任务状态持久化**：任务状态写入 PostgreSQL 的 `image_tasks` 表，不再依赖进程内存，因此服务重启后已完成任务仍可通过 `GET /tasks/{task_id}` 查询；服务重启时遗留的 `processing` 任务会标记为 `failed`，避免客户端无限轮询。图片文件本身仍需由本地磁盘或对象存储/CDN负责保留。
+
+如果部署方数据库中没有 `image_tasks` 表：有 DDL 权限时启动会自动创建；没有 DDL 权限时由 DBA 先执行 [`migrations/001_image_tasks.sql`](migrations/001_image_tasks.sql)。服务启动自检会验证该表可查询，缺表或权限不足会直接失败并给出迁移提示。
+
 完整配置请参考 [.env.example](.env.example) 和 [DEPLOY.md](DEPLOY.md)。
 
 ## 📡 API 接口文档
@@ -165,7 +178,7 @@ python scripts/test_agent_local.py
 
 - **Base URL**: `http://localhost:8000`
 - **Content-Type**: `application/json`
-- **认证方式**: 部分接口需要 `user_id` 参数
+- **认证方式**: 生产环境使用 `Authorization: Bearer <access_token>`；开发环境可通过 `AUTH_REQUIRED=false` 关闭
 
 ### 健康检查
 
@@ -182,6 +195,36 @@ GET /health
   "env": "prod"
 }
 ```
+
+### 登录接口
+
+```text
+POST /auth/anonymous
+POST /auth/wx-login
+GET /auth/me
+```
+
+`/auth/anonymous` 用于开发和联调；`/auth/wx-login` 接收微信 `code`，需要配置 `WECHAT_APPID`、`WECHAT_SECRET`，同时兼容旧名称 `WX_APPID`、`WX_SECRET`。生产请求必须携带 Bearer Token，且 token 中的用户必须与请求 `user_id` 一致。
+
+当前仓库没有 MCP 全量工具桥接；如果宿主自行接入 MCP，只能使用 `agent.toolkit.get_mcp_tool_specs()` 的显式白名单。文件系统、数据库发现和外部数据库工具不得无条件暴露。MCP 通道只输出文本、图片 URL 和平台链接，不直接渲染 `ui/data` 卡片。
+
+### 前端契约查询
+
+```
+GET /ui-contract
+```
+
+返回全量 UI 类型清单（数据字段 + 渲染要求 + 示例 payload），供前端 / AI 在接入时**程序化对照自己实现了哪些组件**。示例：
+
+```json
+{
+  "ui_types": [
+    { "ui": "plan_card", "action_type": "show_plan", "required_capabilities": ["show_plan_page"], "render": "方案卡片……", "example": { "plans": [{ "plan_id": "P001", "name": "生日玫瑰花束", "price": 199 }] } }
+  ]
+}
+```
+
+完整数据契约见 [FRONTEND_CONTRACT.md](FRONTEND_CONTRACT.md)。
 
 ### 对话接口
 
@@ -364,9 +407,10 @@ GET /tasks/{task_id}
 ```json
 {
   "task_id": "task_xxxx",
-  "status": "completed",
-  "image_url": "https://...",
-  "created_at": "2024-01-01T00:00:00"
+  "status": "done",
+  "result_url": "https://...",
+  "created_at": "2024-01-01T00:00:00",
+  "updated_at": "2024-01-01T00:00:30"
 }
 ```
 
@@ -491,7 +535,212 @@ async function getMessages(conversationId) {
 }
 ```
 
-## 📚 知识库管理
+## 🚀 部署前必须配置的内容
+
+部署前请按以下顺序完成配置。`.env.example` 只提供模板，不要把真实密钥提交到代码仓库。
+
+### A. 必填：模型服务
+
+至少配置一套 OpenAI 兼容的模型服务：
+
+```env
+LLM_API_KEY=你的模型密钥
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
+```
+
+模型必须支持 Chat Completions 和 function/tool calling。若使用 DeepSeek、通义千问、Ollama 或其他兼容服务，只需替换 `LLM_BASE_URL`、`LLM_MODEL` 和密钥。此前出现的 `503 model_not_found / Waiting for service resources` 属于模型服务资源未就绪，应检查模型名和服务商状态，并配置重试/备用服务。
+
+### B. 必填：业务数据源
+
+**生产环境禁止使用 SQLite**。SQLite 是单文件数据库，不适合作为本服务的生产并发读写存储。生产必须配置 PostgreSQL（或兼容 PostgreSQL 协议的托管数据库）：
+
+```env
+DATABASE_URL=postgresql://用户名:密码@数据库地址:5432/数据库名
+```
+
+`DB_PATH` 仅用于历史开发配置，不应在生产环境使用。部署时应准备独立的 PostgreSQL 数据库、连接池、备份、迁移和监控。
+
+目标平台数据库与智能体内部数据库必须分离。内部 `DATABASE_URL` 只保存会话、记忆、任务和智能体自身数据；外部平台库通过服务端环境变量 `PLATFORM_DB_<SOURCE_ID>_URL` 连接，默认使用只读账号，LLM 不会接收连接串。
+
+可先调用 `platform_db_test_connection(source_id)` 验证网络、账号和数据库类型，再调用 `platform_db_discover(source_id, sample_rows=0)` 获取元数据；只有在字段语义仍不明确时，才调用 `platform_db_sample_table` 获取指定表的最多 5 行脱敏样本。工具不接受任意连接串或任意 SQL，样本也不会默认读取。
+
+目标平台已有商品、店铺、订单数据时，智能体通过数据网关读取标准业务实体。至少需要映射：
+
+- `plan`：花束/方案/商品，至少包含 ID、名称、价格、描述、图片、标签
+- `shop`：店铺，至少包含 ID、名称、地址、评分、配送信息
+- `order`：订单，至少包含订单 ID、用户 ID、方案 ID、金额、状态、创建时间
+- 可选 `order_items`：订单明细
+
+如果目标平台字段名不同，使用 `data_mapping.json` 指定实际表和字段。自动推断只适用于有语义的表名/字段名；对于 `t1`、`a`、`b`、`c` 等无意义命名，不能仅凭名字可靠推断。
+
+推荐让熟悉目标数据库的 AI 辅助接入：先运行 `db_discover` 获取表结构和少量脱敏样本，再让 AI 根据平台数据字典、字段注释和样本生成 `data_mapping.json` 草案；平台方必须审核映射、确认读写范围后，才允许开启订单写入。流程是：
+
+```text
+db_discover → AI 生成映射草案 → 人工审核 → write_enabled=true → 强制刷新映射 → 只读联调 → 订单写入联调
+```
+
+AI 可以辅助理解无意义字段，但不能凭空保证字段含义；没有字段注释、样本或数据字典时，必须由平台方确认。订单写入必须显式配置 `write_enabled=true`，避免智能体误写未知数据库。
+
+### C. 按需配置：图像生成
+
+```env
+IMAGE_PROVIDER=mock
+IMAGE_API_KEY=
+IMAGE_BASE_URL=
+IMAGE_MODEL=
+```
+
+- `mock`：适合开发和接口联调，不产生真实图片
+- 真实 provider：必须填写 API Key、Base URL 和 Model
+- 生图接口返回任务 ID 后，平台通过 `GET /tasks/{task_id}` 轮询状态
+
+### D. 按需配置：平台基础设施
+
+```env
+APP_ENV=prod
+HOST=0.0.0.0
+PORT=8000
+ALLOWED_ORIGINS=https://你的平台域名
+REDIS_URL=                 # 可选：限流、缓存和预算能力
+TENCENT_MAP_KEY=           # 可选：位置与距离能力
+WECHAT_APPID=              # 仅微信小程序需要（兼容 WX_APPID）
+WECHAT_SECRET=              # 仅微信小程序需要（兼容 WX_SECRET）
+```
+
+部署方还需要准备：HTTPS 域名、反向代理、数据库备份、日志采集、模型服务额度，以及目标平台的订单和支付凭据。支付密钥、用户身份认证和支付回调不能写入智能体代码。
+
+### E. 启动与自检
+
+```bash
+pip install -r requirements.txt
+python -m compileall -q agent backend domain main.py
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+curl http://localhost:8000/health
+```
+
+启动后至少验证 `/health`、`POST /chat`、`POST /chat/stream` 和 `GET /tasks/{task_id}`。生产部署推荐 Docker，并在 Nginx/网关层开启 HTTPS、SSE 长连接和足够的代理超时时间。
+
+## 🔄 完整业务流程
+
+本项目是“花卉需求到交易申请”的业务智能体，不是只回答问题的聊天机器人。完整流程如下：
+
+```text
+用户输入需求
+  ↓
+需求理解：收花人 / 关系 / 场景 / 预算 / 风格 / 色系 / 位置
+  ↓
+读取知识库与平台数据：花材、搭配、方案、店铺、库存、价格
+  ↓
+方案决策：现成方案或 DIY 定制
+  ↓
+返回中文说明 + 方案卡片（plan_card）
+  ↓
+用户修改或确认方案
+  ↓
+可选：生成与方案一致的预览图（image_task），平台轮询任务
+  ↓
+推荐可配送且具备花材/库存的店铺（shop_card）
+  ↓
+用户确认店铺和方案
+  ↓
+创建订单（order_card）
+  ↓
+返回支付申请/跳转参数（pay_jump）
+  ↓
+平台打开支付页面并处理支付回调
+```
+
+智能体负责理解、检索、设计和编排；宿主平台负责渲染页面、接收用户按钮操作、执行真实订单/支付、处理登录和回调。智能体不会直接调用平台支付 SDK，也不应绕过用户确认创建真实支付。
+
+### 关键业务行为
+
+1. 用户只问花卉知识时，应优先回答知识问题，不强行推荐商品。
+2. 用户提出购买需求时，应结合需求和真实平台数据推荐，不凭空编造库存、价格或店铺。
+3. DIY 方案必须使用知识库中的真实花材、搭配和预算规则，并返回可执行的花材数量、步骤、养护与 `effect_prompt`。
+4. 方案卡片、文本回复和订单金额必须保持一致。
+5. 预览图是异步任务，平台不能把任务 ID 当作图片 URL。
+6. 下单前必须有明确确认；订单写入必须可追踪、可幂等，支付结果以平台回调为准。
+
+## 🔌 平台接入契约
+
+> ⚠️ **前端渲染由宿主平台负责，本包不携带前端。** 智能体后端只产出结构化 `ui / data / action`；接入平台**必须先实现对应的前端组件**（`plan_card` / `shop_card` / `order_card` / `pay_jump` / `image_task` / `dialog_options` / `text`），否则会出现「有数据无展示」。每个 UI 类型的数据结构、渲染要求与示例请阅读 **[FRONTEND_CONTRACT.md](FRONTEND_CONTRACT.md)**，或调用 `GET /ui-contract` 拉取机器可读清单对照。
+
+`POST /chat` 的响应保留兼容字段 `reply`、`ui`、`data`，并增加平台中立的 `action`：
+
+```json
+{
+  "reply": "我为你推荐了一个生日花束方案",
+  "ui": "plan_card",
+  "data": {"plan_id": "P001", "name": "生日玫瑰花束", "price": 199},
+  "action": {
+    "type": "show_plan",
+    "payload": {"ui": "plan_card", "data": {"plan_id": "P001"}, "stage": "plan_confirm"},
+    "required_capabilities": ["show_plan_page"],
+    "fallback": "当前平台暂不支持方案页面，请先展示文本和方案数据。"
+  },
+  "session_id": "会话 ID",
+  "stage": "plan_confirm"
+}
+```
+
+平台建议实现以下能力：
+
+| 能力 | 平台侧职责 |
+|---|---|
+| `show_plan_page` | 展示方案名称、花材、价格、图片和确认/修改按钮 |
+| `show_shop_page` | 展示店铺、距离、评分、配送和选择按钮 |
+| `show_options` | 展示模式选择、确认和修改选项 |
+| `start_image_task` | 展示生成中状态，按任务 ID 轮询图片 |
+| `create_order` | 在用户确认后调用订单服务并展示订单详情 |
+| `open_payment` | 使用平台支付能力打开支付页面 |
+
+不支持某个 action 时，平台应使用 `fallback` 或 `reply` 继续对话，不要直接报错中断。`required_capabilities` 只表示接入方需要具备的能力，不是智能体可以自行调用的前端接口。
+
+## 前端对接契约 (Frontend Contract)
+
+**接入前必读：[FRONTEND_CONTRACT.md](FRONTEND_CONTRACT.md)** —— 该文档把每个 UI 类型（`text` / `dialog_options` / `plan_card` / `shop_card` / `order_card` / `pay_jump` / `image_task`）的数据结构、渲染要求、示例 payload 和「接入前 Check 清单」写清楚。接入的开发者或 AI 在开始对接时读一遍，就能知道自己要补哪些前端组件，避免「有数据无展示」。
+
+后端同时提供 `GET /ui-contract`，返回与文档一致的机器可读清单，方便前端/AI 在接入脚本里自动拉取、逐项对照。
+
+关键提醒（三点）：
+
+1. 本包是纯后端 API，**前端由宿主平台自研**；
+2. 若宿主前端缺 `plan_card` / `shop_card` / `pay_jump` / `image_task` 等组件，接上后体验是坏的 —— 请先补齐再联调；
+3. 暂缺的组件先用文本降级（渲染 `reply` + `action.fallback`），不要报错中断对话。
+
+## 🧭 Vibe Coding 快速理解
+
+如果你第一次接触本项目，可以按下面的方式理解：
+
+- `agent/agent.py`：Agent 运行器，负责会话、ReAct 工具循环、回复和结果编排
+- `agent/toolkit.py`：工具注册表和统一执行入口
+- `agent/tools.py`：花艺核心能力、需求抽取、知识与方案设计
+- `agent/data_tools.py`：文件、数据库发现、只读查询、自动映射和平台数据适配
+- `agent/diy_tools.py`：DIY 方案、改版和生图任务的工具包装
+- `agent/shop_tools.py`：店铺推荐与花材匹配
+- `agent/skills/skill_order.py`：订单组装、金额核算和支付跳转参数
+- `agent/engine/ui_protocol.py`：`UIType`、`ChatResponse`、`AgentAction` 等对外协议
+- `domain/requirements.py`：跨模块共享的 `FlowerRequirement`
+- `backend/storage/`：会话、订单、任务和数据库存储
+- `backend/routers/chat.py`：平台调用的 HTTP/SSE 接口
+- `agent/knowledge/*.json`：花材、风格、场景、搭配、预算和包装知识
+
+修改项目时遵守三条原则：
+
+1. 新能力优先实现为独立工具，通过 `@register_tool` 注册，不把业务逻辑继续堆进 `agent.py`。
+2. 平台差异放在 repository/data gateway/平台适配层，智能体只依赖标准字段和 action 协议。
+3. 任何会改变订单、支付或用户数据的操作都必须有权限、确认、幂等和失败回滚策略。
+
+推荐 Vibe Coding 指令：
+
+```text
+请先阅读 README、DEPLOY、FRONTEND_CONTRACT、agent/engine/ui_protocol.py、domain/requirements.py、agent/toolkit.py，
+理解“需求理解 → 数据检索 → 方案卡片 → 预览图 → 店铺 → 订单 → 支付申请”的完整链路。
+修改时保持 ChatResponse 的兼容字段和 AgentAction 协议不变；先检查现有工具注册，避免重复注册；
+不要让 LLM 直接执行支付，真实支付由宿主平台和后端业务服务承接。
+```
+
 
 ### 知识库结构
 
@@ -652,14 +901,15 @@ sudo systemctl status flora-agent
 ### Q: 微信登录失败？
 
 **A**: 检查：
-- `WX_APPID` 和 `WX_SECRET` 是否与小程序后台一致
+- `WECHAT_APPID` 和 `WECHAT_SECRET` 是否与小程序后台一致（旧名称 `WX_APPID` / `WX_SECRET` 也兼容）
 - 小程序是否已发布或开启了开发版体验
 
 ### Q: 数据库连接失败？
 
-**A**: 
-- PostgreSQL 需要安装 `asyncpg`：`pip install asyncpg`
-- SQLite 需要创建 `data/` 目录：`mkdir -p data`
+**A**:
+- 确认 `DATABASE_URL` 使用 `postgresql://`，并检查地址、端口、账号、密码和网络白名单。
+- PostgreSQL 驱动为 `psycopg[binary]`，已写入 `requirements.txt`。
+- 本服务不支持使用 SQLite 作为数据库。
 
 ### Q: 小程序请求被 CORS 拦截？
 
@@ -684,5 +934,3 @@ MIT License
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
-
-

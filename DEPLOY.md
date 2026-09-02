@@ -2,6 +2,26 @@
 
 本文档涵盖所有需要配置的项，按模块分类。
 
+> ⚠️ **前端对接必读（重要）**
+>
+> 本包是**纯后端 API**，只产出结构化 `ui / data / action`，**前端渲染由宿主平台自行负责**。接入前请确认宿主前端**已经具备**以下组件，否则会出现「智能体返回了方案数据、前端却没地方渲染」的断层：
+>
+> - `text` 文本气泡（最低要求，必须有）
+> - `dialog_options` 选项按钮
+> - `plan_card` 方案卡片（展示 + 确认/修改按钮）
+> - `shop_card` 店铺卡片
+> - `order_card` 订单确认卡
+> - `pay_jump` 支付跳转（打开平台自己的支付页）
+> - `image_task` 生图进度（含 `GET /tasks/{task_id}` 轮询）
+>
+> 每个 UI 类型的数据结构、渲染要求与示例见 **[FRONTEND_CONTRACT.md](FRONTEND_CONTRACT.md)**（接入必读）；也可调用 `GET /ui-contract` 拉取机器可读清单程序化对照。能力缺失时请按 `action.fallback` / `reply` 做文本降级，不要报错中断。
+
+> **非 UI 生图依赖也必须满足**：生产环境需要 PostgreSQL、`psycopg[binary]`、可写的图片目录或对象存储/CDN。生图任务状态持久化在 `image_tasks` 表；图片文件默认写入 `data/generated/`。使用 CDN/对象存储时请配置 `IMAGE_PUBLIC_BASE_URL`，并设置对象存储生命周期清理规则。
+
+> **鉴权必读**：本包提供 `POST /auth/anonymous`、`POST /auth/wx-login`、`GET /auth/me`。生产环境必须配置至少 32 位 `JWT_SECRET`，服务会强制 Bearer 鉴权；不要再仅凭请求体里的 `user_id` 识别用户。微信配置推荐使用 `WECHAT_APPID` / `WECHAT_SECRET`，同时兼容 `WX_APPID` / `WX_SECRET`。
+
+> **数据库没有 `image_tasks` 表怎么办？** 有建表权限时，服务启动会通过 `CREATE TABLE IF NOT EXISTS` 自动创建；生产数据库通常由 DBA 管理、应用账号没有 DDL 权限时，请先执行仓库中的 [`migrations/001_image_tasks.sql`](migrations/001_image_tasks.sql)，再启动服务。启动自检失败会直接提示迁移文件路径。
+
 ---
 
 ## 一、环境变量（.env）
@@ -20,14 +40,14 @@ PORT=8000                      # 监听端口
 # 2. 数据库
 # ═══════════════════════════════════════════════════════════
 DATABASE_URL=postgresql://user:pass@localhost:5432/flora_agent
-# 或 SQLite（开发环境）：
-# DATABASE_URL=sqlite:///./data/agent.db
+# 生产和多实例部署必须使用 PostgreSQL；禁止 SQLite
 
 # ═══════════════════════════════════════════════════════════
 # 3. JWT 鉴权
 # ═══════════════════════════════════════════════════════════
-JWT_SECRET=your-random-secret-key-change-this
+JWT_SECRET=replace-with-a-random-secret-at-least-32-characters
 JWT_EXPIRE_HOURS=720            # token 有效期（小时）
+AUTH_REQUIRED=true              # 生产环境会强制为 true
 
 # ═══════════════════════════════════════════════════════════
 # 4. LLM 大模型（必填）
@@ -51,8 +71,8 @@ IMAGE_HEIGHT=1024               # 生成图片图片高度
 # ═══════════════════════════════════════════════════════════
 # 6. 微信小程序（登录 + 推送）
 # ═══════════════════════════════════════════════════════════
-WX_APPID=wx1234567890abcdef     # 微信小程序 AppID
-WX_SECRET=your-wx-secret        # 微信小程序 AppSecret
+WECHAT_APPID=wx1234567890abcdef # 微信小程序 AppID
+WECHAT_SECRET=your-wx-secret    # 微信小程序 AppSecret
 
 # ═══════════════════════════════════════════════════════════
 # 7. 腾讯地图（距离计算 / 逆地理编码）
@@ -71,6 +91,8 @@ REDIS_URL=redis://localhost:6379/0
 ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 # * 表示允许所有来源（仅开发环境使用）
 ```
+
+视觉 MCP 还可配置：`ZHIPU_API_KEY`、`VISION_ALLOWED_ROOT`（默认 `data/generated`）和 `VISION_MAX_IMAGE_BYTES`（默认 10 MiB）。不要把视觉 MCP 暴露到公网；本地路径读取和外部 URL 请求均应只在受信任的 MCP host 内使用。
 
 ---
 
@@ -109,12 +131,14 @@ ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 - 可灵：`https://api.klingai.com/v1` / `kling-v1`
 - ComfyUI：`http://localhost:8188`（本地部署）
 
+> 注：当前代码已实现 `mock` / `hy`（`backend/storage/tasks.py`），其余为预留声明，接入前需补充实现。生图结果存本地 `data/generated/`，经 `/generated` 静态挂载访问；生产可用 `IMAGE_PUBLIC_BASE_URL` 指定 CDN/对象存储公网前缀。
+
 ### 2.3 微信小程序配置
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `WX_APPID` | ✅ | 小程序 AppID（微信公众平台获取） |
-| `WX_SECRET` | ✅ | 小程序 AppSecret |
+| `WECHAT_APPID` | ✅ | 小程序 AppID（兼容 `WX_APPID`） |
+| `WECHAT_SECRET` | ✅ | 小程序 AppSecret（兼容 `WX_SECRET`） |
 
 **获取方式：**
 1. 登录 https://mp.weixin.qq.com
@@ -127,15 +151,10 @@ ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 |------|------|------|
 | `DATABASE_URL` | ✅ | 数据库连接串 |
 
-**PostgreSQL（生产推荐）：**
-```
-DATABASE_URL=postgresql://user:password@host:5432/dbname
-```
-
-**SQLite（开发/测试）：**
-```
-DATABASE_URL=sqlite:///./data/agent.db
-```
+**PostgreSQL：**
+- 驱动：`psycopg[binary]`，已包含在 `requirements.txt`
+- 生产环境必须配置 `DATABASE_URL=postgresql://...`
+- 不支持 SQLite 作为服务数据库
 
 ### 2.5 腾讯地图（可选）
 
@@ -147,6 +166,26 @@ DATABASE_URL=sqlite:///./data/agent.db
 1. 登录 https://lbs.qq.com
 2. 创建应用 → 添加 Key
 3. 选择 WebService API
+
+### 数据库迁移顺序
+
+如果部署方使用已有业务数据库，不要求覆盖平台现有表。建议按以下顺序操作：
+
+1. DBA 检查目标 PostgreSQL 数据库和应用账号。
+2. 若应用账号有建表权限，直接启动服务，`init_db()` 会创建缺失表。
+3. 若应用账号没有建表权限，DBA 执行 [`migrations/001_image_tasks.sql`](migrations/001_image_tasks.sql)，并确认应用账号拥有 `image_tasks` 的 `SELECT`、`INSERT`、`UPDATE` 权限。
+4. 启动服务，确认日志通过数据库初始化和 `image_tasks` 自检。
+5. 用 `POST /chat` 触发生图，再用 `GET /tasks/{task_id}` 验证状态能查询。
+
+### 2.6 生图结果存储与任务持久化
+
+| 配置/资源 | 必填 | 说明 |
+|---|---|---|
+| `IMAGE_PUBLIC_BASE_URL` | 本地静态托管可不填 | 生产推荐配置 CDN/对象存储的公网 URL 前缀 |
+| `data/generated/` | 本地模式必填 | 运行用户必须有创建目录和写入 PNG 的权限 |
+| PostgreSQL `image_tasks` | 生产必填 | 保存任务状态、提示词、结果 URL 和失败原因 |
+
+任务状态由数据库持久化，`GET /tasks/{task_id}` 可跨进程查询。服务重启时尚未完成的 `processing` 任务会被标记为 `failed`，需要重新提交；已经 `done` 的记录仍可查询，但对应图片文件或对象存储对象也必须保留。文件清理应由平台定时任务或对象存储生命周期规则负责。
 
 ---
 
@@ -283,10 +322,13 @@ A: 检查 `LLM_API_KEY` 是否正确，是否过期。
 A: 检查 `IMAGE_API_KEY` 和 `IMAGE_PROVIDER` 是否配置。不配置则跳过生图功能。
 
 ### Q: 微信登录失败？
-A: 检查 `WX_APPID` 和 `WX_SECRET` 是否与小程序后台一致。
+A: 检查 `WECHAT_APPID` 和 `WECHAT_SECRET` 是否与小程序后台一致；旧配置名 `WX_APPID` 和 `WX_SECRET` 仍兼容。
+
+### Q: 登录接口返回 401/503？
+A: 确认已配置至少 32 位 `JWT_SECRET`。微信登录还需要配置 `WECHAT_APPID` 和 `WECHAT_SECRET`；匿名登录不需要微信配置，但仍需要 `JWT_SECRET`。
 
 ### Q: 数据库连接失败？
-A: 检查 `DATABASE_URL` 格式。PostgreSQL 需要安装 `asyncpg`；SQLite 需要创建 `data/` 目录。
+A: 检查 `DATABASE_URL` 是否为可访问的 PostgreSQL 地址、用户名/密码/端口是否正确，以及部署环境是否允许访问数据库。驱动由 `psycopg[binary]` 提供；生产环境不支持 SQLite。
 
 ### Q: 小程序请求被 CORS 拦截？
 A: 检查 `ALLOWED_ORIGINS` 是否包含小程序域名（不含路径）。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from pathlib import Path
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,10 +22,36 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # ── 数据库 ──
-    DATABASE_URL: str = ""  # 留空用 SQLite
+    DATABASE_URL: str = ""  # 生产必填 PostgreSQL；禁止 SQLite
     DB_PATH: str = str(BASE_DIR / "data" / "agent.db")
 
-    # ── LLM ──
+    @model_validator(mode='after')
+    def validate_production_database(self) -> 'Settings':
+        """生产环境必须使用外部关系型数据库，不允许 SQLite。"""
+        if self.APP_ENV.lower() in {'prod', 'production'}:
+            url = (self.DATABASE_URL or '').strip().lower()
+            if not url or url.startswith('sqlite'):
+                raise ValueError('生产环境必须配置 PostgreSQL DATABASE_URL，禁止使用 SQLite')
+            if not url.startswith(('postgresql://', 'postgres://')):
+                raise ValueError('当前生产数据库适配器要求 DATABASE_URL 使用 PostgreSQL')
+        return self
+
+    @model_validator(mode='after')
+    def validate_production_auth(self) -> 'Settings':
+        """生产环境必须启用鉴权并配置独立签名密钥。"""
+        if self.APP_ENV.lower() in {'prod', 'production'}:
+            if not self.JWT_SECRET or len(self.JWT_SECRET) < 32:
+                raise ValueError('生产环境必须配置至少 32 位 JWT_SECRET')
+            self.AUTH_REQUIRED = True
+        return self
+
+    @model_validator(mode='after')
+    def validate_production_origins(self) -> 'Settings':
+        """生产环境禁止通配 CORS，避免带凭证接口暴露给任意站点。"""
+        if self.APP_ENV.lower() in {'prod', 'production'} and '*' in self.ALLOWED_ORIGINS:
+            raise ValueError('生产环境必须配置明确的 ALLOWED_ORIGINS，不能使用 *')
+        return self
+
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o-mini"
@@ -45,10 +72,18 @@ class Settings(BaseSettings):
     IMAGE_MODEL: str = ""
     IMAGE_WIDTH: int = 768
     IMAGE_HEIGHT: int = 1024
+    IMAGE_PUBLIC_BASE_URL: str = ""  # 生图结果公网前缀（如 https://cdn.example.com）；留空则用本服务 /generated 相对路径
 
     # ── 微信小程序 ──
-    WECHAT_APPID: str = ""
-    WECHAT_SECRET: str = ""
+    WECHAT_APPID: str = Field(default="", validation_alias=AliasChoices('WECHAT_APPID', 'WX_APPID'))
+    WECHAT_SECRET: str = Field(default="", validation_alias=AliasChoices('WECHAT_SECRET', 'WX_SECRET'))
+
+    JWT_SECRET: str = ""
+    JWT_EXPIRE_HOURS: int = 720
+    AUTH_REQUIRED: bool = False
+    ZHIPU_API_KEY: str = ""
+    VISION_ALLOWED_ROOT: str = str(BASE_DIR / 'data' / 'generated')
+    VISION_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
 
     # ── 腾讯地图（可选）──
     TENCENT_MAP_KEY: str = ""

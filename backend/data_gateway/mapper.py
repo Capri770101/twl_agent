@@ -11,8 +11,9 @@
 - order（订单）
 - user（用户）
 
-注意：这是“自动适配”的第一版，依赖表名和字段名可读；如果新库命名完全无意义，
-仍需要人工补充映射或由 LLM 进一步推断。
+注意：这是“自动适配”的第一版，依赖表名和字段名可读。对于 t1/a/b/c 等无语义命名，AI 不能仅凭字段名可靠判断业务含义；必须提供数据库结构、字段注释、样本数据或平台方的数据字典，再生成并审核人工映射。
+
+推荐接入流程：`db_discover` → AI 根据结构/样本生成 `data_mapping.json` 草案 → 平台方审核表/字段/只读范围 → 设置 `write_enabled=true` → `db_auto_map(force_refresh=true)` 验证 → 联调订单写入。
 """
 from __future__ import annotations
 
@@ -155,7 +156,55 @@ def _pick_column(columns: list[dict[str, Any]], candidates: list[str]) -> str | 
     return None
 
 
-def infer_mapping(force_refresh: bool = False) -> dict[str, Any]:
+def generate_mapping_draft(profile: dict[str, Any]) -> dict[str, Any]:
+    """根据已净化的 schema profile 生成映射草案；永远不会激活或写入目标库。"""
+    tables = profile.get('tables') if isinstance(profile, dict) else None
+    if not isinstance(tables, list):
+        raise ValueError('profile.tables must be a list')
+    draft: dict[str, Any] = {
+        'status': 'draft',
+        'source_id': profile.get('source_id', ''),
+        'dialect': profile.get('dialect', 'unknown'),
+        'schema_fingerprint': profile.get('schema_fingerprint', ''),
+        'entities': {},
+        'requires_human_review': [],
+    }
+    for entity_name, entity_def in CANONICAL_ENTITIES.items():
+        candidates: list[dict[str, Any]] = []
+        for item in tables[:_MAX_TABLES if '_MAX_TABLES' in globals() else 200]:
+            if not isinstance(item, dict):
+                continue
+            table = str(item.get('table', ''))
+            columns = item.get('columns', [])
+            if not _IDENTIFIER.match(table) or not isinstance(columns, list):
+                continue
+            table_score = _score_table(table, entity_def['table_hints'])
+            column_map: dict[str, str] = {}
+            evidence: list[dict[str, Any]] = []
+            risks: list[str] = []
+            for canonical, names in entity_def['columns'].items():
+                col = _pick_column(columns, names)
+                if col:
+                    column_map[canonical] = col
+                    meta = next((c for c in columns if isinstance(c, dict) and c.get('name') == col), {})
+                    evidence.append({'canonical': canonical, 'column': col, 'reason': 'name_match', 'type': meta.get('type', '')})
+                    if canonical in {'price', 'total_price', 'status'}:
+                        risks.append(f'{canonical} requires semantic and unit verification')
+            score = round((table_score / 10.0) * 0.35 + (len(column_map) / max(1, len(entity_def['columns']))) * 0.65, 2)
+            if score > 0:
+                if score < 0.75:
+                    risks.append('low confidence or incomplete fields')
+                if not item.get('foreign_keys') and entity_name in {'order', 'plan'}:
+                    risks.append('relationship evidence is missing')
+                candidates.append({'table': table, 'columns': column_map, 'confidence': min(score, 1.0), 'evidence': evidence, 'risks': risks})
+        candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        selected = candidates[0] if candidates else {'table': None, 'columns': {}, 'confidence': 0, 'evidence': [], 'risks': ['no candidate found']}
+        if selected['confidence'] < 0.85:
+            draft['requires_human_review'].append({'entity': entity_name, 'reason': 'confidence below approval threshold'})
+        draft['entities'][entity_name] = {'selected': selected, 'alternatives': candidates[1:3]}
+    return draft
+
+
     """自动推断未知数据库到标准业务实体的映射。"""
     if not force_refresh and _CACHE:
         return _CACHE

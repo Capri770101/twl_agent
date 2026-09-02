@@ -260,6 +260,19 @@ _TABLE_META: dict[str, dict[str, Any]] = {
             'updated_at': '更新时间',
         },
     },
+    'image_tasks': {
+        'desc': '生图任务状态（跨进程/重启持久化）',
+        'columns': {
+            'task_id': '生图任务 ID',
+            'user_id': '任务所属用户 ID',
+            'status': '状态：processing / done / failed',
+            'prompt': '生图提示词',
+            'result_url': '生成结果 URL',
+            'error': '失败原因',
+            'created_at': '创建时间',
+            'updated_at': '最后更新时间',
+        },
+    },
     'order_items': {
         'desc': '订单明细（每个订单包含的商品项）',
         'columns': {
@@ -276,36 +289,24 @@ _TABLE_META: dict[str, dict[str, Any]] = {
 
 def list_tables() -> list[str]:
     conn = get_conn()
-    if _is_postgres():
-        rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name").fetchall()
-        return [r['table_name'] for r in rows]
-    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
-    return [r['name'] for r in rows]
+    rows = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name").fetchall()
+    return [r['table_name'] for r in rows]
 
 
 def describe_table(table: str) -> dict[str, Any]:
     table = _validate_table(table)
     meta = _TABLE_META.get(table, {})
     conn = get_conn()
-    if _is_postgres():
-        rows = conn.execute(
-            "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema='public' AND table_name=? ORDER BY ordinal_position",
-            (table,),
-        ).fetchall()
-        if not rows:
-            raise ValueError(f'table not found: {table}')
-        cols_out = []
-        for r in rows:
-            col_meta = meta.get('columns', {}).get(r['column_name'], '')
-            cols_out.append({'name': r['column_name'], 'type': r['data_type'], 'nullable': r['is_nullable'] == 'YES', 'default': r['column_default'], 'primary_key': False, 'comment': col_meta})
-        return {'table': table, 'comment': meta.get('desc', ''), 'columns': cols_out}
-    cols = conn.execute(f'PRAGMA table_info({table})').fetchall()
-    if not cols:
+    rows = conn.execute(
+        "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema='public' AND table_name=? ORDER BY ordinal_position",
+        (table,),
+    ).fetchall()
+    if not rows:
         raise ValueError(f'table not found: {table}')
     cols_out = []
-    for c in cols:
-        col_meta = meta.get('columns', {}).get(c['name'], '')
-        cols_out.append({'cid': c['cid'], 'name': c['name'], 'type': c['type'], 'nullable': not bool(c['notnull']), 'default': c['dflt_value'], 'primary_key': bool(c['pk']), 'comment': col_meta})
+    for r in rows:
+        col_meta = meta.get('columns', {}).get(r['column_name'], '')
+        cols_out.append({'name': r['column_name'], 'type': r['data_type'], 'nullable': r['is_nullable'] == 'YES', 'default': r['column_default'], 'primary_key': False, 'comment': col_meta})
     return {'table': table, 'comment': meta.get('desc', ''), 'columns': cols_out}
 
 

@@ -7,7 +7,7 @@ from backend.storage import db
 
 
 def dialect() -> str:
-    return 'sqlite'
+    return 'postgresql'
 
 
 def _reset_engine() -> None:

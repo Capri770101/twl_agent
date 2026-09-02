@@ -12,16 +12,18 @@ from typing import Any
 from backend.config import settings
 from backend.storage import memory as mem_store
 from backend.storage import tasks as task_store
+from agent.engine.ui_protocol import UIType
 from agent.agent import ReActAgent
+from backend.auth import current_user, require_user
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter(tags=['chat'])
 logger = logging.getLogger('api')
 
-_agent = ReActAgent(session_store=mem_store, task_store=task_store)
+_agent = ReActAgent()
 
 
 def get_agent() -> ReActAgent:
@@ -48,8 +50,9 @@ class CreateConvRequest(BaseModel):
 
 
 @router.post('/chat')
-async def chat(req: ChatRequest) -> Any:
+async def chat(req: ChatRequest, authenticated_user: str | None = Depends(current_user)) -> Any:
     """与智能体对话，返回结构化 UI 响应。"""
+    require_user(req.user_id, authenticated_user)
     logger.info('chat user=%s msg=%s', req.user_id, req.message[:80])
 
     sid = req.session_id
@@ -77,8 +80,9 @@ async def chat(req: ChatRequest) -> Any:
 
 
 @router.post('/chat/stream')
-async def chat_stream(req: ChatRequest) -> StreamingResponse:
+async def chat_stream(req: ChatRequest, authenticated_user: str | None = Depends(current_user)) -> StreamingResponse:
     """SSE 流式对话端点。"""
+    require_user(req.user_id, authenticated_user)
     logger.info('chat/stream user=%s msg=%s', req.user_id, req.message[:80])
 
     sid = req.session_id
@@ -104,8 +108,9 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
 
 @router.post('/chat/reset')
-async def reset(req: ResetRequest) -> dict[str, Any]:
+async def reset(req: ResetRequest, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
     """清空会话。"""
+    require_user(req.user_id, authenticated_user)
     if req.session_id:
         await mem_store.delete_conversation(req.session_id)
         return {'ok': True, 'session_id': req.session_id}
@@ -117,22 +122,99 @@ async def reset(req: ResetRequest) -> dict[str, Any]:
 
 
 @router.get('/conversations')
-async def list_conversations(user_id: str) -> list[dict[str, Any]]:
+async def list_conversations(user_id: str, authenticated_user: str | None = Depends(current_user)) -> list[dict[str, Any]]:
+    require_user(user_id, authenticated_user)
     return await mem_store.list_conversations(user_id)
 
 
 @router.get('/conversations/{conversation_id}/messages')
-async def get_messages(conversation_id: str, limit: int = 50) -> list[dict[str, Any]]:
+async def get_messages(conversation_id: str, limit: int = 50, authenticated_user: str | None = Depends(current_user)) -> list[dict[str, Any]]:
+    if authenticated_user:
+        conversation = await mem_store.get_conversation(conversation_id)
+        if not conversation or conversation.get('user_id') != authenticated_user:
+            raise HTTPException(status_code=403, detail='无权访问该会话')
     return await mem_store.load_history(conversation_id, limit)
 
 
 @router.post('/conversations')
-async def create_conversation(req: CreateConvRequest) -> dict[str, Any]:
+async def create_conversation(req: CreateConvRequest, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
+    require_user(req.user_id, authenticated_user)
     cid = await mem_store.create_conversation(req.user_id, req.title or '新对话', shop_id=req.shop_id)
     return {'conversation_id': cid, 'id': cid}
 
 
 @router.get('/tasks/{task_id}')
-async def get_task(task_id: str) -> dict[str, Any]:
+async def get_task(task_id: str, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
     """生图任务状态轮询（generate_effect_image 返回 poll 地址）。"""
-    return await task_store.get_image_task(task_id)
+    # 任务表当前没有 user_id，暂时要求已认证用户访问；后续可增加归属字段做精确授权。
+    if settings.AUTH_REQUIRED and not authenticated_user:
+        raise HTTPException(status_code=401, detail='需要登录凭证')
+    return await task_store.get_image_task(task_id, user_id=authenticated_user)
+
+
+@router.get('/ui-contract')
+async def ui_contract() -> dict[str, Any]:
+    """返回全量 UI 类型清单（数据契约 + 渲染要求 + 示例）。
+
+    供接入平台的前端 / AI 在对接时程序化对照自己实现了哪些组件，
+    避免「智能体返回了结构化数据、前端却没组件渲染」的断层。
+    与 FRONTEND_CONTRACT.md、agent/engine/ui_protocol.py 保持一致。
+    """
+    ui_types = [
+        {
+            'ui': UIType.TEXT.value,
+            'action_type': 'show_text',
+            'required_capabilities': [],
+            'render': '文本气泡，渲染 reply 即可',
+            'example': {},
+        },
+        {
+            'ui': UIType.DIALOG_OPTIONS.value,
+            'action_type': 'show_options',
+            'required_capabilities': ['show_options'],
+            'render': '选项按钮；点选后把 value 作为下一条消息回传 /chat',
+            'example': {'options': [{'label': '现货花束（约200元）', 'value': 'existing'}, {'label': 'DIY 定制', 'value': 'diy'}]},
+        },
+        {
+            'ui': UIType.PLAN_CARD.value,
+            'action_type': 'show_plan',
+            'required_capabilities': ['show_plan_page'],
+            'render': '方案卡片列表：名称/价格/描述/效果图 + 确认、修改按钮',
+            'example': {'plans': [{'plan_id': 'P001', 'name': '生日玫瑰花束', 'price': 199.0, 'desc': '红玫瑰+满天星', 'effect_image_url': '', 'merchant_name': '向阳花艺'}]},
+        },
+        {
+            'ui': UIType.SHOP_CARD.value,
+            'action_type': 'show_shop',
+            'required_capabilities': ['show_shop_page'],
+            'render': '店铺卡片列表：名称/距离/价格区间/评分 + 选择按钮',
+            'example': {'shops': [{'shop_id': 'S001', 'name': '向阳花艺（五道口店）', 'distance_km': 1.2, 'price_range': '中高端', 'rating': 4.8}]},
+        },
+        {
+            'ui': UIType.ORDER_CARD.value,
+            'action_type': 'create_order',
+            'required_capabilities': ['create_order'],
+            'render': '订单确认卡：明细/合计/优惠 + 确认交互；订单写入由后端业务保证',
+            'example': {'order_id': 'ORD_20260902_0001', 'items': [{'name': '红玫瑰', 'qty': 11, 'unit_price': 12.0, 'price': 132.0}], 'total_price': 199.0, 'plan_type': 'existing'},
+        },
+        {
+            'ui': UIType.PAY_JUMP.value,
+            'action_type': 'open_payment',
+            'required_capabilities': ['open_payment'],
+            'render': '提供“去支付”入口，用 data 打开平台自己的收银/支付页（智能体不接触支付密钥）',
+            'example': {'order_id': 'ORD_20260902_0001', 'page_path': '/pages/order/confirm', 'params': {'order_id': 'ORD_20260902_0001', 'total_price': 199.0}},
+        },
+        {
+            'ui': UIType.IMAGE_TASK.value,
+            'action_type': 'start_image_task',
+            'required_capabilities': ['start_image_task'],
+            'render': '生图进度：展示生成中 + 按 poll 轮询 GET /tasks/{task_id}；成功后展示 result_url/image_url',
+            'example': {'task_id': 'task_img_0001', 'poll': '/tasks/task_img_0001', 'result_url': ''},
+        },
+    ]
+    return {
+        'ui_types': ui_types,
+        'required_components': ['text', 'dialog_options', 'plan_card', 'shop_card', 'order_card', 'pay_jump', 'image_task'],
+        'contract_doc': 'FRONTEND_CONTRACT.md',
+        'schema_source': 'agent/engine/ui_protocol.py',
+        'note': '本后端只产出结构化 ui/data/action，前端渲染由宿主平台负责。接入前请先实现上述组件，否则会出现“有数据无展示”。',
+    }

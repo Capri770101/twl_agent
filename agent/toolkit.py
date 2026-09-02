@@ -24,6 +24,12 @@ class ToolSpec:
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {}
 
+# MCP/外部调用只能显式选择安全工具；不要把 TOOL_REGISTRY 全量导出。
+MCP_SAFE_TOOL_NAMES = frozenset({
+    'retrieve_knowledge', 'search_plans', 'get_plan_detail', 'search_shops',
+    'match_shop_items', 'generate_diy_plan', 'revise_diy_plan',
+})
+
 
 def register_tool(name: str, description: str, parameters: dict[str, Any], inject_context: bool = False, tags: list[str] | None = None) -> Callable[[Callable], Callable]:
     """装饰器：把函数登记进 TOOL_REGISTRY。"""
@@ -37,6 +43,12 @@ def register_tool(name: str, description: str, parameters: dict[str, Any], injec
 
 def get_tool_specs() -> list[ToolSpec]:
     return list(TOOL_REGISTRY.values())
+
+
+def get_mcp_tool_specs(allowed: set[str] | None = None) -> list[ToolSpec]:
+    """返回显式白名单工具，供未来 MCP bridge 使用。"""
+    names = MCP_SAFE_TOOL_NAMES if allowed is None else MCP_SAFE_TOOL_NAMES.intersection(allowed)
+    return [spec for spec in get_tool_specs() if spec.name in names]
 
 
 def to_openai_tools() -> list[dict[str, Any]]:
