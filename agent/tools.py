@@ -1,4 +1,4 @@
-"""tools.py —— 工具注册表 TOOL_REGISTRY + 内建工具。
+"""tools.py —— 内建工具实现。
 
 设计：
 - 每个工具用 @register_tool 装饰，自动写入 TOOL_REGISTRY（名称 / 中文描述 / 参数 JSON Schema / 实现）。
@@ -14,37 +14,18 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
 from agent.engine.llm import call_llm
 from agent.engine.ui_protocol import UIType
 from agent.knowledge import get_by_id, query_knowledge
-from agent.requirements import FlowerRequirement
+from domain.requirements import FlowerRequirement
 from backend.storage import memory, tasks
 from backend.storage.repository import repo
 from backend.data_gateway import auto_create_order, auto_list_orders, auto_query, auto_search_plans, auto_search_shops, describe_table, discover_database, get_file_info, infer_mapping, inspect_source, list_files, list_tables, query_readonly, read_file, sample_rows, search_files, tool_result
+from agent.toolkit import register_tool
 
 logger = logging.getLogger('tools')
-
-@dataclass
-class ToolSpec:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    func: Callable[..., Any]
-    inject_context: bool = False
-    tags: set[str] = field(default_factory=set)
-TOOL_REGISTRY: dict[str, ToolSpec] = {}
-
-def register_tool(name: str, description: str, parameters: dict[str, Any], inject_context: bool=False, tags: list[str] | None=None) -> Callable[[Callable], Callable]:
-    """装饰器：把函数登记进 TOOL_REGISTRY。"""
-
-    def deco(func: Callable) -> Callable:
-        TOOL_REGISTRY[name] = ToolSpec(name=name, description=description, parameters=parameters, func=func, inject_context=inject_context, tags=set(tags or []))
-        return func
-    return deco
 
 def _requirement_from_context(_context: dict | None) -> FlowerRequirement | None:
     """从工具上下文取出结构化需求（由 agent 每轮抽取并注入）。"""
@@ -126,27 +107,6 @@ async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict
         if diy and (diy.get('plan_id') == plan or str(plan).startswith('DIY_')):
             return diy
     return None
-
-async def save_user_profile_from_requirement(user_id: str, req: FlowerRequirement | None) -> dict[str, str]:
-    """从结构化需求中提取用户偏好并写入长期记忆（本地用户画像）。"""
-    if not user_id or not req:
-        return {}
-    profile: dict[str, str] = {}
-    if req.recipient:
-        profile['preferred_recipient'] = req.recipient
-    if req.occasion:
-        profile['preferred_occasion'] = req.occasion
-    if req.style:
-        profile['preferred_style'] = req.style
-    if req.mood:
-        profile['preferred_mood'] = req.mood
-    if req.colors:
-        profile['preferred_colors'] = ','.join(req.colors)
-    if req.budget_num is not None:
-        profile['budget_level'] = str(int(req.budget_num))
-    for k, v in profile.items():
-        await memory.set_long_term(user_id, k, v)
-    return profile
 
 @register_tool(name='search_plans', description='搜索商家预设花卉方案（含名称、价格、描述、效果图 URL）；会结合当前会话的结构化需求（预算/色系/风格）做软过滤。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词，如 康乃馨 / 玫瑰 / 母亲；留空则浏览全部'}}, 'required': ['keyword']}, inject_context=True, tags=['plan'])
 async def search_plans(keyword: str, _context: dict | None=None) -> str:
@@ -280,87 +240,6 @@ def source_inspect(include_db: bool=True, include_files: bool=True, depth: int=1
     except Exception as exc:
         return tool_result(False, error=str(exc))
 
-@register_tool(name='db_auto_map', description='自动推断当前数据库到标准业务实体（plan/shop/order/user）的字段映射，适合未知数据库接入时先查看映射结果。', parameters={'type': 'object', 'properties': {'force_refresh': {'type': 'boolean', 'description': '是否强制重新推断'}}, 'required': []}, tags=['database', 'adapter'])
-def db_auto_map(force_refresh: bool=False) -> str:
-    try:
-        return tool_result(True, infer_mapping(force_refresh=force_refresh))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_query', description='按自动映射查询标准业务实体（plan/shop/order/user），返回统一字段的数据，适合未知数据库只读查询。', parameters={'type': 'object', 'properties': {'entity': {'type': 'string', 'description': '实体：plan | shop | order | user'}, 'keyword': {'type': 'string', 'description': '可选，按名称模糊搜索'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': ['entity']}, tags=['database', 'adapter'])
-def db_auto_query(entity: str, keyword: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_query(entity=entity, keyword=keyword or None, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-@register_tool(name='db_auto_search_plans', description='按自动映射搜索方案/商品（plan），返回标准字段，适合未知数据库只读搜索现成花束。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': []}, tags=['database', 'adapter'])
-def db_auto_search_plans(keyword: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_search_plans(keyword=keyword or None, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_search_shops', description='按自动映射搜索店铺（shop），返回标准字段，适合未知数据库只读搜索店铺。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': []}, tags=['database', 'adapter'])
-def db_auto_search_shops(keyword: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_search_shops(keyword=keyword or None, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-@register_tool(name='db_auto_create_order', description='按自动映射创建订单。需要 data_mapping.json 中配置 write_enabled=true，否则拒绝写入。', parameters={'type': 'object', 'properties': {'user_id': {'type': 'string', 'description': '用户 ID'}, 'plan_id': {'type': 'string', 'description': '方案/商品 ID'}, 'total_price': {'type': 'number', 'description': '订单总价'}, 'status': {'type': 'string', 'description': '订单状态，默认 created'}, 'order_id': {'type': 'string', 'description': '可选，指定订单 ID'}, 'items': {'type': 'array', 'items': {'type': 'object'}, 'description': '可选订单明细'}}, 'required': ['user_id', 'plan_id', 'total_price']}, tags=['database', 'adapter', 'order'])
-def db_auto_create_order(user_id: str, plan_id: str, total_price: float, status: str='created', order_id: str='', items: list[dict] | None=None) -> str:
-    try:
-        return tool_result(True, auto_create_order(user_id=user_id, plan_id=plan_id, total_price=total_price, status=status, order_id=order_id or None, items=items))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_list_orders', description='按自动映射读取订单列表，可选按用户过滤。', parameters={'type': 'object', 'properties': {'user_id': {'type': 'string', 'description': '可选，用户 ID'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': []}, tags=['database', 'adapter', 'order'])
-def db_auto_list_orders(user_id: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_list_orders(user_id=user_id or None, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-@register_tool(name='get_user_profile', description='获取当前用户的长期偏好画像（送花对象/场合/风格/色系/预算等）。', parameters={'type': 'object', 'properties': {}, 'required': []}, inject_context=True, tags=['user', 'memory'])
-async def get_user_profile(_context: dict | None=None) -> str:
-    try:
-        user_id = (_context or {}).get('user_id', '')
-        profile = await memory.get_long_term(user_id)
-        return tool_result(True, profile)
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='save_user_profile', description='手动保存一条用户长期偏好，例如 key=preferred_style value=韩式。', parameters={'type': 'object', 'properties': {'key': {'type': 'string', 'description': '偏好键，如 preferred_style / preferred_colors / budget_level'}, 'value': {'type': 'string', 'description': '偏好值'}}, 'required': ['key', 'value']}, inject_context=True, tags=['user', 'memory'])
-async def save_user_profile(key: str, value: str, _context: dict | None=None) -> str:
-    try:
-        user_id = (_context or {}).get('user_id', '')
-        await memory.set_long_term(user_id, key, value)
-        return tool_result(True, {'saved': {key: value}})
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='learn_user_preference', description='从用户消息中自动提取并保存偏好到用户画像。', parameters={'type': 'object', 'properties': {'message': {'type': 'string', 'description': '用户原话'}}, 'required': ['message']}, inject_context=True, tags=['user', 'memory'])
-async def learn_user_preference(message: str, _context: dict | None=None) -> str:
-    try:
-        user_id = (_context or {}).get('user_id', '')
-        req = extract_requirement(message)
-        profile = await save_user_profile_from_requirement(user_id, req)
-        return tool_result(True, profile)
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-@register_tool(name='generate_diy_plan', description='根据用户需求设计一份结构化 DIY 花艺方案：抽取维度→查知识库→组装主花/配材/配比、色彩方案、包装、寓意文案与预算估算，并返回可供生图的 effect_prompt。输出另含分步插花指引(diy_steps)、养护建议(care_tips)、贺卡寄语文案(card_message)与预算明细(budget_breakdown)。', parameters={'type': 'object', 'properties': {'requirements': {'type': 'string', 'description': '用户的 DIY 需求描述'}}, 'required': ['requirements']}, inject_context=True, tags=['diy'])
-async def generate_diy_plan(requirements: str, _context: dict | None=None) -> str:
-    """设计 DIY 方案（基于知识库的结构化生成），并写入当前会话供生图/下单引用。"""
-    plan = design_diy_plan(requirements)
-    await _store_diy_plan(plan, _context)
-    return json.dumps(plan, ensure_ascii=False)
 _RECIPIENT_KW = {'妈妈': '母亲', '母亲': '母亲', '妈': '母亲', '娘': '母亲', '恋人': '恋人', '女朋友': '恋人', '男朋友': '恋人', '老婆': '恋人', '老公': '恋人', '对象': '恋人', '爱人': '恋人', '男友': '恋人', '女友': '恋人', '先生': '恋人', '丈夫': '恋人', '朋友': '朋友', '闺蜜': '朋友', '兄弟': '朋友', '同事': '朋友', '姐妹': '朋友', '自己': '自己', '悦己': '自己', '我': '自己', '长辈': '长辈', '老人': '长辈', '父母': '长辈', '领导': '长辈', '上司': '长辈', '老板': '长辈', '老师': '长辈', '宝宝': '宝宝', '婴儿': '宝宝', '新生儿': '宝宝'}
 _OCCASION_KW = {'生日': '生日', '庆祝': '生日', '母亲节': '母亲', '父亲节': '父亲', '节': '节日', '告白': '告白', '表白': '告白', '纪念日': '告白', '求婚': '告白', '婚礼': '婚礼', '结婚': '婚礼', '领证': '婚礼', '探病': '探病', '生病': '探病', '康复': '探病', '住院': '探病', '道歉': '道歉', '对不起': '道歉', '抱歉': '道歉', '毕业': '毕业', '乔迁': '乔迁', '开业': '开业', '升职': '升职', '入职': '入职'}
 _STYLE_KW = {'韩式': 'S_KOREAN', '韩系': 'S_KOREAN', '北欧': 'S_NORDIC', '简约': 'S_NORDIC', '极简': 'S_NORDIC', '复古': 'S_VINTAGE', '古典': 'S_VINTAGE', '港风': 'S_VINTAGE', '中古': 'S_VINTAGE', '自然': 'S_NATURAL', '野趣': 'S_NATURAL', '田园': 'S_NATURAL', 'ins': 'S_INS', 'ins风': 'S_INS', '网红': 'S_INS', '奶油风': 'S_INS', '法式': 'S_INS', '日式': 'S_JAPANESE', '禅': 'S_JAPANESE', '日系': 'S_JAPANESE'}
@@ -1087,55 +966,6 @@ def revise_with_llm(plan: str, feedback: str) -> dict:
         logger.exception('[revise] LLM 语义改版失败，回退规则引擎')
         return json.dumps(baseline, ensure_ascii=False)
 
-@register_tool(name='revise_diy_plan', description='基于已有方案 + 自然语言反馈，调整出下一版花艺方案：可调预算（便宜点/高档）、改风格、改色系、移除指定花材（不要X/去掉X）。返回带 version 与 parent_id 的可追溯新方案。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '上一版方案 JSON 或含 JSON 的文本'}, 'feedback': {'type': 'string', 'description': '用户反馈，如 便宜点/换成红玫瑰/不要康乃馨/颜色再大胆'}}, 'required': ['plan', 'feedback']}, inject_context=True, tags=['diy'])
-async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) -> str:
-    """基于已有方案 + 自然语言反馈，生成一版调整方案（version 递增），并写入会话。"""
-    new_plan = revise_with_llm(plan, feedback)
-    await _store_diy_plan(new_plan, _context)
-    return new_plan
-
-@register_tool(name='generate_effect_image', description='为 DIY 方案提交 AI 生图任务（方案设计完成后系统会自动调用，无需用户确认）。若传入 latest_diy 则自动使用最近一次设计的方案生成精确 prompt（花材/色彩/形态/包装一致）；也可直接传入自定义描述。立即返回 task_id，客户端通过 GET /tasks/{task_id} 轮询。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '方案描述或方案 ID；latest/latest_diy 表示使用最近设计的方案'}}, 'required': ['plan']}, tags=['image'], inject_context=True)
-async def generate_effect_image(plan: str='latest_diy', _context: dict | None=None) -> str:
-    """提交生图异步任务，返回 task_id。基于最近设计方案生成精确 prompt。
-
-    生图安全闸门（后端强约束，不依赖模型自觉）：
-    - skill 编排：只要有「已设计方案」即可生图，不再绑定 IMAGE_GEN 阶段；
-    - 方案即生图：方案设计/调整完成后自动出图，无需用户确认（不再要求 image_confirmed）；
-    - 同一方案只允许提交一次（image_submitted 标记），方案调整后自动放行。
-    """
-    ctx = _context or {}
-    sid = ctx.get('session_id', '')
-    uid = ctx.get('user_id', '')
-    if sid:
-        diy = await memory.get_session_json(uid, sid, 'latest_diy_plan')
-        if not diy:
-            return json.dumps({'error': '当前会话还没有设计方案，无法生成效果图。请先调用 generate_diy_plan 设计一版方案，再来生成效果图。'}, ensure_ascii=False)
-        submitted_pid = await memory.get_session_flag(uid, sid, 'image_submitted')
-        diy_pid = (diy or {}).get('plan_id')
-        if submitted_pid and submitted_pid == diy_pid:
-            return json.dumps({'error': '当前方案的效果图已生成过了，如需重新生成请先调整方案（revise_diy_plan 会生成新版本）。'}, ensure_ascii=False)
-    if plan in ('latest', 'latest_diy', '', None):
-        diy = await memory.get_session_json(uid, sid, 'latest_diy_plan') if sid else None
-        if diy:
-            prompt = diy.get('effect_prompt') or diy.get('desc', '')
-        else:
-            return json.dumps({'error': '当前会话还没有任何 DIY 设计方案，无法生成效果图。请先描述需求，由我调用 generate_diy_plan 设计一版方案（会自动写入会话），方案设计完成后效果图会随卡片自动生成。'}, ensure_ascii=False)
-    else:
-        prompt = plan
-    task_id = await tasks.create_image_task(prompt)
-    if sid:
-        await memory.set_session_flag(uid, sid, 'image_submitted', (diy or {}).get('plan_id') or '1')
-    result: dict[str, Any] = {'task_id': task_id, 'status': 'submitted', 'poll': f'/tasks/{task_id}'}
-    row = await tasks.get_image_task(task_id)
-    if row and row['status'] == 'done' and row.get('result_url'):
-        result['status'] = 'done'
-        result['result_url'] = row['result_url']
-        if sid and diy:
-            diy = {**diy, 'effect_image_url': row['result_url']}
-            await memory.set_session_json(uid, sid, 'latest_diy_plan', diy)
-            await memory.set_session_json(uid, sid, 'selected_plan', diy)
-    return json.dumps(result, ensure_ascii=False)
-
 @register_tool(name='respond_to_user', description='当你准备好向用户输出本轮最终回复时，必须调用该工具结束本轮对话。携带：reply（自然语言回复）、ui（UI 动作类型）、data（按 ui 类型填充）、stage（协商后的下一业务阶段）、intent（你判断的用户本轮真实意图）。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言回复'}, 'ui': {'type': 'string', 'enum': [e.value for e in UIType], 'description': '小程序渲染的 UI 动作类型'}, 'data': {'type': 'object', 'description': '按 ui 类型约定的结构化数据'}, 'stage': {'type': 'string', 'description': '下一业务阶段，如 analyze/select_mode/view_plan/diy_design/image_gen/shop_recommend/done'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图：buying=有购买/挑选花束的明确意图；qa=问花卉/花艺知识或咨询（花期/养护/寓意/送什么花好）；chitchat=纯闲聊寒暄；design=要 DIY 定制专属花束；other=其他。判定依据是用户『想干什么』，不是本轮是否调了工具。'}}, 'required': ['reply', 'ui', 'data', 'stage']}, tags=['meta'])
 def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage: str='analyze', intent: str='other') -> str:
     """终结工具：模型以此结束本轮，参数由 agent 提取并校验后返回前端。"""
@@ -1143,149 +973,3 @@ def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage
         intent = 'other'
     return {'reply': reply, 'ui': ui, 'data': data or {}, 'stage': stage, 'intent': intent}
 
-@register_tool(name='search_diy_plans', description='检索全局 DIY 方案模板库：按送礼对象/场合/风格/预算匹配历史成功方案。命中时返回方案详情，供 agent 判断是否推荐复用或全新设计。', parameters={'type': 'object', 'properties': {'recipient': {'type': 'string', 'description': '送礼对象（如 母亲/对象/朋友）'}, 'occasion': {'type': 'string', 'description': '场合或节日（如 生日/七夕/母亲节）'}, 'style': {'type': 'string', 'description': '风格标签（如 韩式/浪漫/简约）'}, 'budget': {'type': 'number', 'description': '预算上限（元）'}}, 'required': []}, tags=['diy', 'knowledge'])
-def search_diy_plans(recipient: str='', occasion: str='', style: str='', budget: float=0, **_kw) -> str:
-    """检索全局 DIY 方案模板库，返回匹配的历史成功方案。
-
-    匹配规则：
-    - recipient/occasion/style：精确匹配（不区分大小写）
-    - budget：±30% 范围内匹配
-    - 结果按 order_count 降序排列（越多人验证过的方案越优先）
-    """
-    from backend.storage.db import get_conn as _get_conn
-    conn = _get_conn()
-    conditions = ["user_id='template'", "status='template'"]
-    params: list = []
-    if recipient:
-        conditions.append('LOWER(recipient) LIKE LOWER(?)')
-        params.append(f'%{recipient}%')
-    if occasion:
-        conditions.append('LOWER(occasion) LIKE LOWER(?)')
-        params.append(f'%{occasion}%')
-    if style:
-        conditions.append('LOWER(style) LIKE LOWER(?)')
-        params.append(f'%{style}%')
-    if budget > 0:
-        conditions.append('budget BETWEEN ? AND ?')
-        params.append(budget * 0.7)
-        params.append(budget * 1.3)
-    where = ' AND '.join(conditions)
-    rows = conn.execute(f'SELECT * FROM diy_plans WHERE {where} ORDER BY order_count DESC LIMIT 5', params).fetchall()
-    results = []
-    for r in rows:
-        results.append({'plan_id': r['id'], 'name': r['name'], 'recipient': r['recipient'], 'occasion': r['occasion'], 'style': r['style'], 'budget': r['budget'], 'flowers': json.loads(r['flowers'] or '[]'), 'packaging': r['packaging'], 'meaning': r['meaning'], 'effect_image_url': r['effect_image_url'], 'order_count': r['order_count']})
-    return results
-
-@register_tool(name='search_shops', description='按距离、价格、服务评价综合排序推荐店铺；会结合用户位置与预算（来自结构化需求）做排序与过滤。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '方案 ID；或 latest/latest_diy 表示使用最近方案'}}, 'required': ['plan']}, inject_context=True, tags=['shop'])
-async def search_shops(plan: str='latest', _context: dict | None=None) -> str:
-    """推荐店铺（结合用户位置与结构化需求排序，最多 3 家）。
-
-    方案引用经 _resolve_session_plan 解析到「会话最近引用方案」（不再取全局首方案），
-    解析结果写回 selected_plan，保证后续 create_order(plan_id="latest") 下单到同一方案。
-    当 context 含 shop_id 时，仅返回该锁定店铺。
-    """
-    req = _requirement_from_context(_context)
-    location = None
-    if _context:
-        location = _context.get('location') or (req.location if req else None)
-    plan_obj = await _resolve_session_plan(plan, _context)
-    sid = (_context or {}).get('session_id', '')
-    uid = (_context or {}).get('user_id', '')
-    if plan_obj and sid:
-        await memory.set_session_json(uid, sid, 'selected_plan', plan_obj)
-    locked_shop = (_context or {}).get('shop_id')
-    if locked_shop:
-        shops = [{'shop_id': locked_shop, 'name': ''}]
-    else:
-        shops = await repo.list_shops(plan_obj, location, requirement=req)
-    return json.dumps(shops[:3], ensure_ascii=False)
-
-@register_tool(name='match_shop_items', description='根据 DIY 方案的花材需求，匹配各店铺库存中的单品（单支花束/配材/绿植），返回每家店的匹配结果：覆盖了哪些花材、缺哪些、总费用估算。用于 DIY 方案落地时推荐能实际提供所需花材的店铺。', parameters={'type': 'object', 'properties': {'flowers': {'type': 'string', 'description': 'DIY 方案的花材列表（JSON 数组或逗号分隔），如 \'["红玫瑰","满天星","尤加利"]\' 或 \'红玫瑰,满天星,尤加利\''}, 'shop_id': {'type': 'string', 'description': '指定店铺 ID（可选）；不指定则搜索所有店铺'}}, 'required': ['flowers']}, inject_context=True, tags=['shop', 'diy'])
-def match_shop_items(flowers: str, shop_id: str | None=None, _context: dict | None=None) -> str:
-    """匹配 DIY 花材与店铺单品库存。
-
-    返回每家店的匹配详情：matched（已匹配的花材→商品映射）、
-    missing（缺少的花材）、coverage（覆盖率 0-1）、estimated_cost（已匹配商品总价）。
-    使用精确匹配（花材名完整出现在商品名或标签中），避免 "粉玫瑰" 错误匹配 "红玫瑰"。
-    当 context 含 shop_id 且未显式指定 shop_id 时，使用锁定店铺。
-    """
-    from agent.skills.skill_order import _match_flowers_to_shop
-    from backend.storage.db import get_conn as _get_conn
-    if flowers.startswith('['):
-        try:
-            raw_list = json.loads(flowers)
-        except json.JSONDecodeError:
-            raw_list = [f.strip() for f in flowers.strip('[]').split(',') if f.strip()]
-    else:
-        raw_list = [f.strip() for f in flowers.split(',') if f.strip()]
-    flower_list = []
-    for item in raw_list:
-        if isinstance(item, dict):
-            flower_list.append({'name': item.get('name', ''), 'qty': int(item.get('qty', 1)) if item.get('qty') else 1})
-        elif isinstance(item, str) and item:
-            flower_list.append({'name': item, 'qty': 1})
-    if not flower_list:
-        return {'error': '花材列表为空'}
-    conn = _get_conn()
-    effective_shop = shop_id or ((_context or {}).get('shop_id') if _context else None)
-    if effective_shop:
-        shops = conn.execute('SELECT * FROM shops WHERE id=?', (effective_shop,)).fetchall()
-    else:
-        shops = conn.execute('SELECT * FROM shops').fetchall()
-    results = []
-    for s in shops:
-        match_result = _match_flowers_to_shop(flower_list, s['id'])
-        results.append({'shop_id': s['id'], 'shop_name': s['name'], 'matched': match_result['matched'], 'missing': match_result['missing'], 'coverage': match_result['coverage'], 'estimated_cost': match_result['estimated_cost']})
-    results.sort(key=lambda x: (-x['coverage'], x['estimated_cost']))
-    return results[:5]
-
-@register_tool(name='save_memory', description='把用户明确表达的偏好写入长期记忆（如预算、送花对象、偏好色系）。', parameters={'type': 'object', 'properties': {'key': {'type': 'string', 'description': '偏好键，如 budget / recipient / color'}, 'value': {'type': 'string', 'description': '偏好值'}}, 'required': ['key', 'value']}, inject_context=True, tags=['memory'])
-async def save_memory(key: str, value: str, _context: dict | None=None) -> str:
-    """写入用户长期偏好。"""
-    user_id = (_context or {}).get('user_id', 'anonymous')
-    await memory.set_long_term(user_id, key, value)
-    return {'saved': {key: value}}
-
-def get_tool_specs() -> list[ToolSpec]:
-    return list(TOOL_REGISTRY.values())
-
-def to_openai_tools() -> list[dict[str, Any]]:
-    """生成 OpenAI function-calling 的 tools 定义。"""
-    return [{'type': 'function', 'function': {'name': s.name, 'description': s.description, 'parameters': s.parameters}} for s in TOOL_REGISTRY.values()]
-
-def generate_tool_manual() -> str:
-    """生成中文工具说明书，注入 system prompt。"""
-    lines = ['你当前可以使用的工具（需要时以 JSON 或 function call 形式调用）：']
-    for s in TOOL_REGISTRY.values():
-        params = ', '.join((f"{k}: {v.get('type', 'any')}" for k, v in s.parameters.get('properties', {}).items()))
-        lines.append(f'- {s.name}({params})：{s.description}')
-    return '\n'.join(lines)
-
-async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dict[str, Any] | None=None) -> tuple[str, str]:
-    """执行工具，返回 (结果字符串, 状态 ok|error)。"""
-    spec = TOOL_REGISTRY.get(name)
-    if not spec:
-        return (f'未知工具: {name}', 'error')
-    try:
-        kwargs = dict(arguments or {})
-        if spec.inject_context:
-            kwargs['_context'] = context
-        if inspect.iscoroutinefunction(spec.func):
-            result = await spec.func(**kwargs)
-        else:
-            result = spec.func(**kwargs)
-        if not isinstance(result, str):
-            result = json.dumps(result, ensure_ascii=False)
-        try:
-            parsed = json.loads(result)
-            if isinstance(parsed, dict):
-                if 'ok' in parsed and parsed.get('ok') is False:
-                    return (result, 'error')
-                if 'ok' not in parsed and 'error' in parsed:
-                    return (result, 'error')
-        except (json.JSONDecodeError, TypeError):
-            pass
-        return (result, 'ok')
-    except Exception as exc:
-        logger.exception('[tools] 执行 %s 失败', name)
-        return (f'工具执行失败: {exc}', 'error')

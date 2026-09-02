@@ -21,7 +21,11 @@ from pydantic import BaseModel
 router = APIRouter(tags=['chat'])
 logger = logging.getLogger('api')
 
-agent = ReActAgent()
+_agent = ReActAgent(session_store=mem_store, task_store=task_store)
+
+
+def get_agent() -> ReActAgent:
+    return _agent
 
 
 class ChatRequest(BaseModel):
@@ -58,7 +62,7 @@ async def chat(req: ChatRequest) -> Any:
 
     try:
         result = await asyncio.wait_for(
-            agent.arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id),
+            get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id),
             timeout=settings.REQUEST_TIMEOUT
         )
     except TimeoutError:
@@ -87,7 +91,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
     async def event_generator():
         try:
-            async for evt in agent.arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id):
+            async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id):
                 event_type = evt.get('event', 'text')
                 data = {k: v for k, v in evt.items() if k != 'event'}
                 yield f'event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'

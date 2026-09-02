@@ -24,8 +24,8 @@ from typing import Any
 
 from agent.engine.llm import call_llm
 from agent.engine.state import SessionStage
-from agent.engine.ui_protocol import ChatResponse, ToolCallRecord, UIType
-from agent.tools import execute_tool, generate_tool_manual, to_openai_tools
+from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
+from agent.toolkit import execute_tool, generate_tool_manual, to_openai_tools
 from backend.config import settings, setup_logging
 from backend.storage import memory as mem_store
 
@@ -100,7 +100,7 @@ class ReActAgent:
                 result = await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id)))
                 await queue.put({'event': 'done', 'session_id': result.session_id})
                 await queue.put(None)
-            task = loop.create_task(await _run())
+            task = loop.create_task(_run())
             try:
                 while True:
                     evt = await queue.get()
@@ -211,7 +211,29 @@ class ReActAgent:
                 on_event({'event': 'text', 'content': buf})
             if ui and ui.value != 'text':
                 on_event({'event': 'card', 'ui': ui.value, 'data': data})
-        return ChatResponse(user_id=user_id, reply=final_reply, ui=ui, data=data, tool_calls=tool_log, session_id=sid, stage=new_stage.value)
+        action_type = {
+            UIType.PLAN_CARD: AgentActionType.SHOW_PLAN,
+            UIType.SHOP_CARD: AgentActionType.SHOW_SHOP,
+            UIType.ORDER_CARD: AgentActionType.CREATE_ORDER,
+            UIType.PAY_JUMP: AgentActionType.OPEN_PAYMENT,
+            UIType.IMAGE_TASK: AgentActionType.START_IMAGE_TASK,
+            UIType.DIALOG_OPTIONS: AgentActionType.SHOW_OPTIONS,
+            UIType.TEXT: AgentActionType.SHOW_TEXT,
+        }.get(ui, AgentActionType.SHOW_TEXT)
+        capability = {
+            AgentActionType.SHOW_PLAN: 'show_plan_page',
+            AgentActionType.SHOW_SHOP: 'show_shop_page',
+            AgentActionType.CREATE_ORDER: 'create_order',
+            AgentActionType.OPEN_PAYMENT: 'open_payment',
+            AgentActionType.START_IMAGE_TASK: 'start_image_task',
+        }.get(action_type)
+        action = AgentAction(
+            type=action_type,
+            payload={'reply': final_reply, 'ui': ui.value, 'data': data, 'stage': new_stage.value},
+            required_capabilities=[capability] if capability else [],
+            fallback=final_reply or '当前平台暂未实现对应能力，请使用文本方式继续引导。',
+        )
+        return ChatResponse(user_id=user_id, reply=final_reply, ui=ui, data=data, action=action, tool_calls=tool_log, session_id=sid, stage=new_stage.value)
 
     async def _post_process(
         self, respond_args, tool_log, incoming, message, final_reply,

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from backend.storage.db import get_conn, transaction
+from domain.requirements import FlowerRequirement
 
 logger = logging.getLogger('memory')
 
@@ -70,7 +71,7 @@ async def update_stage(session_id: str, stage: str) -> None:
         conn.execute('UPDATE sessions SET stage = ?, updated_at = ? WHERE session_id = ?', (stage, _now(), session_id))
 
 
-async def set_requirement(session_id: str, req) -> None:
+async def set_requirement(session_id: str, req: FlowerRequirement) -> None:
     """保存结构化需求。"""
     with transaction() as conn:
         conn.execute(
@@ -85,7 +86,6 @@ async def get_requirement(session_id: str):
     if not row or not row['preview']:
         return None
     try:
-        from agent.requirements import FlowerRequirement
         return FlowerRequirement.from_dict(json.loads(row['preview']))
     except Exception:
         return None

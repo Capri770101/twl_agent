@@ -25,6 +25,27 @@ class UIType(StrEnum):
     IMAGE_TASK = "image_task"  # 生图结果：同步已 done 直接给 result_url，异步给 poll 轮询
 
 
+class AgentActionType(StrEnum):
+    """平台中立的下一步业务动作。"""
+
+    NONE = "none"
+    SHOW_TEXT = "show_text"
+    SHOW_OPTIONS = "show_options"
+    SHOW_PLAN = "show_plan"
+    SHOW_SHOP = "show_shop"
+    CREATE_ORDER = "create_order"
+    OPEN_PAYMENT = "open_payment"
+    START_IMAGE_TASK = "start_image_task"
+    REQUEST_PLATFORM = "request_platform"
+
+
+class AgentAction(BaseModel):
+    """平台适配层消费的动作契约。"""
+
+    type: AgentActionType = AgentActionType.NONE
+    payload: dict[str, Any] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(default_factory=list)
+    fallback: str = ""
 class ToolCallRecord(BaseModel):
     """单次工具调用的对外记录。"""
 
@@ -32,8 +53,6 @@ class ToolCallRecord(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     result: str = ""
     status: str = "ok"  # "ok" | "error"
-
-
 class ChatResponse(BaseModel):
     """/chat 统一响应体（前端渲染契约）。"""
 
@@ -41,6 +60,7 @@ class ChatResponse(BaseModel):
     reply: str = ""
     ui: UIType = UIType.TEXT
     data: dict[str, Any] = Field(default_factory=dict)
+    action: AgentAction = Field(default_factory=AgentAction)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     session_id: str = ""
     stage: str = ""  # 当前 SessionStage 值，便于前端感知进度
