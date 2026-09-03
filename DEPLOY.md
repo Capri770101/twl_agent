@@ -61,113 +61,71 @@ LLM_REQUEST_TIMEOUT=120         # 单次 LLM 调用超时（秒）
 # ═══════════════════════════════════════════════════════════
 # 5. 文生图模型（效果图生成）
 # ═══════════════════════════════════════════════════════════
-IMAGE_PROVIDER=flux             # flux / dall-e / kling / comfyui
-IMAGE_API_KEY=your-image-api-key
-IMAGE_BASE_URL=https://api.image-provider.com/v1
-IMAGE_MODEL=flux-schnell        # 模型名称
-IMAGE_WIDTH=768                 # 生成图片宽度
-IMAGE_HEIGHT=1024               # 生成图片图片高度
+IMAGE_PROVIDER=mock             # mock / hy
+IMAGE_API_KEY=
+IMAGE_BASE_URL=
+IMAGE_MODEL=
+IMAGE_WIDTH=768
+IMAGE_HEIGHT=1024
+IMAGE_PUBLIC_BASE_URL=
 
 # ═══════════════════════════════════════════════════════════
-# 6. 微信小程序（登录 + 推送）
+# 6. 微信小程序（登录）
 # ═══════════════════════════════════════════════════════════
-WECHAT_APPID=wx1234567890abcdef # 微信小程序 AppID
-WECHAT_SECRET=your-wx-secret    # 微信小程序 AppSecret
+WECHAT_APPID=wx1234567890abcdef
+WECHAT_SECRET=your-wx-secret
 
 # ═══════════════════════════════════════════════════════════
-# 7. 腾讯地图（距离计算 / 逆地理编码）
+# 7. 目标平台外部数据源（按 source_id 配置）
 # ═══════════════════════════════════════════════════════════
-TENCENT_MAP_KEY=your-map-key    # 腾讯地图 WebService Key
+# PLATFORM_DB_MAIN_URL=postgresql://readonly_user:password@platform-db:5432/platform
 
 # ═══════════════════════════════════════════════════════════
-# 8. Redis（可选，用于限流 / 缓存）
+# 8. 腾讯地图（可选）
+# ═══════════════════════════════════════════════════════════
+TENCENT_MAP_KEY=your-map-key
+
+# ═══════════════════════════════════════════════════════════
+# 9. Redis（可选，用于限流 / 缓存）
 # ═══════════════════════════════════════════════════════════
 REDIS_URL=redis://localhost:6379/0
-# 不填则禁用 Redis 限流（开发环境可不配）
 
 # ═══════════════════════════════════════════════════════════
-# 9. CORS（允许的小程序/网页域名）
+# 10. CORS（允许的小程序/网页域名）
 # ═══════════════════════════════════════════════════════════
 ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
-# * 表示允许所有来源（仅开发环境使用）
 ```
-
-视觉 MCP 还可配置：`ZHIPU_API_KEY`、`VISION_ALLOWED_ROOT`（默认 `data/generated`）和 `VISION_MAX_IMAGE_BYTES`（默认 10 MiB）。不要把视觉 MCP 暴露到公网；本地路径读取和外部 URL 请求均应只在受信任的 MCP host 内使用。
 
 ---
 
-## 二、各配置项详解
+## 二、当前数据库接入模型
 
-### 2.1 LLM 大模型配置
+- **内部控制面**：使用 `DATABASE_URL` 指向智能体自己的 PostgreSQL，保存会话、消息、记忆、任务、映射草案与审计日志。
+- **外部目标平台库**：按 `PLATFORM_DB_<SOURCE_ID>_URL` 配置，只读发现、脱敏样本和已审批映射查询。
+- **SQLite**：生产环境禁止使用。
 
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `LLM_API_KEY` | ✅ | OpenAI 兼容 API Key |
-| `LLM_BASE_URL` | ✅ | API 地址（OpenAI/DeepSeek/本地部署都行） |
-| `LLM_MODEL` | ✅ | 模型名称 |
-| `LLM_MAX_ITERATIONS` | ❌ | 单轮最大工具调用次数，默认 8 |
-| `LLM_REQUEST_TIMEOUT` | ❌ | 超时秒数，默认 120 |
+### 2.1 外部数据库接入流程
 
-**支持的 LLM 提供商：**
-- OpenAI：`https://api.openai.com/v1` / `gpt-4o-mini`
-- DeepSeek：`https://api.deepseek.com/v1` / `deepseek-chat`
-- 通义千问：`https://dashscope.aliyuncs.com/compatible-mode/v1` / `qwen-plus`
-- 本地 Ollama：`http://localhost:11434/v1` / `qwen2.5:7b`
+1. 配置 `PLATFORM_DB_<SOURCE_ID>_URL`
+2. 调用 `platform_db_test_connection(source_id)`
+3. 调用 `platform_db_discover(source_id, sample_rows=0)`
+4. 必要时调用 `platform_db_sample_table(source_id, schema, table, limit)`
+5. 调用 `platform_mapping_draft(profile)` 生成草案
+6. 调用 `platform_mapping_save_draft(profile, draft)` 保存版本
+7. 使用 `platform_mapping_set_status(...)` 完成 reviewed / approved / active
+8. 通过 `platform_db_query_entity(source_id, entity)` 查询业务实体
 
-### 2.2 文生图配置
+### 2.2 目标平台数据库说明
 
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `IMAGE_PROVIDER` | ✅ | 提供商：flux / dall-e / kling / comfyui |
-| `IMAGE_API_KEY` | ✅ | API Key |
-| `IMAGE_BASE_URL` | ✅ | API 地址 |
-| `IMAGE_MODEL` | ✅ | 模型名称 |
-| `IMAGE_WIDTH` | ❌ | 图片宽度，默认 768 |
-| `IMAGE_HEIGHT` | ❌ | 图片高度，默认 1024 |
+- `platform_db_discover` 只支持外部 PostgreSQL 连接器
+- 所有外部连接均为只读事务
+- 样本默认不读取，最大 5 行
+- `platform_db_query_entity` 只允许查询 active 映射
+- 没有 active 映射时直接拒绝查询
 
-**支持的文生图提供商：**
-- Flux：`https://api.bfl.ml/v1` / `flux-schnell`
-- DALL-E：`https://api.openai.com/v1` / `dall-e-3`
-- 可灵：`https://api.klingai.com/v1` / `kling-v1`
-- ComfyUI：`http://localhost:8188`（本地部署）
+---
 
-> 注：当前代码已实现 `mock` / `hy`（`backend/storage/tasks.py`），其余为预留声明，接入前需补充实现。生图结果存本地 `data/generated/`，经 `/generated` 静态挂载访问；生产可用 `IMAGE_PUBLIC_BASE_URL` 指定 CDN/对象存储公网前缀。
-
-### 2.3 微信小程序配置
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `WECHAT_APPID` | ✅ | 小程序 AppID（兼容 `WX_APPID`） |
-| `WECHAT_SECRET` | ✅ | 小程序 AppSecret（兼容 `WX_SECRET`） |
-
-**获取方式：**
-1. 登录 https://mp.weixin.qq.com
-2. 开发 → 开发管理 → 开发设置
-3. 复制 AppID 和 AppSecret
-
-### 2.4 数据库配置
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `DATABASE_URL` | ✅ | 数据库连接串 |
-
-**PostgreSQL：**
-- 驱动：`psycopg[binary]`，已包含在 `requirements.txt`
-- 生产环境必须配置 `DATABASE_URL=postgresql://...`
-- 不支持 SQLite 作为服务数据库
-
-### 2.5 腾讯地图（可选）
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `TENCENT_MAP_KEY` | ❌ | 用于距离计算和逆地理编码 |
-
-**获取方式：**
-1. 登录 https://lbs.qq.com
-2. 创建应用 → 添加 Key
-3. 选择 WebService API
-
-### 数据库迁移顺序
+## 三、数据库与生图迁移
 
 如果部署方使用已有业务数据库，不要求覆盖平台现有表。建议按以下顺序操作：
 
@@ -177,87 +135,42 @@ ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 4. 启动服务，确认日志通过数据库初始化和 `image_tasks` 自检。
 5. 用 `POST /chat` 触发生图，再用 `GET /tasks/{task_id}` 验证状态能查询。
 
-### 2.6 生图结果存储与任务持久化
+---
 
-| 配置/资源 | 必填 | 说明 |
-|---|---|---|
-| `IMAGE_PUBLIC_BASE_URL` | 本地静态托管可不填 | 生产推荐配置 CDN/对象存储的公网 URL 前缀 |
-| `data/generated/` | 本地模式必填 | 运行用户必须有创建目录和写入 PNG 的权限 |
-| PostgreSQL `image_tasks` | 生产必填 | 保存任务状态、提示词、结果 URL 和失败原因 |
+## 四、支持的图像生成提供商
 
-任务状态由数据库持久化，`GET /tasks/{task_id}` 可跨进程查询。服务重启时尚未完成的 `processing` 任务会被标记为 `failed`，需要重新提交；已经 `done` 的记录仍可查询，但对应图片文件或对象存储对象也必须保留。文件清理应由平台定时任务或对象存储生命周期规则负责。
+| 提供商 | 说明 |
+|---|---|
+| `mock` | 仅用于开发联调 |
+| `hy` | 当前已实现 |
+
+> 其他 provider 目前仅保留配置占位，未在当前代码中实现。
 
 ---
 
-## 三、Docker 部署
+## 五、API 一致性说明
 
-```bash
-# 1. 复制配置
-cp .env.example .env
-vim .env  # 填入配置
+当前代码中的 `/chat` 返回字段为：`reply`、`ui`、`data`、`action`、`tool_calls`、`session_id`、`stage`。
 
-# 2. 启动服务
-docker-compose up -d
-
-# 3. 查看日志
-docker-compose logs -f agent
-
-# 4. 健康检查
-curl http://localhost:8000/health
-```
+`/chat/stream` 使用 SSE，常见事件为：`thinking`、`tool_call`、`tool_result`、`text`、`error`。
 
 ---
 
-## 四、裸机部署
+## 六、部署检查
 
-```bash
-# 1. 安装依赖
-pip install -r requirements.txt
+启动后至少验证：
 
-# 2. 复制配置
-cp .env.example .env
-vim .env
-
-# 3. 启动服务
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
-
-# 4. 或后台运行
-nohup python -m uvicorn main:app --host 0.0.0.0 --port 8000 > agent.log 2>&1 &
-```
+- `GET /health`
+- `POST /chat`
+- `POST /chat/stream`
+- `GET /tasks/{task_id}`
+- `GET /ui-contract`
 
 ---
 
-## 五、小程序接入
+## 七、补充
 
-### 5.1 登录接口
-
-```javascript
-// 小程序登录
-wx.login({
-  success: async (res) => {
-    const { data } = await wx.request({
-      url: 'https://your-domain.com/auth/wx-login',
-      method: 'POST',
-      data: { code: res.code }
-    });
-    wx.setStorageSync('token', data.token);
-  }
-});
-```
-
-### 5.2 对话接口
-
-```javascript
-// 发送消息
-async function chat(message, conversationId, shopId) {
-  const token = wx.getStorageSync('token');
-  return await wx.request({
-    url: 'https://your-domain.com/chat',
-    method: 'POST',
-    header: { Authorization: `Bearer ${token}` },
-    data: {
-      message,
-      conversation_id: conversationId,
+完整配置请参考 [.env.example](.env.example) 和 [README.md](README.md)。
       shop_id: shopId  // 进入店铺时传入，锁定后整个会话不变
     }
   });

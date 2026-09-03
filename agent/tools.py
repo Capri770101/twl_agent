@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import copy
-import inspect
 import json
 import logging
 import re
@@ -22,7 +21,7 @@ from agent.knowledge import get_by_id, query_knowledge
 from domain.requirements import FlowerRequirement
 from backend.storage import memory, tasks
 from backend.storage.repository import repo
-from backend.data_gateway import auto_create_order, auto_list_orders, auto_query, auto_search_plans, auto_search_shops, describe_table, discover_database, get_file_info, infer_mapping, inspect_source, list_files, list_tables, query_readonly, read_file, sample_rows, search_files, tool_result
+from backend.data_gateway import auto_create_order, auto_list_orders, auto_query, auto_search_plans, auto_search_shops, infer_mapping, tool_result
 from agent.toolkit import register_tool
 
 logger = logging.getLogger('tools')
@@ -185,85 +184,6 @@ async def get_plan_detail(plan_id: str) -> str:
 def retrieve_knowledge(domain: str, query: str) -> str:
     """检索知识库，返回相关条目 JSON。"""
     return json.dumps(query_knowledge(domain, query), ensure_ascii=False)
-
-@register_tool(name='fs_list', description='列出当前项目允许范围内的文件/目录。', parameters={'type': 'object', 'properties': {'path': {'type': 'string', 'description': '起始路径，默认 .'}, 'exclude': {'type': 'array', 'items': {'type': 'string'}, 'description': '排除的目录名或片段'}, 'depth': {'type': 'integer', 'description': '递归深度'}}, 'required': []}, tags=['filesystem'])
-def fs_list(path: str='.', exclude: list[str] | None=None, depth: int=2) -> str:
-    try:
-        return tool_result(True, list_files(path=path, exclude=exclude, depth=depth))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='fs_read', description='读取当前项目允许范围内的文本文件。', parameters={'type': 'object', 'properties': {'path': {'type': 'string', 'description': '文件路径'}, 'max_length': {'type': 'integer', 'description': '最多读取字符数'}}, 'required': ['path']}, tags=['filesystem'])
-def fs_read(path: str, max_length: int=200000) -> str:
-    try:
-        return tool_result(True, read_file(path=path, max_length=max_length))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='fs_search', description='在当前项目允许范围内按 glob 模式搜索文件。', parameters={'type': 'object', 'properties': {'pattern': {'type': 'string', 'description': 'glob 模式，如 **/*.sql'}, 'path': {'type': 'string', 'description': '搜索根目录'}}, 'required': ['pattern']}, tags=['filesystem'])
-def fs_search(pattern: str, path: str='.') -> str:
-    try:
-        return tool_result(True, search_files(pattern=pattern, path=path))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='fs_info', description='查看当前项目允许范围内文件或目录的元信息。', parameters={'type': 'object', 'properties': {'path': {'type': 'string', 'description': '文件或目录路径'}}, 'required': ['path']}, tags=['filesystem'])
-def fs_info(path: str) -> str:
-    try:
-        return tool_result(True, get_file_info(path=path))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_list_tables', description='列出当前数据库中的所有表。', parameters={'type': 'object', 'properties': {}, 'required': []}, tags=['database'])
-def db_list_tables() -> str:
-    try:
-        return tool_result(True, list_tables())
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_describe_table', description='查看数据库表结构。', parameters={'type': 'object', 'properties': {'table': {'type': 'string', 'description': '表名'}}, 'required': ['table']}, tags=['database'])
-def db_describe_table(table: str) -> str:
-    try:
-        return tool_result(True, describe_table(table))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_sample_rows', description='抽样读取数据库表中的少量数据。', parameters={'type': 'object', 'properties': {'table': {'type': 'string', 'description': '表名'}, 'limit': {'type': 'integer', 'description': '样本行数'}}, 'required': ['table']}, tags=['database'])
-def db_sample_rows(table: str, limit: int=5) -> str:
-    try:
-        return tool_result(True, sample_rows(table=table, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_query_readonly', description='只读执行 SELECT SQL 查询，禁止写操作。', parameters={'type': 'object', 'properties': {'sql': {'type': 'string', 'description': 'SELECT 语句'}, 'max_rows': {'type': 'integer', 'description': '最大返回行数'}}, 'required': ['sql']}, tags=['database'])
-def db_query_readonly(sql: str, max_rows: int=100) -> str:
-    try:
-        return tool_result(True, query_readonly(sql=sql, max_rows=max_rows))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_discover', description='自动发现当前数据库的表结构与样本数据。', parameters={'type': 'object', 'properties': {'sample_limit': {'type': 'integer', 'description': '每张表的样本行数（默认 1，传 0 只返回结构）'}}, 'required': []}, tags=['database'])
-def db_discover(sample_limit: int=1) -> str:
-    try:
-        return tool_result(True, discover_database(sample_limit=sample_limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='source_inspect', description='一次性概览当前项目文件与数据库表结构，适合刚接入时自动发现数据源。', parameters={'type': 'object', 'properties': {'include_db': {'type': 'boolean', 'description': '是否包含数据库结构'}, 'include_files': {'type': 'boolean', 'description': '是否包含文件列表'}, 'depth': {'type': 'integer', 'description': '文件目录递归深度'}}, 'required': []}, tags=['discovery'])
-def source_inspect(include_db: bool=True, include_files: bool=True, depth: int=1) -> str:
-    try:
-        return tool_result(True, inspect_source(include_db=include_db, include_files=include_files, depth=depth))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
 
 _RECIPIENT_KW = {'妈妈': '母亲', '母亲': '母亲', '妈': '母亲', '娘': '母亲', '恋人': '恋人', '女朋友': '恋人', '男朋友': '恋人', '老婆': '恋人', '老公': '恋人', '对象': '恋人', '爱人': '恋人', '男友': '恋人', '女友': '恋人', '先生': '恋人', '丈夫': '恋人', '朋友': '朋友', '闺蜜': '朋友', '兄弟': '朋友', '同事': '朋友', '姐妹': '朋友', '自己': '自己', '悦己': '自己', '我': '自己', '长辈': '长辈', '老人': '长辈', '父母': '长辈', '领导': '长辈', '上司': '长辈', '老板': '长辈', '老师': '长辈', '宝宝': '宝宝', '婴儿': '宝宝', '新生儿': '宝宝'}
 _OCCASION_KW = {'生日': '生日', '庆祝': '生日', '母亲节': '母亲', '父亲节': '父亲', '节': '节日', '告白': '告白', '表白': '告白', '纪念日': '告白', '求婚': '告白', '婚礼': '婚礼', '结婚': '婚礼', '领证': '婚礼', '探病': '探病', '生病': '探病', '康复': '探病', '住院': '探病', '道歉': '道歉', '对不起': '道歉', '抱歉': '道歉', '毕业': '毕业', '乔迁': '乔迁', '开业': '开业', '升职': '升职', '入职': '入职'}
@@ -992,7 +912,7 @@ def revise_with_llm(plan: str, feedback: str) -> dict:
         return json.dumps(baseline, ensure_ascii=False)
 
 @register_tool(name='respond_to_user', description='当你准备好向用户输出本轮最终回复时，必须调用该工具结束本轮对话。携带：reply（自然语言回复）、ui（UI 动作类型）、data（按 ui 类型填充）、stage（协商后的下一业务阶段）、intent（你判断的用户本轮真实意图）。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言回复'}, 'ui': {'type': 'string', 'enum': [e.value for e in UIType], 'description': '小程序渲染的 UI 动作类型'}, 'data': {'type': 'object', 'description': '按 ui 类型约定的结构化数据'}, 'stage': {'type': 'string', 'description': '下一业务阶段，如 analyze/select_mode/view_plan/diy_design/image_gen/shop_recommend/done'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图：buying=有购买/挑选花束的明确意图；qa=问花卉/花艺知识或咨询（花期/养护/寓意/送什么花好）；chitchat=纯闲聊寒暄；design=要 DIY 定制专属花束；other=其他。判定依据是用户『想干什么』，不是本轮是否调了工具。'}}, 'required': ['reply', 'ui', 'data', 'stage']}, tags=['meta'])
-def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage: str='analyze', intent: str='other') -> str:
+def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage: str='analyze', intent: str='other') -> dict[str, Any]:
     """终结工具：模型以此结束本轮，参数由 agent 提取并校验后返回前端。"""
     if intent not in ('buying', 'qa', 'chitchat', 'design', 'other'):
         intent = 'other'

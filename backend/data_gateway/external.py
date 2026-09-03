@@ -102,6 +102,12 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
     return [dict(row) for row in rows]
 
 
+def discover_external(source_id: str, schema: str = 'public', sample_rows: int = 0) -> dict[str, Any]:
+    """只读发现外部 PostgreSQL 数据库的表结构、字段、外键与可选脱敏样本。
+
+    返回结构化的 schema profile，供 generate_mapping_draft 生成映射草案；
+    不会写入目标库，连接凭据仅从服务端环境变量读取。
+    """
     if not _IDENTIFIER.match(schema or ''):
         raise ValueError('invalid schema')
     sample_rows = _safe_limit(sample_rows, _MAX_SAMPLE_ROWS)

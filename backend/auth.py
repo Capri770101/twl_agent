@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-import secrets
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -12,10 +12,12 @@ from fastapi import Header, HTTPException, status
 
 from backend.config import settings
 
+logger = logging.getLogger('auth')
+
 
 def _secret() -> str:
     if not settings.JWT_SECRET:
-        raise HTTPException(status_code=503, detail='服务未配置 JWT_SECRET')
+        raise RuntimeError('服务未配置 JWT_SECRET，无法签发/校验访问令牌')
     return settings.JWT_SECRET
 
 
@@ -70,7 +72,9 @@ async def login_wechat(code: str) -> dict[str, Any]:
     response.raise_for_status()
     result = response.json()
     if result.get('errcode') or not result.get('openid'):
-        raise HTTPException(status_code=401, detail=f"微信登录失败：{result.get('errmsg', '无效 code')}")
+        # 不把微信 API 的原始 errmsg 透传给客户端，避免泄露接口细节。
+        logger.warning('[auth] 微信登录失败 errcode=%s', result.get('errcode'))
+        raise HTTPException(status_code=401, detail='微信登录失败，请重试')
     # 不把微信 openid 原文暴露给业务接口，数据库仍使用稳定 user_id。
     user_id = 'wx_' + hashlib.sha256(result['openid'].encode()).hexdigest()[:24]
     return {'user_id': user_id, 'openid': result['openid'], 'unionid': result.get('unionid')}

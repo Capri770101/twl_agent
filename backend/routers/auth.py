@@ -32,7 +32,7 @@ async def wechat_login(req: WechatLoginRequest) -> dict[str, str]:
 
 
 @router.get('/me')
-async def me(user_id: str | None = Depends(current_user)) -> dict[str, str]:
+async def me(user_id: str | None = Depends(current_user)) -> dict[str, str | bool]:
     if not user_id:
-        return {'authenticated': 'false'}
-    return {'authenticated': 'true', 'user_id': user_id}
+        return {'authenticated': False}
+    return {'authenticated': True, 'user_id': user_id}

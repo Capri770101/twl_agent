@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from backend.storage.db import get_conn, transaction
+from backend.storage.db import transaction
 from domain.requirements import FlowerRequirement
 
 logger = logging.getLogger('memory')
@@ -17,18 +17,26 @@ def _now() -> str:
 
 
 async def get_or_create_session(user_id: str, conversation_id: str | None = None, shop_id: str | None = None) -> str:
-    with transaction() as conn:
-        if conversation_id:
-            row = conn.execute('SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ?', (conversation_id, user_id)).fetchone()
-            if row:
+    if conversation_id:
+        with transaction() as conn:
+            row = conn.execute('SELECT session_id, user_id FROM sessions WHERE session_id = ?', (conversation_id,)).fetchone()
+            if row and row['user_id'] == user_id:
                 return row['session_id']
-            conn.execute('INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-                         (conversation_id, user_id, 'analyze', '新对话', shop_id, _now(), _now()))
+            if row:
+                raise PermissionError('conversation does not belong to user')
+            conn.execute(
+                'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?) '
+                'ON CONFLICT (session_id) DO NOTHING',
+                (conversation_id, user_id, 'analyze', '新对话', shop_id, _now(), _now())
+            )
             return conversation_id
-        session_id = uuid.uuid4().hex
-        conn.execute('INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-                     (session_id, user_id, 'analyze', '新对话', shop_id, _now(), _now()))
-        return session_id
+    session_id = uuid.uuid4().hex
+    with transaction() as conn:
+        conn.execute(
+            'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+            (session_id, user_id, 'analyze', '新对话', shop_id, _now(), _now())
+        )
+    return session_id
 
 
 async def create_conversation(user_id: str, title: str = '新对话', shop_id: str | None = None) -> str:
@@ -43,15 +51,18 @@ async def create_conversation(user_id: str, title: str = '新对话', shop_id: s
 
 
 async def save_messages(session_id: str, messages: list[dict[str, Any]]) -> None:
-    """批量保存消息。"""
+    """批量保存消息（单事务，避免逐条提交）。"""
+    rows: list[tuple[Any, ...]] = []
     for msg in messages:
-        await save_message(
-            session_id,
-            str(msg.get('role', 'user')),
-            str(msg.get('content', '') or ''),
-            ui=msg.get('ui'),
-            data=msg.get('data')
-        )
+        ui = json.dumps(msg['ui'], ensure_ascii=False) if msg.get('ui') else None
+        data = json.dumps(msg['data'], ensure_ascii=False) if msg.get('data') else None
+        rows.append((session_id, str(msg.get('role', 'user')), str(msg.get('content', '') or ''), ui, data, _now()))
+    if rows:
+        with transaction() as conn:
+            conn.executemany(
+                'INSERT INTO messages(session_id, role, content, ui, data, created_at) VALUES (?,?,?,?,?,?)',
+                rows,
+            )
 
 
 async def get_stage(session_id: str) -> str:
@@ -99,6 +110,7 @@ async def get_long_term(user_id: str) -> dict[str, Any]:
         try:
             result[row['key']] = json.loads(row['value'])
         except Exception:
+            logger.warning('[memory] 用户 %s 偏好 %s 值非 JSON，按原文返回', user_id, row['key'])
             result[row['key']] = row['value']
     return result
 
@@ -106,7 +118,8 @@ async def get_long_term(user_id: str) -> dict[str, Any]:
 async def set_long_term(user_id: str, key: str, value: Any) -> None:
     with transaction() as conn:
         conn.execute(
-            'INSERT OR REPLACE INTO user_preferences(user_id, key, value, updated_at) VALUES (?,?,?,?)',
+            'INSERT INTO user_preferences(user_id, key, value, updated_at) VALUES (?,?,?,?) '
+            'ON CONFLICT (user_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at',
             (user_id, key, json.dumps(value, ensure_ascii=False), _now())
         )
 
@@ -198,23 +211,31 @@ async def get_conversation(conversation_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-async def delete_conversation(conversation_id: str) -> bool:
+async def delete_conversation(conversation_id: str, user_id: str | None = None) -> bool:
     with transaction() as conn:
+        if user_id:
+            row = conn.execute('SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ?', (conversation_id, user_id)).fetchone()
+            if not row:
+                return False
         conn.execute('DELETE FROM messages WHERE session_id = ?', (conversation_id,))
         conn.execute('DELETE FROM sessions WHERE session_id = ?', (conversation_id,))
     return True
 
 
-async def get_user_memories(user_id: str, category: str | None = None) -> list[dict[str, Any]]:
+async def get_user_memories(user_id: str, category: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit or 100), 1000))
     with transaction() as conn:
         if category:
-            rows = conn.execute('SELECT key, value, confidence FROM memories WHERE user_id = ? AND category = ?', (user_id, category)).fetchall()
+            rows = conn.execute('SELECT key, value, confidence FROM memories WHERE user_id = ? AND category = ? LIMIT ?', (user_id, category, limit)).fetchall()
         else:
-            rows = conn.execute('SELECT key, value, confidence FROM memories WHERE user_id = ?', (user_id,)).fetchall()
+            rows = conn.execute('SELECT key, value, confidence FROM memories WHERE user_id = ? LIMIT ?', (user_id, limit)).fetchall()
     return [dict(r) for r in rows]
 
 
 async def upsert_user_memory(user_id: str, category: str, key: str, value: str, confidence: float = 1.0) -> None:
     with transaction() as conn:
-        conn.execute('INSERT OR REPLACE INTO memories(user_id, category, key, value, confidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-                     (user_id, category, key, value, confidence, _now(), _now()))
+        conn.execute(
+            'INSERT INTO memories(user_id, category, key, value, confidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?) '
+            'ON CONFLICT (user_id, category, key) DO UPDATE SET value=EXCLUDED.value, confidence=EXCLUDED.confidence, updated_at=EXCLUDED.updated_at',
+            (user_id, category, key, value, confidence, _now(), _now())
+        )

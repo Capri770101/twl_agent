@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from backend.storage.db import get_conn, transaction
+from backend.storage.db import transaction
 
 logger = logging.getLogger('repository')
 
 
 class Repository:
-    """数据仓库：直接读写 SQLite。"""
+    """数据仓库：直接读写 PostgreSQL。"""
 
     async def search_plans(self, keyword: str = '', limit: int = 10, **kwargs) -> list[dict[str, Any]]:
         with transaction() as conn:
@@ -27,7 +27,7 @@ class Repository:
             row = conn.execute('SELECT * FROM plans WHERE id = ?', (plan_id,)).fetchone()
         return dict(row) if row else None
 
-    async def search_shops(self, keyword: str = '', lat: float = None, lng: float = None, limit: int = 10, **kwargs) -> list[dict[str, Any]]:
+    async def search_shops(self, keyword: str = '', lat: float | None = None, lng: float | None = None, limit: int = 10, **kwargs) -> list[dict[str, Any]]:
         with transaction() as conn:
             if keyword:
                 rows = conn.execute(

@@ -68,11 +68,11 @@ async def chat(req: ChatRequest, authenticated_user: str | None = Depends(curren
             get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id),
             timeout=settings.REQUEST_TIMEOUT
         )
-    except TimeoutError:
+    except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail='处理超时，请简化问题后重试')
     except Exception as exc:
         logger.exception('智能体执行失败')
-        raise HTTPException(status_code=500, detail=f'智能体执行失败: {type(exc).__name__}')
+        raise HTTPException(status_code=500, detail='智能体执行失败，请稍后重试')
 
     final_sid = result.session_id
     await mem_store.update_conversation_preview(final_sid, req.message[:60])
@@ -101,10 +101,10 @@ async def chat_stream(req: ChatRequest, authenticated_user: str | None = Depends
                 yield f'event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
         except Exception as exc:
             logger.exception('SSE 流异常')
-            yield f"event: error\ndata: {json.dumps({'message': str(exc)}, ensure_ascii=False)}\n\n"
+            yield f"event: error\ndata: {json.dumps({'message': '处理过程中出现错误，请稍后重试'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_generator(), media_type='text/event-stream',
-                              headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+                              headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'})
 
 
 @router.post('/chat/reset')
@@ -112,11 +112,11 @@ async def reset(req: ResetRequest, authenticated_user: str | None = Depends(curr
     """清空会话。"""
     require_user(req.user_id, authenticated_user)
     if req.session_id:
-        await mem_store.delete_conversation(req.session_id)
+        await mem_store.delete_conversation(req.session_id, user_id=req.user_id)
         return {'ok': True, 'session_id': req.session_id}
     convs = await mem_store.list_conversations(req.user_id)
     if convs:
-        await mem_store.delete_conversation(convs[0]['id'])
+        await mem_store.delete_conversation(convs[0]['id'], user_id=req.user_id)
         return {'ok': True, 'session_id': convs[0]['id']}
     return {'ok': True}
 
@@ -128,11 +128,12 @@ async def list_conversations(user_id: str, authenticated_user: str | None = Depe
 
 
 @router.get('/conversations/{conversation_id}/messages')
-async def get_messages(conversation_id: str, limit: int = 50, authenticated_user: str | None = Depends(current_user)) -> list[dict[str, Any]]:
-    if authenticated_user:
-        conversation = await mem_store.get_conversation(conversation_id)
-        if not conversation or conversation.get('user_id') != authenticated_user:
-            raise HTTPException(status_code=403, detail='无权访问该会话')
+async def get_messages(conversation_id: str, user_id: str, limit: int = 50, authenticated_user: str | None = Depends(current_user)) -> list[dict[str, Any]]:
+    require_user(user_id, authenticated_user)
+    conversation = await mem_store.get_conversation(conversation_id)
+    if not conversation or conversation.get('user_id') != user_id:
+        raise HTTPException(status_code=403, detail='无权访问该会话')
+    limit = max(1, min(int(limit), 200))
     return await mem_store.load_history(conversation_id, limit)
 
 
@@ -145,8 +146,11 @@ async def create_conversation(req: CreateConvRequest, authenticated_user: str | 
 
 @router.get('/tasks/{task_id}')
 async def get_task(task_id: str, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
-    """生图任务状态轮询（generate_effect_image 返回 poll 地址）。"""
-    # 任务表当前没有 user_id，暂时要求已认证用户访问；后续可增加归属字段做精确授权。
+    """生图任务状态轮询（generate_effect_image 返回 poll 地址）。
+
+    生产环境必须携带 Bearer 凭证，且任务按 user_id 归属校验；开发环境
+    关闭鉴权时 task_id 为高熵随机值，仍可安全轮询。
+    """
     if settings.AUTH_REQUIRED and not authenticated_user:
         raise HTTPException(status_code=401, detail='需要登录凭证')
     return await task_store.get_image_task(task_id, user_id=authenticated_user)

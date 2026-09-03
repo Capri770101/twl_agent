@@ -35,26 +35,19 @@ flora_agent_package/
 ├── main.py                    # FastAPI 服务入口
 ├── agent/                     # 智能体核心模块
 │   ├── agent.py              # ReAct 智能体实现
-│   ├── tools.py              # 工具函数定义
-│   ├── engine/               # 推理引擎
-│   ├── knowledge/            # 知识库
-│   │   ├── flowers.json      # 花材知识
-│   │   ├── styles.json       # 花艺风格
-│   │   ├── scenes.json       # 应用场景
-│   │   ├── pairings.json     # 搭配建议
-│   │   ├── budget.json       # 预算方案
-│   │   └── packaging.json    # 包装建议
+│   ├── tools.py              # 花艺核心工具
+│   ├── data_tools.py         # 文件/数据库/外部数据源工具
+│   ├── diy_tools.py          # DIY 方案与生图工具
+│   ├── shop_tools.py         # 店铺推荐与花材匹配
 │   ├── skills/               # 技能模块
-│   └── mcp_servers/          # MCP 服务
+│   ├── engine/               # 前端协议/动作协议
+│   └── knowledge/            # 知识库
 ├── backend/                   # 后端服务
 │   ├── config.py             # 配置管理
 │   ├── routers/              # API 路由
-│   │   └── chat.py           # 对话接口
-│   ├── storage/              # 存储层
-│   └── data_gateway/         # 数据网关
+│   ├── storage/              # 内部 PostgreSQL 存储
+│   └── data_gateway/         # 内外部数据网关与映射
 ├── scripts/                   # 脚本工具
-│   ├── import_flower_knowledge.py  # 知识导入脚本
-│   └── test_agent_local.py         # 本地测试脚本
 ├── .env.example               # 环境变量模板
 ├── requirements.txt           # Python 依赖
 ├── Dockerfile                 # Docker 镜像
@@ -133,7 +126,7 @@ python scripts/test_agent_local.py
 |------|------|--------|
 | `APP_ENV` | 运行环境 | `prod` |
 | `PORT` | 服务端口 | `8000` |
-| `DATABASE_URL` | 数据库连接串 | SQLite |
+| `DATABASE_URL` | 智能体内部 PostgreSQL 连接串；生产环境禁止 SQLite | - |
 | `IMAGE_PROVIDER` | 图像生成提供商 | `mock` |
 | `IMAGE_PUBLIC_BASE_URL` | 生图结果公网前缀（CDN/对象存储域名），留空用本服务 `/generated` | - |
 | `WECHAT_APPID` | 微信小程序 AppID（兼容 `WX_APPID`） | - |
@@ -141,6 +134,8 @@ python scripts/test_agent_local.py
 | `TENCENT_MAP_KEY` | 腾讯地图密钥 | - |
 | `REDIS_URL` | Redis 连接串 | - |
 | `ALLOWED_ORIGINS` | CORS 允许域名 | `*` |
+
+> 外部目标平台数据库不在 `.env.example` 中固定声明，而是按数据源单独配置 `PLATFORM_DB_<SOURCE_ID>_URL`。例如 `PLATFORM_DB_MAIN_URL` 用于 `source_id=main` 的只读连接。
 
 ### 支持的 LLM 提供商
 
@@ -156,15 +151,12 @@ python scripts/test_agent_local.py
 
 | 提供商 | Base URL | 模型示例 |
 |--------|----------|----------|
+| mock | 本地内置 | - |
 | hy 大模型（推荐） | `https://tokenhub.tencentmaas.com/v1/responses` | `Hy-Image-3.0` |
-| Flux | `https://api.bfl.ml/v1` | `flux-schnell` |
-| DALL-E | `https://api.openai.com/v1` | `dall-e-3` |
-| 可灵 | `https://api.klingai.com/v1` | `kling-v1` |
-| ComfyUI | `http://localhost:8188` | 本地部署 |
 
-> 注：当前代码已实现 `mock` 与 `hy` 两个 provider（见 `backend/storage/tasks.py`）；Flux / DALL-E / 可灵 / ComfyUI 为**预留声明**，接入前需按同一接口补充实现，否则设置后仍会走 mock。
+> 注：当前代码仅实现 `mock` 与 `hy` 两个 provider；其他 provider 为预留声明，接入前需补充对应实现，否则仍会走 mock。
 
-**生图结果存储**：PNG 写入本地 `data/generated/{task_id}.png`，经本服务 `GET /generated/{task_id}.png`（已静态挂载）访问；`/chat` 的 `image_task` 数据里 `result_url` 即该地址。若生产环境把图片托管到 CDN/对象存储，配置 `IMAGE_PUBLIC_BASE_URL=https://你的域名`，`result_url` 会自动带上公网前缀。
+**生图结果存储**：PNG 写入本地 `data/generated/{task_id}.png`，经本服务 `GET /generated/{task_id}.png` 访问；`/chat` 的 `image_task` 数据里 `result_url` 即该地址。若生产环境把图片托管到 CDN/对象存储，配置 `IMAGE_PUBLIC_BASE_URL=https://你的域名`，`result_url` 会自动带上公网前缀。
 
 **任务状态持久化**：任务状态写入 PostgreSQL 的 `image_tasks` 表，不再依赖进程内存，因此服务重启后已完成任务仍可通过 `GET /tasks/{task_id}` 查询；服务重启时遗留的 `processing` 任务会标记为 `failed`，避免客户端无限轮询。图片文件本身仍需由本地磁盘或对象存储/CDN负责保留。
 
@@ -261,16 +253,14 @@ POST /chat
 **响应示例**：
 ```json
 {
+  "user_id": "user_123456",
   "session_id": "conv_xxxx",
   "reply": "根据您的需求，我推荐以下方案...",
-  "ui_cards": [
-    {
-      "type": "flower_recommendation",
-      "data": { ... }
-    }
-  ],
-  "thinking": "用户预算200元，需要浪漫风格...",
-  "tools_used": ["knowledge_search", "generate_image"]
+  "ui": "plan_card",
+  "data": {"plan_id": "P001", "name": "生日玫瑰花束", "price": 199},
+  "action": {"type": "show_plan", "payload": {"ui": "plan_card"}, "required_capabilities": ["show_plan_page"], "fallback": "请先展示文本和方案数据。"},
+  "tool_calls": [],
+  "stage": "plan_confirm"
 }
 ```
 
@@ -283,18 +273,21 @@ POST /chat/stream
 **请求体**：同同步对话接口
 
 **响应格式**（SSE）：
-```
+```text
 event: thinking
 data: {"content": "正在分析您的需求..."}
+
+event: tool_call
+data: {"tool": "db_discover", "status": "running"}
+
+event: tool_result
+data: {"tool": "db_discover", "status": "ok"}
 
 event: text
 data: {"content": "根据您的需求，我推荐..."}
 
-event: tool_call
-data: {"tool": "generate_image", "status": "running"}
-
 event: done
-data: {"session_id": "conv_xxxx", "tools_used": ["knowledge_search"]}
+data: {"session_id": "conv_xxxx"}
 ```
 
 **事件类型**：

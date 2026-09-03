@@ -319,17 +319,37 @@ def sample_rows(table: str, limit: int = 5) -> list[dict[str, Any]]:
 
 
 def query_readonly(sql: str, max_rows: int = _MAX_QUERY_ROWS) -> dict[str, Any]:
-    sql = (sql or '').strip().rstrip(';')
-    if not sql.lower().startswith('select'):
-        raise PermissionError('only SELECT queries are allowed')
-    if _DISALLOWED_SQL.search(sql):
-        raise PermissionError('disallowed SQL detected')
+    sql = _validate_readonly_sql(sql)
     conn = get_conn()
     all_rows = conn.execute(sql).fetchall()
     rows = all_rows[:max(1, min(int(max_rows or 1), _MAX_QUERY_ROWS))]
     columns = list(rows[0].keys()) if rows else []
     data = [list(r) for r in rows]
     return {'columns': columns, 'rows': data, 'row_count': len(rows)}
+
+
+def _validate_readonly_sql(sql: str) -> str:
+    """校验只读 SQL：仅允许单条 SELECT/WITH，拒绝多语句、注释与写关键字。
+
+    通过剥离注释后再做关键字/多语句检测，防止用注释或分号绕过黑名单。
+    """
+    sql = (sql or '').strip()
+    if not sql:
+        raise PermissionError('empty SQL')
+    stripped = re.sub(r'--[^\n]*', ' ', sql)
+    stripped = re.sub(r'/\*.*?\*/', ' ', stripped, flags=re.S)
+    # 先把字符串字面量去掉，再检测分号，避免误伤包含分号的合法字符串
+    stripped = re.sub(r"'(?:''|[^'])*'", "''", stripped)
+    body = stripped.strip()
+    while body.endswith(';'):
+        body = body[:-1].strip()
+    if ';' in body:
+        raise PermissionError('multiple statements are not allowed')
+    if not body.lower().startswith(('select', 'with')):
+        raise PermissionError('only SELECT queries are allowed')
+    if _DISALLOWED_SQL.search(body):
+        raise PermissionError('disallowed SQL detected')
+    return sql
 
 
 def discover_database(sample_limit: int = 1) -> dict[str, Any]:

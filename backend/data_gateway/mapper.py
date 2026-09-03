@@ -28,6 +28,7 @@ from backend.data_gateway.gateway import _validate_table, describe_table, list_t
 
 _IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _MANUAL_MAPPING_PATH = Path.cwd() / 'data_mapping.json'
+_MAX_TABLES = 200
 
 CANONICAL_ENTITIES: dict[str, dict[str, Any]] = {
     'plan': {
@@ -171,7 +172,7 @@ def generate_mapping_draft(profile: dict[str, Any]) -> dict[str, Any]:
     }
     for entity_name, entity_def in CANONICAL_ENTITIES.items():
         candidates: list[dict[str, Any]] = []
-        for item in tables[:_MAX_TABLES if '_MAX_TABLES' in globals() else 200]:
+        for item in tables[:_MAX_TABLES]:
             if not isinstance(item, dict):
                 continue
             table = str(item.get('table', ''))
@@ -205,6 +206,7 @@ def generate_mapping_draft(profile: dict[str, Any]) -> dict[str, Any]:
     return draft
 
 
+def infer_mapping(force_refresh: bool = False) -> dict[str, Any]:
     """自动推断未知数据库到标准业务实体的映射。"""
     if not force_refresh and _CACHE:
         return _CACHE
@@ -358,40 +360,37 @@ def auto_create_order(user_id: str, plan_id: str, total_price: float, status: st
         'created_at': datetime.now(UTC).isoformat(timespec='seconds'),
     }
     sql, params = _build_insert('order', mapping, data)
-    from backend.storage.db import get_conn
-    conn = get_conn()
-    conn.execute(sql, params)
-    conn.commit()
-
+    from backend.storage.db import transaction
     inserted_items = 0
-    if items and isinstance(manual.get('order_items'), dict):
-        item_ent = manual['order_items']
-        item_table = item_ent.get('table')
-        item_cols = item_ent.get('columns') or {}
-        if item_table and _IDENTIFIER.match(item_table) and item_cols:
-            for it in items:
-                row = {
-                    'id': it.get('id') or f"OI{uuid.uuid4().hex[:10]}",
-                    'order_id': oid,
-                    'plan_id': it.get('plan_id') or plan_id,
-                    'name': it.get('name', ''),
-                    'price': it.get('price', 0),
-                    'qty': it.get('qty', 1),
-                }
-                cols = []
-                vals = []
-                for canonical, value in row.items():
-                    actual = item_cols.get(canonical)
-                    if actual and _IDENTIFIER.match(actual):
-                        cols.append(actual)
-                        vals.append(value)
-                if not cols:
-                    continue
-                col_sql = ', '.join(f'"{c}"' for c in cols)
-                placeholders = ', '.join('?' for _ in cols)
-                conn.execute(f'INSERT INTO "{item_table}" ({col_sql}) VALUES ({placeholders})', vals)
-                inserted_items += 1
-            conn.commit()
+    with transaction() as conn:
+        conn.execute(sql, params)
+        if items and isinstance(manual.get('order_items'), dict):
+            item_ent = manual['order_items']
+            item_table = item_ent.get('table')
+            item_cols = item_ent.get('columns') or {}
+            if item_table and _IDENTIFIER.match(item_table) and item_cols:
+                for it in items:
+                    row = {
+                        'id': it.get('id') or f"OI{uuid.uuid4().hex[:10]}",
+                        'order_id': oid,
+                        'plan_id': it.get('plan_id') or plan_id,
+                        'name': it.get('name', ''),
+                        'price': it.get('price', 0),
+                        'qty': it.get('qty', 1),
+                    }
+                    cols = []
+                    vals = []
+                    for canonical, value in row.items():
+                        actual = item_cols.get(canonical)
+                        if actual and _IDENTIFIER.match(actual):
+                            cols.append(actual)
+                            vals.append(value)
+                    if not cols:
+                        continue
+                    col_sql = ', '.join(f'"{c}"' for c in cols)
+                    placeholders = ', '.join('?' for _ in cols)
+                    conn.execute(f'INSERT INTO "{item_table}" ({col_sql}) VALUES ({placeholders})', vals)
+                    inserted_items += 1
 
     return {'order_id': oid, 'inserted': True, 'inserted_items': inserted_items}
 

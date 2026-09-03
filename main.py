@@ -8,7 +8,6 @@
     docker-compose up -d
 """
 
-import os
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager

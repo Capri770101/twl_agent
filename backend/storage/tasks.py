@@ -1,12 +1,35 @@
 """独立封装版 tasks.py —— 生图任务管理（支持 hy 大模型）。"""
 from __future__ import annotations
 import asyncio
+import ipaddress
+import socket
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from backend.config import settings
 from backend.storage.db import transaction
 from backend.storage.object_store import save_generated
+
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _assert_public_image_url(image_url: str) -> None:
+    """校验生图结果 URL 为公网地址，阻止 SSRF（云元数据/内网/本机）。"""
+    parsed = urlparse(image_url)
+    if parsed.scheme not in ('http', 'https'):
+        raise PermissionError('invalid image url scheme')
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError('image url missing hostname')
+    try:
+        addresses = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError('image url hostname cannot be resolved') from exc
+    for addr in addresses:
+        ip = ipaddress.ip_address(addr[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise PermissionError('image url resolves to a private/internal address')
 
 
 def _save_task(task_id: str, status: str, prompt: str, user_id: str | None = None, result_url: str | None = None, error: str | None = None) -> None:
@@ -77,8 +100,13 @@ async def _generate_with_hy(prompt: str) -> str:
         if 'data' in result and len(result['data']) > 0:
             image_url = result['data'][0].get('url', '')
             if image_url:
-                # 下载图像数据
-                img_response = await client.get(image_url)
+                _assert_public_image_url(image_url)
+                # 下载图像数据（带大小上限）
+                async with httpx.AsyncClient(timeout=120.0) as dl:
+                    img_response = await dl.get(image_url)
+                img_response.raise_for_status()
+                if len(img_response.content) > _MAX_IMAGE_BYTES:
+                    raise ValueError('generated image exceeds size limit')
                 return img_response.content
         elif 'image' in result:
             import base64
@@ -115,12 +143,18 @@ async def create_image_task(prompt: str, user_id: str | None = None) -> str:
 
 
 async def get_image_task(task_id: str, user_id: str | None = None) -> dict[str, Any]:
-    """获取任务状态。"""
+    """获取任务状态；提供 user_id 时严格按归属过滤，否则仅内部调用。"""
     with transaction() as conn:
-        row = conn.execute(
-            'SELECT task_id, user_id, status, prompt, result_url, error, created_at, updated_at FROM image_tasks WHERE task_id=? AND (? IS NULL OR user_id=?)',
-            (task_id, user_id, user_id),
-        ).fetchone()
+        if user_id:
+            row = conn.execute(
+                'SELECT task_id, user_id, status, prompt, result_url, error, created_at, updated_at FROM image_tasks WHERE task_id=? AND user_id=?',
+                (task_id, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                'SELECT task_id, user_id, status, prompt, result_url, error, created_at, updated_at FROM image_tasks WHERE task_id=?',
+                (task_id,),
+            ).fetchone()
     if not row:
         return {'task_id': task_id, 'status': 'not_found'}
     return dict(row)

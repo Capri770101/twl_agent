@@ -6,11 +6,20 @@ from pathlib import Path
 from backend.config import settings
 
 
+def _safe_name(filename: str) -> str:
+    """仅保留文件名（去掉任何路径成分），阻止目录穿越。"""
+    name = Path(filename).name
+    if not name or name in ('.', '..'):
+        raise ValueError('invalid filename')
+    return name
+
+
 def save_generated(filename: str, data: bytes) -> str:
+    name = _safe_name(filename)
     path = Path(settings.DB_PATH).parent / 'generated'
     path.mkdir(parents=True, exist_ok=True)
-    (path / filename).write_bytes(data)
-    url = f'/generated/{filename}'
+    (path / name).write_bytes(data)
+    url = f'/generated/{name}'
     base = (getattr(settings, 'IMAGE_PUBLIC_BASE_URL', '') or '').strip()
     if base:
         url = f'{base.rstrip("/")}{url}'
@@ -18,5 +27,6 @@ def save_generated(filename: str, data: bytes) -> str:
 
 
 def read_generated(filename: str) -> bytes | None:
-    path = Path(settings.DB_PATH).parent / 'generated' / filename
+    name = _safe_name(filename)
+    path = Path(settings.DB_PATH).parent / 'generated' / name
     return path.read_bytes() if path.exists() else None

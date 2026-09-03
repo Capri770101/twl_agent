@@ -39,7 +39,11 @@ async def _load(key: str) -> Any | None:
 
 async def _save(key: str, value: Any) -> None:
     with transaction() as c:
-        c.execute('INSERT OR REPLACE INTO operations_config(key, value) VALUES (?,?)', (key, json.dumps(value, ensure_ascii=False)))
+        c.execute(
+            'INSERT INTO operations_config(key, value) VALUES (?,?) '
+            'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+            (key, json.dumps(value, ensure_ascii=False))
+        )
 
 
 async def get_config(key: str, default: Any = None) -> Any:
