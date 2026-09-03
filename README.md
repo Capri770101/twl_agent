@@ -220,77 +220,16 @@ GET /ui-contract
 
 ### 对话接口
 
-#### 同步对话
-
-```
+```text
 POST /chat
-```
-
-**请求体**：
-```json
-{
-  "message": "我想给女朋友送花，预算200元左右",
-  "user_id": "user_123456",
-  "session_id": "optional-session-id",
-  "location": {
-    "lat": 39.9042,
-    "lng": 116.4074
-  },
-  "shop_id": "shop_789"
-}
-```
-
-**参数说明**：
-
-| 参数 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `message` | string | ✅ | 用户输入的消息 |
-| `user_id` | string | ✅ | 用户唯一标识（由宿主平台传入） |
-| `session_id` | string | ❌ | 会话 ID，不传则创建新会话 |
-| `location` | object | ❌ | 用户位置 `{lat, lng}` |
-| `shop_id` | string | ❌ | 店铺 ID，锁定后整个会话不变 |
-
-**响应示例**：
-```json
-{
-  "user_id": "user_123456",
-  "session_id": "conv_xxxx",
-  "reply": "根据您的需求，我推荐以下方案...",
-  "ui": "plan_card",
-  "data": {"plan_id": "P001", "name": "生日玫瑰花束", "price": 199},
-  "action": {"type": "show_plan", "payload": {"ui": "plan_card"}, "required_capabilities": ["show_plan_page"], "fallback": "请先展示文本和方案数据。"},
-  "tool_calls": [],
-  "stage": "plan_confirm"
-}
-```
-
-#### SSE 流式对话
-
-```
 POST /chat/stream
 ```
 
-**请求体**：同同步对话接口
+请求体包含：`message`、`user_id`、`session_id?`、`location?`、`shop_id?`。生产环境由宿主平台完成用户登录，后端要求 `user_id` 与 token 一致。
 
-**响应格式**（SSE）：
-```text
-event: thinking
-data: {"content": "正在分析您的需求..."}
+`/chat` 返回当前代码中的标准结构：`reply`、`ui`、`data`、`action`、`tool_calls`、`session_id`、`stage`；其中 `ui` 由 `UIType` 决定，`action` 由 `AgentAction` 决定。
 
-event: tool_call
-data: {"tool": "db_discover", "status": "running"}
-
-event: tool_result
-data: {"tool": "db_discover", "status": "ok"}
-
-event: text
-data: {"content": "根据您的需求，我推荐..."}
-
-event: done
-data: {"session_id": "conv_xxxx"}
-```
-
-**事件类型**：
+`/chat/stream` 使用 SSE，常见事件为 `thinking`、`tool_call`、`tool_result`、`text`、`error`。
 
 | 事件 | 说明 |
 |------|------|
