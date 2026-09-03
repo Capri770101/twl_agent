@@ -25,7 +25,7 @@ _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS memories (id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, category TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""",
     """CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique ON memories(user_id, category, key)""",
     """CREATE TABLE IF NOT EXISTS user_preferences (user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, key))""",
-    """CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, price DOUBLE PRECISION NOT NULL DEFAULT 0, desc TEXT, effect_image_url TEXT, merchant_name TEXT, tags TEXT, style TEXT, category_id TEXT, rating DOUBLE PRECISION NOT NULL DEFAULT 4.8, sold INTEGER NOT NULL DEFAULT 0, ai_reason TEXT, created_at TIMESTAMPTZ NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS plans (id TEXT PRIMARY KEY, name TEXT NOT NULL, price DOUBLE PRECISION NOT NULL DEFAULT 0, "desc" TEXT, effect_image_url TEXT, merchant_name TEXT, tags TEXT, style TEXT, category_id TEXT, rating DOUBLE PRECISION NOT NULL DEFAULT 4.8, sold INTEGER NOT NULL DEFAULT 0, ai_reason TEXT, created_at TIMESTAMPTZ NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS shops (id TEXT PRIMARY KEY, name TEXT NOT NULL, lat DOUBLE PRECISION, lng DOUBLE PRECISION, address TEXT, phone TEXT, hours TEXT, status TEXT NOT NULL DEFAULT 'active', rating DOUBLE PRECISION NOT NULL DEFAULT 4.8, created_at TIMESTAMPTZ NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS shop_plans (shop_id TEXT NOT NULL, plan_id TEXT NOT NULL, stock INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'on', PRIMARY KEY (shop_id, plan_id))""",
     """CREATE TABLE IF NOT EXISTS categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, shop_id TEXT, sort INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL)""",
@@ -76,7 +76,11 @@ class ConnectionAdapter:
         return self._conn.execute(_convert_placeholders(sql), params or ())
 
     def executemany(self, sql: str, params):
-        return self._conn.executemany(_convert_placeholders(sql), params)
+        # psycopg3 的 Connection 对象没有 executemany（只有 Cursor 有），
+        # 这里显式开 cursor 执行，保持与 sqlite3 一致的上层调用方式。
+        with self._conn.cursor() as cur:
+            cur.executemany(_convert_placeholders(sql), params)
+        return None
 
     def commit(self) -> None:
         self._conn.commit()

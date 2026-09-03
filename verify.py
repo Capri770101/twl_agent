@@ -35,6 +35,13 @@ except Exception as e:
     print(f"[FAIL] backend.routers.chat: {e}")
 
 try:
+    from backend.routers.auth import router
+    from backend.auth import require_platform_key, derive_platform_user_id
+    print("[OK] backend.routers.auth (multi-platform)")
+except Exception as e:
+    print(f"[FAIL] backend.routers.auth: {e}")
+
+try:
     from agent.agent import ReActAgent
     print("[OK] agent.agent")
 except Exception as e:
