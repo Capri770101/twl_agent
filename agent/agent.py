@@ -188,7 +188,7 @@ class ReActAgent:
                 final_reply = final_reply or '我已经为你整理好相关结果啦，请查看下方卡片～'
             else:
                 final_reply = final_reply or '抱歉，我思考得太久啦，请简化需求或分步骤再问我～'
-        new_stage, ui, data, final_reply, llm_intent = self._post_process(
+        new_stage, ui, data, final_reply, llm_intent = await self._post_process(
             respond_args, tool_log, incoming, message, final_reply, user_id, sid, location, new_msgs,
         )
         _img_intent = any(w in message for w in ('效果图', '生图', '生成'))

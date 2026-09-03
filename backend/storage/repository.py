@@ -15,7 +15,7 @@ class Repository:
         with transaction() as conn:
             if keyword:
                 rows = conn.execute(
-                    'SELECT * FROM plans WHERE name LIKE ? OR desc LIKE ? OR tags LIKE ? LIMIT ?',
+                    'SELECT * FROM plans WHERE name LIKE ? OR "desc" LIKE ? OR tags LIKE ? LIMIT ?',
                     (f'%{keyword}%', f'%{keyword}%', f'%{keyword}%', limit)
                 ).fetchall()
             else:

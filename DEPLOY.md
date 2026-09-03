@@ -18,7 +18,7 @@
 
 > **非 UI 生图依赖也必须满足**：生产环境需要 PostgreSQL、`psycopg[binary]`、可写的图片目录或对象存储/CDN。生图任务状态持久化在 `image_tasks` 表；图片文件默认写入 `data/generated/`。使用 CDN/对象存储时请配置 `IMAGE_PUBLIC_BASE_URL`，并设置对象存储生命周期清理规则。
 
-> **鉴权必读**：本包提供 `POST /auth/anonymous`、`POST /auth/wx-login`、`GET /auth/me`。生产环境必须配置至少 32 位 `JWT_SECRET`，服务会强制 Bearer 鉴权；不要再仅凭请求体里的 `user_id` 识别用户。微信配置推荐使用 `WECHAT_APPID` / `WECHAT_SECRET`，同时兼容 `WX_APPID` / `WX_SECRET`。
+> **鉴权必读**：本包提供 `POST /auth/token`（通用平台接入，请求头 `X-API-Key` + 请求体 `external_user_id`）、`POST /auth/anonymous`、`POST /auth/wx-login`、`GET /auth/me`。生产环境必须配置至少 32 位 `JWT_SECRET`，服务会强制 Bearer 鉴权；多平台接入建议同时配置 `PLATFORM_API_KEYS`，匿名登录在生产环境默认关闭。微信配置推荐使用 `WECHAT_APPID` / `WECHAT_SECRET`，同时兼容 `WX_APPID` / `WX_SECRET`。
 
 > **数据库没有 `image_tasks` 表怎么办？** 有建表权限时，服务启动会通过 `CREATE TABLE IF NOT EXISTS` 自动创建；生产数据库通常由 DBA 管理、应用账号没有 DDL 权限时，请先执行仓库中的 [`migrations/001_image_tasks.sql`](migrations/001_image_tasks.sql)，再启动服务。启动自检失败会直接提示迁移文件路径。
 
@@ -39,7 +39,11 @@ PORT=8000                      # 监听端口
 # ═══════════════════════════════════════════════════════════
 # 2. 数据库
 # ═══════════════════════════════════════════════════════════
-DATABASE_URL=postgresql://user:pass@localhost:5432/flora_agent
+# 方式一：使用 docker-compose 自带的 postgres 容器（host 固定写 postgres）
+DATABASE_URL=postgresql://flora:密码@postgres:5432/flora_agent
+POSTGRES_PASSWORD=数据库容器密码          # 仅供 compose 中 postgres 容器使用
+# 方式二：外部/云数据库，直接写实际地址，POSTGRES_PASSWORD 可留空
+# DATABASE_URL=postgresql://user:pass@host:5432/flora_agent
 # 生产和多实例部署必须使用 PostgreSQL；禁止 SQLite
 
 # ═══════════════════════════════════════════════════════════
@@ -48,6 +52,14 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/flora_agent
 JWT_SECRET=replace-with-a-random-secret-at-least-32-characters
 JWT_EXPIRE_HOURS=720            # token 有效期（小时）
 AUTH_REQUIRED=true              # 生产环境会强制为 true
+
+# ── 多平台接入（推荐配置）──
+# 平台级 API Key，格式 "platform_id=key"，多个用逗号或换行分隔。
+# 接入方后端认证完自己的用户后，携带 X-API-Key 调 POST /auth/token 换取智能体 token。
+# 生成方式：python -c "import secrets; print(secrets.token_urlsafe(32))"
+PLATFORM_API_KEYS=wxmini=sk-REPLACE-1,h5app=sk-REPLACE-2
+# 匿名登录仅用于开发联调；生产未显式设置时自动关闭
+# ANONYMOUS_LOGIN_ENABLED=false
 
 # ═══════════════════════════════════════════════════════════
 # 4. LLM 大模型（必填）
@@ -161,6 +173,7 @@ ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 启动后至少验证：
 
 - `GET /health`
+- `POST /auth/token`（带 `X-API-Key`，验证平台接入链路）
 - `POST /chat`
 - `POST /chat/stream`
 - `GET /tasks/{task_id}`
@@ -214,15 +227,30 @@ async function getMessages(convId) {
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| `POST` | `/auth/token` | 通用平台接入：`X-API-Key` + `external_user_id` 换 token |
 | `POST` | `/auth/wx-login` | 微信登录（code 换 token） |
-| `POST` | `/auth/anonymous` | 匿名登录 |
+| `POST` | `/auth/anonymous` | 匿名登录（仅开发联调，生产默认关闭） |
 | `GET` | `/auth/me` | 当前用户信息 |
 | `POST` | `/chat` | 对话（同步） |
 | `POST` | `/chat/stream` | 对话（SSE 流式） |
 | `POST` | `/chat/reset` | 删除会话 |
 | `GET` | `/conversations` | 会话列表 |
 | `GET` | `/conversations/{id}/messages` | 会话消息 |
+| `GET` | `/tasks/{task_id}` | 生图任务状态 |
+| `GET` | `/generated/{task_id}.png` | 生图结果（静态托管） |
+| `GET` | `/ui-contract` | UI 契约（接入方对照组件清单） |
 | `GET` | `/health` | 健康检查 |
+
+### 多平台接入流程
+
+各平台统一走「平台 API Key + 用户标识」：
+
+1. 部署方在 `PLATFORM_API_KEYS` 为每个接入平台配置 `platform_id=key`。
+2. 接入方后端认证自己的终端用户（各平台用自己的登录体系）。
+3. 接入方后端携带 `X-API-Key` 请求 `POST /auth/token`，body 为 `{"external_user_id": "该平台体系内的用户标识"}`。
+4. 拿返回的 `access_token` 调用 `/chat` 等业务接口，`user_id` 使用返回值（`platform_id + external_user_id` 哈希派生，各平台用户天然隔离）。
+
+微信小程序可选两条路：走上面的通用流程，或使用内置 `/auth/wx-login`（智能体直接调微信 `jscode2session`，需配置 `WECHAT_APPID` / `WECHAT_SECRET`）。
 
 ---
 

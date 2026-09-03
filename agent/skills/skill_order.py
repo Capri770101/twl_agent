@@ -87,7 +87,7 @@ def _match_flowers_to_shop(flower_list: list[dict], shop_id: str) -> dict:
       budget_total: 方案 budget_breakdown.total_estimate（若有）
     """
     conn = get_conn()
-    items = conn.execute("SELECT p.id, p.name, p.price, p.tags, p.desc, p.effect_image_url\n           FROM plans p JOIN shop_plans sp ON p.id = sp.plan_id\n           WHERE sp.shop_id=? AND sp.status='on'", (shop_id,)).fetchall()
+    items = conn.execute("SELECT p.id, p.name, p.price, p.tags, p.\"desc\", p.effect_image_url\n           FROM plans p JOIN shop_plans sp ON p.id = sp.plan_id\n           WHERE sp.shop_id=? AND sp.status='on'", (shop_id,)).fetchall()
     matched = []
     missing = []
     total_cost = 0.0

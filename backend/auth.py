@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -54,6 +55,60 @@ async def current_user(authorization: str | None = Header(default=None)) -> str 
 def require_user(user_id: str, authenticated_user: str | None) -> None:
     if settings.AUTH_REQUIRED and authenticated_user != user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='无权访问其他用户的数据')
+
+
+# ── 平台级 API Key 认证（多平台接入）─────────────────────────────
+
+def _parse_platform_keys(raw: str) -> dict[str, str]:
+    """解析 PLATFORM_API_KEYS，格式："platform_id=key"，多个用逗号或换行分隔。"""
+    keys: dict[str, str] = {}
+    for item in raw.replace('\n', ',').split(','):
+        item = item.strip()
+        if not item or '=' not in item:
+            continue
+        platform_id, _, key = item.partition('=')
+        platform_id = platform_id.strip()
+        key = key.strip()
+        if platform_id and key:
+            keys[platform_id] = key
+    return keys
+
+
+def verify_platform_api_key(api_key: str) -> str | None:
+    """校验平台 API Key，匹配返回 platform_id，否则 None。常量时间比较。"""
+    if not settings.PLATFORM_API_KEYS or not api_key:
+        return None
+    for platform_id, expected in _parse_platform_keys(settings.PLATFORM_API_KEYS).items():
+        if secrets.compare_digest(api_key, expected):
+            return platform_id
+    return None
+
+
+async def require_platform_key(x_api_key: str | None = Header(default=None, alias='X-API-Key')) -> str:
+    """平台凭证依赖：校验 X-API-Key，返回 platform_id。
+
+    信任模型：持有 API Key 的接入方（小程序后端/H5 后端/App 后端）负责
+    认证自己的终端用户，再通过 POST /auth/token 为其换取智能体 token。
+    """
+    if not settings.PLATFORM_API_KEYS:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail='服务未配置 PLATFORM_API_KEYS，无法进行平台级认证')
+    platform_id = verify_platform_api_key(x_api_key or '')
+    if not platform_id:
+        logger.warning('[auth] 平台 API Key 校验失败')
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail='平台凭证无效，请检查 X-API-Key')
+    return platform_id
+
+
+def derive_platform_user_id(platform_id: str, external_user_id: str) -> str:
+    """从平台标识 + 平台侧用户标识派生稳定的智能体 user_id。
+
+    不落盘原始用户标识（手机号/openid 等），key 轮换不影响 user_id 稳定性。
+    """
+    safe_platform = ''.join(c if c.isalnum() or c in {'_', '-'} else '_' for c in platform_id)[:32]
+    digest = hashlib.sha256(f'{platform_id}:{external_user_id}'.encode()).hexdigest()[:24]
+    return f'{safe_platform}_{digest}'
 
 
 async def login_wechat(code: str) -> dict[str, Any]:

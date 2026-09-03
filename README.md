@@ -191,12 +191,32 @@ GET /health
 ### 登录接口
 
 ```text
-POST /auth/anonymous
-POST /auth/wx-login
-GET /auth/me
+POST /auth/token        # 通用平台接入（X-API-Key + external_user_id 换 token）
+POST /auth/anonymous    # 匿名登录（仅开发联调；生产默认关闭）
+POST /auth/wx-login     # 微信小程序（code 换 token）
+GET /auth/me            # 当前用户信息
 ```
 
-`/auth/anonymous` 用于开发和联调；`/auth/wx-login` 接收微信 `code`，需要配置 `WECHAT_APPID`、`WECHAT_SECRET`，同时兼容旧名称 `WX_APPID`、`WX_SECRET`。生产请求必须携带 Bearer Token，且 token 中的用户必须与请求 `user_id` 一致。
+#### 多平台接入（推荐路径）
+
+智能体独立部署后，各平台统一按「平台 API Key + 用户标识」接入：
+
+1. 部署方在 `.env` 的 `PLATFORM_API_KEYS` 中为每个接入方配置 `platform_id=key`；
+2. 接入方后端先认证自己的终端用户（小程序/H5/App 各用各的登录体系）；
+3. 接入方后端携带 `X-API-Key` 调用 `POST /auth/token`，提交该用户在接入方体系内的 `external_user_id`，换取智能体 JWT；
+4. 之后前端/接入方后端用该 JWT 调用 `/chat`、`/conversations` 等业务接口。
+
+```text
+接入方前端 ──登录──> 接入方后端 ──X-API-Key + external_user_id──> POST /auth/token
+                <──────────── 智能体 access_token ────────────
+接入方前端 ──Bearer token──> 智能体 /chat、/chat/stream、/conversations ...
+```
+
+**信任模型**：持有 API Key 的一方负责认证终端用户；智能体侧的 `user_id` 由 `platform_id + external_user_id` 哈希派生，天然隔离各平台用户、不落盘原始标识，Key 轮换不影响用户身份稳定性。
+
+微信小程序也可以走同一条路（后端换 token），或使用内置的 `/auth/wx-login`（配置 `WECHAT_APPID`、`WECHAT_SECRET`，兼容旧名称 `WX_APPID`、`WX_SECRET`，由智能体直接调微信 `jscode2session`）。
+
+`/auth/anonymous` 仅用于开发和联调：生产环境（`APP_ENV=prod`）未显式配置 `ANONYMOUS_LOGIN_ENABLED=true` 时自动禁用，避免匿名接口被刷 token 消耗模型额度。生产请求必须携带 Bearer Token，且 token 中的用户必须与请求 `user_id` 一致。
 
 当前仓库没有 MCP 全量工具桥接；如果宿主自行接入 MCP，只能使用 `agent.toolkit.get_mcp_tool_specs()` 的显式白名单。文件系统、数据库发现和外部数据库工具不得无条件暴露。MCP 通道只输出文本、图片 URL 和平台链接，不直接渲染 `ui/data` 卡片。
 
@@ -741,18 +761,24 @@ python scripts/import_flower_knowledge.py
 ```bash
 # 1. 准备配置
 cp .env.example .env
-vim .env  # 填入生产配置
+vim .env  # 填入生产配置（LLM、JWT_SECRET、PLATFORM_API_KEYS、POSTGRES_PASSWORD 等）
 
-# 2. 构建并启动
+# 2. 构建并启动（自带 PostgreSQL）
 docker-compose up -d --build
 
-# 3. 设置开机自启
+# 3. 可选：启用 Nginx 反向代理（HTTPS + SSE）
+#    证书放 deploy/certs/，修改 deploy/nginx.conf 中的域名
+docker-compose --profile nginx up -d
+
+# 4. 设置开机自启
 docker update --restart unless-stopped flora-agent
 
-# 4. 查看状态
+# 5. 查看状态
 docker-compose ps
 docker-compose logs -f agent
 ```
+
+`docker-compose.yml` 内置三个服务：`postgres`（数据持久化到 `pgdata` 卷）、`agent`（等数据库健康后启动）、`nginx`（可选 profile，反向代理并托管 `/generated` 静态图）。数据库端口默认不对外暴露，需要外部访问时再取消 `postgres.ports` 的注释。
 
 ### Nginx 反向代理配置
 
