@@ -25,9 +25,11 @@ class ToolSpec:
 TOOL_REGISTRY: dict[str, ToolSpec] = {}
 
 # MCP/外部调用只能显式选择安全工具；不要把 TOOL_REGISTRY 全量导出。
+# 2026-09 重构：本地商品镜像查询（search_plans/get_plan_detail/search_shops/
+# match_shop_items）已删除，由只读 platform_db_query_entity 取代。
 MCP_SAFE_TOOL_NAMES = frozenset({
-    'retrieve_knowledge', 'search_plans', 'get_plan_detail', 'search_shops',
-    'match_shop_items', 'generate_diy_plan', 'revise_diy_plan',
+    'retrieve_knowledge', 'generate_diy_plan', 'revise_diy_plan',
+    'platform_db_query_entity', 'platform_mapping_get_active',
 })
 
 

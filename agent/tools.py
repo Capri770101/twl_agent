@@ -20,8 +20,6 @@ from agent.engine.ui_protocol import UIType
 from agent.knowledge import get_by_id, query_knowledge
 from domain.requirements import FlowerRequirement
 from backend.storage import memory, tasks
-from backend.storage.repository import repo
-from backend.data_gateway import auto_create_order, auto_list_orders, auto_query, auto_search_plans, auto_search_shops, infer_mapping, tool_result
 from agent.toolkit import register_tool
 
 logger = logging.getLogger('tools')
@@ -40,37 +38,11 @@ def _req_clear(req: FlowerRequirement | None) -> bool:
     只问知识时被硬塞卡片。
     """
     return bool(req and (req.recipient or req.occasion or req.budget_num is not None or req.budget_anchor or req.scene or req.style or req.colors))
-
-def _rank_plans(plans: list[dict], req: FlowerRequirement | None) -> list[dict]:
-    """相关性排序并截断：命中预算/色系/对象者优先，最多返回 3 款。
-
-    保证「推荐的产品符合需求描述」，且卡片不超过 3 个。
-    """
-
-    def score(p: dict) -> int:
-        s = 0
-        if not req:
-            return s
-        if req.budget_min is not None:
-            lo, hi = (req.budget_min, req.budget_max or req.budget_min)
-            if lo <= p.get('price', 0) <= hi * 1.5:
-                s += 10
-        if req.colors:
-            blob = ((p.get('name') or '') + (p.get('desc') or '') + ' '.join(p.get('tags') or [])).lower()
-            if any(c.lower() in blob for c in req.colors):
-                s += 5
-        if req.recipient:
-            blob = (p.get('name') or '') + (p.get('desc') or '')
-            if req.recipient.lower() in blob.lower():
-                s += 3
-        return s
-    return sorted(plans, key=score, reverse=True)[:3]
-
 async def _store_diy_plan(plan: dict, _context: dict | None) -> None:
     """把最新 DIY 方案写入当前会话（会话级，替代旧全局变量，杜绝多用户串号）。
 
     latest_diy_plan 供生图生成精确 prompt；selected_plan 作为「最近引用方案」，
-    让 search_shops / create_order 的 latest 占位符解析到正确方案。
+    让依赖 latest 占位符的后续环节（生图 / 平台下单信息拼装）解析到正确方案。
     """
     uid = (_context or {}).get('user_id', '')
     sid = (_context or {}).get('session_id', '')
@@ -82,8 +54,9 @@ async def _store_diy_plan(plan: dict, _context: dict | None) -> None:
 async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict | None:
     """把工具参数里的方案引用解析为具体方案 dict。
 
-    - "latest" / "latest_diy" / 空：会话「最近引用方案」→ 会话最新 DIY 方案 → 首条预设方案。
-    - 显式 plan_id：先查仓库（现有方案）；查不到且形如 DIY_xxx 时回退到会话最新 DIY 方案。
+    - "latest" / "latest_diy" / 空：会话「最近引用方案」→ 会话最新 DIY 方案；无则返回 None。
+    - 显式 plan_id：仅在命中会话最新 DIY 方案（plan_id 匹配或 DIY_ 前缀）时返回；
+      平台商品（现有方案）已无本地镜像，由 platform_db_query_entity 查询后按需传递。
     - 解析结果与用户、会话绑定，不再依赖进程级全局状态（并发安全）。
     """
     uid = (_context or {}).get('user_id', '')
@@ -96,11 +69,9 @@ async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict
             diy = await memory.get_session_json(uid, sid, 'latest_diy_plan')
             if diy:
                 return diy
-        plans = await repo.search_plans('')
-        return plans[0] if plans else None
-    found = await repo.get_plan(plan)
-    if found:
-        return found
+        # 本地商品镜像已移除：会话无方案时返回 None，
+        # 平台现有方案由 platform_db_query_entity 实时查询后按需传递。
+        return None
     if sid:
         diy = await memory.get_session_json(uid, sid, 'latest_diy_plan')
         if diy and (diy.get('plan_id') == plan or str(plan).startswith('DIY_')):
@@ -131,54 +102,6 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
     except Exception:
         logger.debug('[tools] 生图任务即时查询失败 task_id=%s', task_id)
     return json.dumps(result, ensure_ascii=False)
-
-@register_tool(name='search_plans', description='搜索商家预设花卉方案（含名称、价格、描述、效果图 URL）；会结合当前会话的结构化需求（预算/色系/风格）做软过滤。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词，如 康乃馨 / 玫瑰 / 母亲；留空则浏览全部'}}, 'required': ['keyword']}, inject_context=True, tags=['plan'])
-async def search_plans(keyword: str, _context: dict | None=None) -> str:
-    """搜索商家预设方案（按关键词搜索；有定位时限定配送范围内店铺的方案）。
-
-    LLM 直接传入关键词（如「玫瑰」「母亲 生日」），不需要预提取需求。
-    命中结果按相关性排序并截断到 3 款。
-    当 context 含 shop_id 时，限定该店铺的方案。
-    """
-    req = _requirement_from_context(_context)
-    location = None
-    if _context:
-        location = _context.get('location') or (req.location if req else None)
-    locked_shop = (_context or {}).get('shop_id')
-    if locked_shop:
-        plans = await repo.search_plans(keyword, requirement=req, location=None)
-        plans = [p for p in plans if p.get('shop_id') == locked_shop]
-    else:
-        plans = await repo.search_plans(keyword, requirement=req, location=location)
-    uid = (_context or {}).get('user_id', '')
-    sid = (_context or {}).get('session_id', '')
-    diy_hits: list[dict] = []
-    if uid:
-        try:
-            from backend.storage.diy import search_diy_plans as _search_diy
-            diy_hits = await _search_diy(uid, req)
-        except Exception:
-            logger.exception('[tools] 个人 DIY 方案检索失败')
-    if diy_hits:
-        combined = _rank_plans(diy_hits, req) + _rank_plans(plans, req)
-        result = combined[:3]
-    else:
-        result = _rank_plans(plans, req)
-    if result and sid:
-        await memory.set_session_json(uid, sid, 'selected_plan', result[0])
-    return json.dumps(result, ensure_ascii=False)
-
-@register_tool(name='get_plan_detail', description='根据方案 ID 获取单个方案的完整详情。', parameters={'type': 'object', 'properties': {'plan_id': {'type': 'string', 'description': '方案 ID，如 P001'}}, 'required': ['plan_id']}, tags=['plan'])
-async def get_plan_detail(plan_id: str) -> str:
-    """获取方案详情（DIY_ 前缀回落 diy_plans 资产库）。"""
-    plan = await repo.get_plan(plan_id)
-    if not plan and str(plan_id).startswith('DIY_'):
-        try:
-            from backend.storage.diy import get_diy_plan
-            plan = await get_diy_plan(plan_id)
-        except Exception:
-            plan = None
-    return json.dumps(plan or {'error': 'not found'}, ensure_ascii=False)
 
 @register_tool(name='retrieve_knowledge', description='检索花卉 DIY 知识库：花材(花语/色系/季节/价格档/搭配性)、风格体系、搭配规则、预算映射、包装器型、商家智库（店铺的风格/擅长场景/价位/服务/卖点）。在设计方案前调用以获取可靠的领域知识，避免凭空编造；找店铺时用 shop 域。', parameters={'type': 'object', 'properties': {'domain': {'type': 'string', 'description': '检索域：flower(花材) | style(风格) | pairing(搭配规则) | budget(预算) | packaging(包装) | shop(商家智库) | scene(场景) | proven(用户验证过的实战方案) | all(全部)'}, 'query': {'type': 'string', 'description': '关键词或自然语言，如 母亲/生日/北欧/200元/能做婚礼布置的店'}}, 'required': ['domain', 'query']}, tags=['knowledge'])
 def retrieve_knowledge(domain: str, query: str) -> str:

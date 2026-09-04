@@ -23,10 +23,12 @@ except Exception as e:
     print(f"[FAIL] backend.storage.memory: {e}")
 
 try:
-    from backend.storage.repository import repo
-    print("[OK] backend.storage.repository")
+    from backend.data_gateway.external import discover_external, query_external_entity
+    from backend.data_gateway.mapping_store import get_active_mapping
+    from backend.data_gateway.mapper import generate_mapping_draft
+    print("[OK] backend.data_gateway (platform_db)")
 except Exception as e:
-    print(f"[FAIL] backend.storage.repository: {e}")
+    print(f"[FAIL] backend.data_gateway: {e}")
 
 try:
     from backend.routers.chat import router

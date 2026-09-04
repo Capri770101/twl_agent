@@ -1,55 +1,66 @@
-"""skills/skill_order.py —— 下单技能（独立自包含模块）。
+"""skills/skill_order.py —— 下单技能：调用「平台自有下单 API」。
 
-作为「技能」而非普通工具注册：自描述（docstring + schema）+ 自注册（@register_tool）。
-职责边界清晰：
-- 组装订单数据（从仓库取方案/店铺，计算金额）
-- 写入 orders 表
-- 返回 pay_jump 参数（小程序的 /pages/order/confirm 跳转信息）
-**不直接调用微信支付**——支付由小程序承接，后端只负责把订单和跳转参数交给前端。
+背景（2026-09 重构，重要）：
+- 智能体**不直写任何订单库**，本地 `orders` 表已随商品镜像一并移除；
+- 商品 / 店铺来自平台数据库（``platform_db_query_entity``，强制只读）；
+- 下单必须调用**平台方自己提供的下单接口**（由部署方向平台申请开通并配置环境变量），
+  平台侧负责库存校验、履约与支付；智能体只负责组装订单信息并提交。
+
+部署契约（需按平台 API 文档对齐，未配置时工具明确报错、绝不静默）：
+- ``PLATFORM_ORDER_API_URL``：下单接口地址（必填）
+- ``PLATFORM_ORDER_API_KEY``：可选；配置后以 ``Authorization: Bearer <key>`` 发送
+- 请求：``POST {url}``，JSON body 见 :func:`_build_payload`
+- 响应（期望 JSON，字段名不匹配时在 :func:`_parse_platform_order` 处对齐）::
+
+    {"order_id": "P12345", "status": "created", "total_price": 198.0,
+     "pay": {"type": "miniapp", "page_path": "...", "params": {...}}}
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-from datetime import UTC, datetime
+import uuid
+from datetime import datetime
+from typing import Any
 
 from agent.tools import _resolve_session_plan, register_tool
 from backend.config import settings
-from backend.storage.db import get_conn
-from backend.storage.repository import repo
 
 logger = logging.getLogger('skills.order')
 
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec='seconds')
+
+def _now_compact() -> str:
+    """YYYYMMDDHHMMSS 本地时间，用于生成幂等请求号前缀。"""
+    return datetime.now().strftime('%Y%m%d%H%M%S')
+
 
 def _plan_price(plan: dict) -> float:
-    """方案金额：预设方案取 price；DIY 方案用 budget 兜底；兜底查 DB。"""
-    pid = plan.get('plan_id', '')
+    """方案估算金额：预设方案取 price；DIY 用 budget / budget_breakdown 兜底。
+
+    注意：这只是估算值，最终金额以平台下单接口返回为准。
+    """
     if isinstance(plan.get('price'), (int, float)) and plan['price'] > 0:
         return float(plan['price'])
+    if isinstance(plan.get('budget_num'), (int, float)) and plan['budget_num'] > 0:
+        return float(plan['budget_num'])
     if isinstance(plan.get('budget'), (int, float)) and plan['budget'] > 0:
         return float(plan['budget'])
     breakdown = plan.get('budget_breakdown') or {}
     if isinstance(breakdown.get('total_estimate'), (int, float)):
         return float(breakdown['total_estimate'])
-    m = re.search('(\\d+(?:\\.\\d+)?)', str(plan.get('estimated_price', '')))
+    m = re.search(r'(\d+(?:\.\d+)?)', str(plan.get('estimated_price', '')))
     if m:
         return float(m.group(1))
-    if pid:
-        try:
-            row = get_conn().execute('SELECT price FROM plans WHERE id=?', (pid,)).fetchone()
-            if row and isinstance(row['price'], (int, float)) and (row['price'] > 0):
-                return float(row['price'])
-        except Exception:
-            pass
     return 0.0
 
+
 def _extract_flower_names(plan: dict) -> list[dict]:
-    """从 DIY 方案中提取花材列表（带 qty），兼容 in-memory 和 DB 两种格式。
+    """从 DIY 方案中提取花材列表（带 qty）。
 
     返回 [{name, qty}] — qty 为该花材支数，缺失时默认 1。
+    平台侧拿到花材需求清单后自行核对库存 / 替代方案。
     """
     design = plan.get('design') or {}
     flowers_raw = plan.get('flowers') or []
@@ -70,208 +81,183 @@ def _extract_flower_names(plan: dict) -> list[dict]:
             seen[name] = seen.get(name, 0) + qty
     return [{'name': n, 'qty': q} for n, q in seen.items()]
 
-def _match_flowers_to_shop(flower_list: list[dict], shop_id: str) -> dict:
-    """将花材列表与店铺在售商品做匹配，返回匹配结果。
 
-    flower_list: [{name, qty}] —— _extract_flower_names 的输出。
-    匹配策略（优先级从高到低）：
-    1. 商品名包含花材名
-    2. 标签包含花材名
-    3. 子串兜底：花材名的任一词根（≥2字）出现在商品名中
+def _build_items(plan: dict, plan_type: str) -> list[dict]:
+    """组装订单明细 items（供平台侧参考；平台可自行换算/校验）。
 
-    返回:
-      matched: [{plan_id, name, price, image, flower, qty, line_total}]
-      missing: [{name, qty}]
-      estimated_cost: 所有已匹配商品 line_total 之和
-      coverage: 已匹配花材种类数 / 总花材种类数
-      budget_total: 方案 budget_breakdown.total_estimate（若有）
+    - existing（平台在售方案）：单条方案项，附 plan 的快照信息；
+    - diy（智能体设计的花束）：花材需求清单 [{name, qty}] + 设计说明。
     """
-    conn = get_conn()
-    items = conn.execute("SELECT p.id, p.name, p.price, p.tags, p.\"desc\", p.effect_image_url\n           FROM plans p JOIN shop_plans sp ON p.id = sp.plan_id\n           WHERE sp.shop_id=? AND sp.status='on'", (shop_id,)).fetchall()
-    matched = []
-    missing = []
-    total_cost = 0.0
-    for fl_info in flower_list:
-        fl = fl_info['name']
-        qty = fl_info.get('qty', 1)
-        best = None
-        for item in items:
-            name = item['name'] or ''
-            tags_raw = item['tags'] or ''
-            if tags_raw.startswith('['):
-                try:
-                    tags_list = json.loads(tags_raw)
-                except json.JSONDecodeError:
-                    tags_list = [t.strip().strip('"') for t in tags_raw.strip('[]').split(',')]
-            else:
-                tags_list = [t.strip() for t in tags_raw.split(',') if t.strip()]
-            if fl in name or fl in tags_raw or fl in tags_list:
-                best = {'plan_id': item['id'], 'name': name, 'price': item['price'], 'image': item['effect_image_url'] or '', 'flower': fl, 'qty': qty, 'line_total': round(item['price'] * qty, 2)}
-                break
-        if not best:
-            for item in items:
-                name = item['name'] or ''
-                candidates = {fl[i:i + 2] for i in range(len(fl) - 1)} | {fl[i:i + 3] for i in range(max(0, len(fl) - 2))}
-                if any(c in name for c in candidates if len(c) >= 2):
-                    best = {'plan_id': item['id'], 'name': name, 'price': item['price'], 'image': item['effect_image_url'] or '', 'flower': fl, 'qty': qty, 'line_total': round(item['price'] * qty, 2)}
-                    break
-        if best:
-            matched.append(best)
-            total_cost += best['line_total']
-        else:
-            missing.append({'name': fl, 'qty': qty})
-    return {'matched': matched, 'missing': missing, 'estimated_cost': round(total_cost, 2), 'coverage': round(len(matched) / len(flower_list), 2) if flower_list else 0}
-
-def _build_detailed_items(plan: dict) -> list[dict]:
-    """非 DIY 方案：返回单条方案项。"""
-    pid = plan.get('plan_id', '')
-    return [{'plan_id': pid, 'name': plan.get('name', '花束'), 'role': '方案', 'price': _plan_price(plan), 'unit_price': _plan_price(plan), 'qty': 1, 'image': plan.get('effect_image_url') or plan.get('image') or ''}]
-
-def _build_diy_order_items(plan: dict, shop_id: str) -> tuple[list[dict], float, float, list[dict]]:
-    """DIY 方案：从 shop 单品匹配组装订单明细。
-
-    返回 (items, total, coverage, missing)：
-    - items: 每条 = {plan_id, name, role, price, unit_price, qty, product_id, image}
-    - total: 全覆盖时用店铺实际价之和；部分覆盖时也用已匹配价之和（调用方负责拦截）
-    - coverage: 花材覆盖率（0~1）
-    - missing: 缺失花材列表 [{name, qty}]
-
-    当花材覆盖率 < 100% 时，调用方（create_order）应拦截并提示用户，
-    而非用预算估算价创建订单。
-    """
-    flower_infos = _extract_flower_names(plan)
-    if not flower_infos:
-        return (_build_detailed_items(plan), _plan_price(plan), 1.0, [])
-    match_result = _match_flowers_to_shop(flower_infos, shop_id)
-    matched = match_result['matched']
-    missing = match_result['missing']
+    image = plan.get('effect_image_url') or plan.get('image') or plan.get('result_url') or ''
+    if plan_type != 'diy':
+        return [{
+            'kind': 'plan',
+            'plan_id': plan.get('plan_id') or plan.get('id') or '',
+            'name': plan.get('name') or '花束',
+            'qty': 1,
+            'price': _plan_price(plan),
+            'image': image,
+        }]
     items: list[dict] = []
-    pid = plan.get('plan_id', '')
-    for m in matched:
-        items.append({'plan_id': pid, 'name': m['name'], 'role': m['flower'], 'price': m['line_total'], 'unit_price': m['price'], 'qty': m['qty'], 'product_id': m['plan_id'], 'image': m.get('image', '')})
-    for fl in missing:
-        items.append({'plan_id': pid, 'name': f"{fl['name']}（店铺暂无）", 'role': fl['name'], 'price': 0, 'unit_price': 0, 'qty': fl['qty']})
-    coverage = match_result.get('coverage', 0)
-    matched_cost = match_result['estimated_cost']
-    if coverage >= 1.0:
-        total = matched_cost
-    else:
-        total = matched_cost
+    for f in _extract_flower_names(plan):
+        items.append({'kind': 'flower', 'name': f['name'], 'qty': f['qty']})
     if not items:
-        items = _build_detailed_items(plan)
-        total = _plan_price(plan)
-    elif total <= 0:
-        total = matched_cost or _plan_price(plan)
-    return (items, total, coverage, match_result.get('missing', []))
+        items.append({'kind': 'plan', 'plan_id': plan.get('plan_id') or '', 'name': plan.get('name') or 'DIY 花束', 'qty': 1, 'price': _plan_price(plan), 'image': image})
+    items.append({'kind': 'design_note', 'text': (plan.get('desc') or plan.get('meaning') or plan.get('diy_steps') or '')[:500]})
+    return items
 
-@register_tool(name='create_order', description='组装订单并生成小程序支付跳转参数（pay_jump）。不直接调用微信支付，支付由小程序承接。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': "店铺 ID，或 'first' 表示推荐列表第一家"}, 'plan_id': {'type': 'string', 'description': "方案 ID，或 'latest' 表示当前方案"}, 'plan_type': {'type': 'string', 'description': 'existing | diy'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
-async def create_order(shop_id: str, plan_id: str, plan_type: str, _context: dict | None=None) -> str:
-    """组装订单并写入 orders 表，返回 order_card + pay_jump 数据。
 
-    DIY 方案：从 shop 单品匹配花材，用店铺实际价格计算总价。
-    现有方案：直接使用方案价格。
+def _build_payload(plan: dict, shop_id: str, user_id: str, plan_type: str, session_id: str, request_id: str) -> dict[str, Any]:
+    """按平台下单契约组装请求体。
+
+    字段以通用命名为准；若平台 API 需要字段改名 / 嵌套，请在部署时扩展本函数。
     """
-    user_id = (_context or {}).get('user_id', 'anonymous')
-    shop = await repo.get_shop(shop_id) if shop_id != 'first' else (await repo.list_shops(None, None))[0]
+    image = plan.get('effect_image_url') or plan.get('image') or plan.get('result_url') or ''
+    return {
+        'request_id': request_id,  # 智能体侧幂等键，平台可用来去重
+        'channel': 'flora_agent',
+        'external_user_id': user_id,
+        'agent_session_id': session_id,
+        'shop_id': shop_id,
+        'plan': {
+            'plan_id': plan.get('plan_id') or plan.get('id') or '',
+            'name': plan.get('name') or '未命名方案',
+            'type': plan_type,  # existing | diy
+            'price': _plan_price(plan),
+            'desc': (plan.get('desc') or '')[:500],
+            'image': image,
+            'recipient': plan.get('recipient') or '',
+            'occasion': plan.get('occasion') or '',
+            'card_message': plan.get('card_message') or '',
+        },
+        'items': _build_items(plan, plan_type),
+        'estimated_total': _plan_price(plan),  # 估算，最终以平台计算为准
+        'remark': '来自花卉 DIY 智能体的订单请求',
+    }
+
+
+def _parse_platform_order(resp: dict) -> dict[str, Any]:
+    """把平台下单响应规整为统一结构；字段名不匹配时在此对齐。"""
+    order_id = str(resp.get('order_id') or resp.get('order_no') or resp.get('id') or resp.get('trade_id') or '')
+    status = str(resp.get('status') or 'created')
+    total = resp.get('total_price')
+    if total is None:
+        total = resp.get('total') or resp.get('amount') or resp.get('pay_amount') or 0
+    try:
+        total = float(total or 0)
+    except (TypeError, ValueError):
+        total = 0.0
+    pay = resp.get('pay') if isinstance(resp.get('pay'), dict) else {}
+    pay_url = str(resp.get('pay_url') or pay.get('url') or '')
+    page_path = str(pay.get('page_path') or settings.pay_page_path)
+    pay_params = pay.get('params') if isinstance(pay.get('params'), dict) else {}
+    if pay_url:
+        pay_params['pay_url'] = pay_url
+    return {
+        'order_id': order_id,
+        'status': status,
+        'total_price': total,
+        'pay_jump': {'order_id': order_id, 'page_path': page_path, 'params': pay_params} if order_id else None,
+    }
+
+
+async def _submit_platform_order(payload: dict) -> dict[str, Any]:
+    """POST 到平台下单接口，返回规整后的订单结果或抛出可读异常。"""
+    url = (settings.PLATFORM_ORDER_API_URL or '').strip().rstrip('/')
+    if not url:
+        raise RuntimeError(
+            '平台下单接口未配置：请部署方申请平台自有下单能力后，'
+            '在环境变量中配置 PLATFORM_ORDER_API_URL（可选 PLATFORM_ORDER_API_KEY）。'
+            '在此之前智能体无法代客下单，请引导用户前往平台/店铺完成下单。'
+        )
+    import httpx
+    headers = {'Content-Type': 'application/json'}
+    if (settings.PLATFORM_ORDER_API_KEY or '').strip():
+        headers['Authorization'] = f"Bearer {settings.PLATFORM_ORDER_API_KEY.strip()}"
+    timeout = httpx.Timeout(max(10.0, settings.REQUEST_TIMEOUT or 30.0))
+    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+        resp = await client.post(url, json=payload)
+    if resp.status_code >= 400:
+        body = resp.text[:500]
+        raise RuntimeError(f'平台下单接口返回 HTTP {resp.status_code}: {body}')
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        raise RuntimeError(f'平台下单接口响应非 JSON: {resp.text[:300]}')
+    if not isinstance(data, dict):
+        raise RuntimeError(f'平台下单接口响应格式异常: {str(data)[:300]}')
+    err = data.get('error') or data.get('message')
+    if err and (data.get('code') not in (None, 0, 200) or 'fail' in str(data.get('status', '')).lower()):
+        raise RuntimeError(f'平台下单失败: {err}（原始返回: {str(data)[:300]}）')
+    return data
+
+
+@register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。shop_id 必须是平台真实店铺 ID（来自 platform_db_query_entity）；plan_id 支持 latest/DIY_xxx（会话内方案）或平台在售方案 ID（配合 source_id 读取）。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自 platform_db_query_entity entity=shop 的返回）'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
+async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: str = '', _context: dict | None = None) -> str:
+    """组装订单信息 → 调用平台自有下单 API → 返回 order_card / pay_jump 数据。"""
+    user_id = (_context or {}).get('user_id', '')
+    session_id = (_context or {}).get('session_id', '')
+    if not user_id:
+        return json.dumps({'error': '缺少用户身份，无法下单'}, ensure_ascii=False)
+    if not shop_id or shop_id == 'first':
+        return json.dumps({'error': '需要指定平台真实店铺 ID：请先用 platform_db_query_entity(entity="shop") 查询可用店铺并把 shop_id 传给我'}, ensure_ascii=False)
+    if plan_type != 'diy':
+        plan_type = 'existing'
+
+    # ── 解析方案：会话内 DIY / 最近引用 → 会话；平台在售方案 → 只读回读 ──
     plan = await _resolve_session_plan(plan_id, _context)
-    if not shop or not plan:
-        return json.dumps({"error": "店铺或方案不存在"}, ensure_ascii=False)
+    if plan is None and source_id and plan_id and plan_type == 'existing':
+        try:
+            from backend.data_gateway.external import query_external_entity
+            rows = query_external_entity(source_id, 'plan', keyword=plan_id, limit=1)
+            if rows:
+                plan = rows[0]
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({'error': f'回读平台在售方案失败: {exc}'}, ensure_ascii=False)
+    if not plan:
+        return json.dumps({'error': '未找到可下单的方案：DIY 方案请先设计并确认（plan_id 用 latest），平台在售方案请用 platform_db_query_entity 查询后传回 source_id 与方案 ID'}, ensure_ascii=False)
+    if plan_type == 'diy' and not plan.get('diy') and not str(plan.get('plan_id', '')).startswith('DIY_'):
+        # 用户显式要下 DIY，但解析到的是平台商品 → 纠正类型
+        if plan.get('price') is not None:
+            plan_type = 'existing'
 
-    if plan.get("diy"):
-        plan_type = "diy"
-
-    # DIY 方案：从 shop 单品匹配组装；现有方案：直接用方案价格
-    coverage = 1.0
-    missing_flowers: list[dict] = []
+    # ── DIY 方案确认后落库（diy_plans，运行时数据，供后续生图/复用）──
     if plan_type == 'diy':
-        items, total, coverage, missing_flowers = _build_diy_order_items(plan, shop['shop_id'])
-        if coverage < 1.0:
-            return json.dumps({'error': 'insufficient_coverage', 'message': '该店铺缺少部分花材，无法完成此 DIY 方案。', 'coverage': round(coverage, 2), 'missing_flowers': missing_flowers, 'suggestion': '您可以选择：1）从不同店铺分别购买缺失的花材，自行 DIY 制作；2）更换其他花材方案或调整设计。'}, ensure_ascii=False)
         try:
             from backend.storage.diy import save_diy_plan
-            _res = await save_diy_plan(plan, user_id)
-            if _res.get('plan_id'):
-                plan['plan_id'] = _res['plan_id']
-        except Exception:
-            logger.warning('[skill_order] DIY 方案落库失败（不影响下单）', exc_info=True)
-    else:
-        total = _plan_price(plan)
-        items = _build_detailed_items(plan)
-
-    # 统一走 commerce.create_order()：自动设置 expires_at、物流事件、通知、优惠券、购物车清理
-    from backend.storage import commerce
-    from backend.storage.repository import repo as _repo
-
-    plan_obj = await _repo.get_plan(plan["plan_id"])
-    if plan_type == "diy":
-        # DIY 方案：订单项以 DIY 方案本身为主（plan_id 指向 DIY 方案），
-        # 附带各花材明细供详情页展示。commerce 会对 DIY plan_id 校验；
-        # 若 DIY 方案未落库则用第一个已有店铺单品兜底。
-        diy_pid = plan.get("plan_id", "")
-        # 确保 DIY 方案已落库
-        if not plan_obj:
-            try:
-                from backend.storage.diy import save_diy_plan
-                _res = await save_diy_plan(plan, user_id)
-                if _res.get("plan_id"):
-                    plan["plan_id"] = _res["plan_id"]
-                    diy_pid = _res["plan_id"]
-            except Exception:  # noqa: BLE001
-                logger.warning("[skill_order] DIY 方案落库失败（不影响下单）", exc_info=True)
-            plan_obj = await _repo.get_plan(diy_pid)
-        # 如果 DIY 方案在 plans 表找不到（save_diy_plan 可能没写 plans），
-        # 用第一个已有店铺单品代替 plan_id，花材明细附在 items 里。
-        if not plan_obj and items:
-            primary_pid = items[0].get("product_id") or items[0].get("plan_id")
-            commerce_items = [{"plan_id": primary_pid, "qty": 1, "item_id": None}]
-        else:
-            commerce_items = [{"plan_id": diy_pid, "qty": 1, "item_id": None}]
-        try:
-            from backend.storage.diy import mark_diy_plan_ordered, save_as_template
-            await mark_diy_plan_ordered(plan["plan_id"])
-            await save_as_template(plan["plan_id"])
+            res = await save_diy_plan(plan, user_id)
+            if res.get('plan_id') and not plan.get('plan_id'):
+                plan['plan_id'] = res['plan_id']
         except Exception:  # noqa: BLE001
-            logger.warning("[skill_order] 标记 DIY 方案成交/沉淀模板失败", exc_info=True)
-    else:
-        # 现有方案：直接用方案 plan_id
-        commerce_items = [{"plan_id": plan["plan_id"], "qty": 1, "item_id": None}]
+            logger.warning('[skill_order] DIY 方案落库失败（不影响提交平台）', exc_info=True)
 
+    # ── 组装并提交平台 ──
+    request_id = f"AG{_now_compact()}{uuid.uuid4().hex[:6]}"
+    payload = _build_payload(plan, shop_id, user_id, plan_type, session_id, request_id)
     try:
-        order = await commerce.create_order(
-            user_id=user_id,
-            items=commerce_items,
-            shop_id=shop['shop_id'],
-        )
-    except Exception as exc:
-        return json.dumps({"error": f"下单失败: {exc}"}, ensure_ascii=False)
-    order_id = order["order_id"]
-    total = order["total_price"]
-    discount = order.get("discount", 0)
+        raw = await _submit_platform_order(payload)
+    except RuntimeError as exc:
+        logger.warning('[skill_order] 平台下单被拒: %s', exc)
+        return json.dumps({'error': str(exc)}, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception('[skill_order] 调用平台下单接口异常')
+        return json.dumps({'error': f'调用平台下单接口失败: {exc}'}, ensure_ascii=False)
+    parsed = _parse_platform_order(raw)
+    if not parsed['order_id']:
+        logger.warning('[skill_order] 平台下单响应缺少订单号: %s', str(raw)[:300])
+        return json.dumps({'error': f'平台已受理但响应缺少订单号，请稍后在平台侧查看（原始返回: {str(raw)[:300]}）'}, ensure_ascii=False)
 
-    pay_jump = {
-        "order_id": order_id,
-        "page_path": settings.pay_page_path,
-        "params": {
-            "order_id": order_id,
-            "total_price": total,
-            "discount": discount,
-            "shop_id": shop["shop_id"],
-        },
-    }
-    logger.info("[skill_order] 订单 %s 已创建 user=%s shop=%s total=%.2f discount=%.2f", order_id, user_id, shop["shop_id"], total, discount)
-
-    return json.dumps(
-        {
-            "order_id": order_id,
-            "plan_name": plan.get("name", ""),
-            "items": items,
-            "total_price": total,
-            "discount": discount,
-            "plan_type": plan_type,
-            "pay_jump": pay_jump,
-            "effect_image_url": plan.get("effect_image_url") or plan.get("result_url") or "",
-            "coverage": coverage,
-            "missing_flowers": missing_flowers,
-        },
-        ensure_ascii=False,
-    )
+    order_id = parsed['order_id']
+    total = parsed['total_price'] or _plan_price(plan)
+    logger.info('[skill_order] 订单已提交平台 user=%s shop=%s plan=%s order=%s total=%.2f status=%s', user_id, shop_id, plan.get('plan_id', ''), order_id, total, parsed['status'])
+    return json.dumps({
+        'order_id': order_id,
+        'plan_name': plan.get('name', ''),
+        'items': _build_items(plan, plan_type),
+        'total_price': total,
+        'plan_type': plan_type,
+        'status': parsed['status'],
+        'pay_jump': parsed['pay_jump'],
+        'platform_response': {k: v for k, v in raw.items() if k not in ('pay',)},
+        'effect_image_url': plan.get('effect_image_url') or plan.get('result_url') or '',
+    }, ensure_ascii=False)
