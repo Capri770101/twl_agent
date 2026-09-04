@@ -358,8 +358,9 @@ LLM 必须支持 Chat Completions 和 function/tool calling。生产 / 多实例
 
 > **新流程（2026-09 起）**：智能体**不写本地商品/订单表**。所有商品/店铺/订单通过平台只读连接器实时查询业务库，下单通过平台提供的 API 转发。所以**只配连接串是不够的**，必须完成下方 7 步接入流程，缺一不可。
 
-**B1. 平台方开只读账号最小权限**（首期仅支持 PostgreSQL）：
+**B1. 平台方开只读账号最小权限**（支持 PostgreSQL / MySQL 只读直连）：
 
+PostgreSQL：
 ```sql
 CREATE USER flora_ro PASSWORD '...';
 GRANT CONNECT ON DATABASE platform TO flora_ro;
@@ -369,10 +370,19 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO flora_ro;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM flora_ro;
 ```
 
+MySQL（以生产库 `flower_shop` 为例，仅授予 SELECT）：
+```sql
+CREATE USER 'flora_ro'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON flower_shop.* TO 'flora_ro'@'%';
+FLUSH PRIVILEGES;
+-- 智能体连接时还会强制只读会话，且账号无写权限，双重保险
+```
+
 **B2. 配置连接串**：
 
 ```env
 PLATFORM_DB_MAIN_URL=postgresql://flora_ro:...@platform-db:5432/platform
+# 或 MySQL（mysql://...，如 PLATFORM_DB_MAIN_URL=mysql://flora_ro:...@platform-db:3306/flower_shop）
 PLATFORM_ORDER_API_URL=https://platform.example.com/api/orders
 PLATFORM_ORDER_API_KEY=replace-with-platform-provided-key
 ```

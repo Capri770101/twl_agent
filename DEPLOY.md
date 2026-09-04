@@ -110,7 +110,7 @@
 
 | 变量 | 说明 |
 |------|------|
-| `PLATFORM_DB_<SOURCE_ID>_URL` | 业务平台只读 PostgreSQL 连接串，如 `PLATFORM_DB_MAIN_URL`。服务端配置，LLM 不会看到；首期连接器支持 PostgreSQL |
+| `PLATFORM_DB_<SOURCE_ID>_URL` | 业务平台只读 PostgreSQL / MySQL 连接串，如 `PLATFORM_DB_MAIN_URL`。服务端配置，LLM 不会看到；连接器支持 PostgreSQL（`postgresql://`）与 MySQL（`mysql://`） |
 | `PLATFORM_ORDER_API_URL` | 业务平台提供的**下单 API 地址**。智能体走此 URL 转发订单请求，**未配置时 `create_order` 工具直接报错、不写本地库** |
 | `PLATFORM_ORDER_API_KEY` | 下单 API 所需凭据（按平台方约定） |
 
@@ -188,7 +188,7 @@ ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 | 层 | 存储 | 用途 |
 |----|------|------|
 | 内部运行面 | `DATABASE_URL` 指向智能体自己的 PostgreSQL | 会话、消息、记忆、任务、DIY 方案、映射草案与审计、配置项 |
-| 外部业务面 | `PLATFORM_DB_<SOURCE_ID>_URL` 指向业务平台 PG（只读账号） | 商品 / 店铺 / 订单 / 用户实时查询 |
+| 外部业务面 | `PLATFORM_DB_<SOURCE_ID>_URL` 指向业务平台库（只读账号，支持 PostgreSQL / MySQL） | 商品 / 店铺 / 订单 / 用户实时查询 |
 | 外部订单出口 | `PLATFORM_ORDER_API_URL` 调业务平台自有下单 API | 创建订单后转发，**不写本地库** |
 
 SQLite 生产环境禁止使用。
@@ -219,8 +219,8 @@ SQLite 生产环境禁止使用。
 
 ### 2.2 目标平台库连接器约束
 
-- `platform_db_discover` 仅支持 PostgreSQL
-- 所有外部连接走只读事务（`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`）
+- `platform_db_discover` 支持 PostgreSQL 与 MySQL（连接串前缀 `postgresql://` 或 `mysql://`）
+- 所有外部连接走只读事务（PostgreSQL：`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`；MySQL：`SET SESSION TRANSACTION READ ONLY`）
 - `platform_db_sample_table` 默认不读取，最大 5 行
 - `platform_db_query_entity` 只允许查询 active 映射
 - 没有 active 映射时直接拒绝查询，LLM 会主动告知「平台未接入」
@@ -678,8 +678,9 @@ print(sorted(TOOL_REGISTRY.keys()))
 ### 14.4 平台只读库连不上
 
 ```bash
-# 从智能体容器内手动测连通性
+# 从智能体容器内手动测连通性（PostgreSQL）
 docker exec flora-agent psql "$PLATFORM_DB_MAIN_URL" -c '\dt'
+# MySQL 可用业务侧 mysql 客户端，或用 platform_db_discover 工具验证（方言无关）
 # 期望列出业务表；如果是 SSL / 网络问题，会在容器日志里看到具体报错
 ```
 
