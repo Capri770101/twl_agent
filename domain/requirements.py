@@ -22,6 +22,8 @@ class FlowerRequirement:
     budget_min: float | None = None
     budget_max: float | None = None
     budget_anchor: str | None = None
+    stem_count: int | None = None  # 用户明确的花材支数（如「11 朵」），与预算无关
+    single_flower: str | None = None  # 用户要求单一花材（如「纯红玫瑰」），值为花名
     location: dict[str, float] | None = None
     raw: str = ""
 
@@ -45,6 +47,8 @@ class FlowerRequirement:
             budget_min=d.get("budget_min"),
             budget_max=d.get("budget_max"),
             budget_anchor=d.get("budget_anchor"),
+            stem_count=d.get("stem_count"),
+            single_flower=d.get("single_flower"),
             location=d.get("location"),
             raw=d.get("raw", ""),
         )
@@ -69,6 +73,10 @@ class FlowerRequirement:
             d["budget"] = str(int(self.budget_num))
         elif self.budget_anchor:
             d["budget"] = self.budget_anchor
+        if self.stem_count is not None:
+            d["stem_count"] = str(int(self.stem_count))
+        if self.single_flower:
+            d["single_flower"] = self.single_flower
         return d
 
     def merge(self, other: FlowerRequirement) -> FlowerRequirement:
@@ -83,6 +91,10 @@ class FlowerRequirement:
             merged.budget_num = other.budget_num
             merged.budget_min = other.budget_min
             merged.budget_max = other.budget_max
+        if other.stem_count is not None:
+            merged.stem_count = other.stem_count
+        if other.single_flower:
+            merged.single_flower = other.single_flower
         if other.location:
             merged.location = other.location
         return merged

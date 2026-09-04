@@ -393,11 +393,54 @@ def _extract_budget(text: str) -> tuple[str | None, float | None, float | None, 
             text = text.replace(oral, f' {num} ')
             anchor = oral
             break
-    m = re.search('(\\d{2,5})\\s*(?:元|块|块钱)?', text)
+    # 必须有明确的价格信号才算预算：货币单位 / 预算 / 价格 / 「X元左右」。
+    # 仅紧跟 朵/支/束 的数字（如「11 朵」）一律不当预算，避免把数量误判成金额。
+    m = (re.search(r'(\d{1,5})\s*(?:元|块|块钱|rmb|¥|刀)', text)
+         or re.search(r'预算\s*(\d{1,5})', text)
+         or re.search(r'价格\s*(\d{1,5})', text)
+         or re.search(r'(\d{1,5})\s*元左右', text))
     if not m:
         return (anchor, None, None, None)
     num = float(m.group(1))
     return (anchor, num, round(num * 0.8), round(num * 1.2))
+
+def _extract_stem_count(text: str) -> int | None:
+    """抽取花材支数：『11 朵』『9支』『一束』→ 主花支数。仅当数字紧跟 朵/支/枝/束/根/头。"""
+    m = re.search(r'(\d{1,3})\s*(?:朵|支|枝|束|根|头)', text)
+    if m:
+        return max(1, min(int(m.group(1)), 999))
+    if re.search(r'一\s*打', text):
+        return 12
+    if re.search(r'一\s*束', text):
+        return 11
+    return None
+
+_ALL_FLOWER_TERMS: list[str] | None = None
+
+def _all_flower_terms() -> list[str]:
+    """所有花名 + 别名（长词优先），用于『纯红玫瑰』这类含别名的单一花材识别。"""
+    global _ALL_FLOWER_TERMS
+    if _ALL_FLOWER_TERMS is None:
+        terms: list[str] = []
+        for f in query_knowledge('flower', '')['results']:
+            terms.append(f['name'])
+            terms.extend(f.get('aliases', []))
+        # 长词优先，避免『玫瑰』先命中而漏掉『红玫瑰』
+        _ALL_FLOWER_TERMS = sorted(set(terms), key=len, reverse=True)
+    return _ALL_FLOWER_TERMS
+
+def _detect_single_flower(text: str) -> str | None:
+    """检测『纯X / 只要X / 仅用X / 单一花材X / X一束就好』意图，返回指定花名；无此意图返回 None。
+
+    限定词可置于花名前（纯/只要/仅用/单一花材/only）或花名后（一束/就好/即可/就行/单色），
+    二者任一即可判定为单一花材。由于必须匹配到已知花名，『纯色系』『同色系』等纯配色
+    表述（不含花名）不会被误判。
+    """
+    for name in _all_flower_terms():
+        if re.search(r'(纯|只要|仅[要用]|单[\s一]*一?\s*花材?|only)\s*' + re.escape(name), text, re.I) or \
+           re.search(re.escape(name) + r'\s*(纯|一束|就好|即可|就行|单色)', text):
+            return name
+    return None
 
 def extract_requirement(text: str) -> FlowerRequirement:
     """共享需求抽取器：自然语言 → 结构化 FlowerRequirement。
@@ -427,6 +470,8 @@ def extract_requirement(text: str) -> FlowerRequirement:
     req.budget_num = exact
     req.budget_min = bmin
     req.budget_max = bmax
+    req.stem_count = _extract_stem_count(text)
+    req.single_flower = _detect_single_flower(text)
     if req.recipient:
         req.relationship = _RELATIONSHIP_MAP.get(req.recipient)
     return req
@@ -435,7 +480,7 @@ def _extract(text: str) -> dict[str, str]:
     """从自然语言需求中抽取维度（兼容旧形态，供 DIY 设计管线 / _extract_dims 测试）。"""
     return extract_requirement(text).to_legacy_dict()
 
-def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefer_flowers: list[str] | None=None, exclude_flowers: set[str] | None=None) -> tuple[list[dict], list[dict], list[dict]]:
+def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefer_flowers: list[str] | None=None, exclude_flowers: set[str] | None=None, single_flower: str | None=None) -> tuple[list[dict], list[dict], list[dict]]:
     """根据维度 + 风格 + 预算，从知识库挑主花/配材/叶材。
 
     Args:
@@ -444,6 +489,11 @@ def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefe
     """
     prefer_flowers = prefer_flowers or []
     exclude_flowers = exclude_flowers or set()
+    # 单一花材意图：严格只返回该花，不强行补配材/叶材（尊重「纯X」「只要X」）。
+    if single_flower:
+        f = _known_flower(single_flower)
+        if f:
+            return ([f], [], [])
     rec_recipient: list[str] = []
     rec_occasion: list[str] = []
     all_fl = query_knowledge('flower', '')['results']
@@ -534,7 +584,7 @@ def _enrich_plan_fees(plan: dict) -> dict:
     if not main:
         return plan
     tier = _get_tier(plan.get('budget_num'), None)
-    stems = _alloc_stems(tier, main, fillers, foliage, plan.get('budget_num'))
+    stems = _alloc_stems(tier, main, fillers, foliage, plan.get('budget_num'), plan.get('stem_count'))
     tkey = tier.get('tier', 'T2')
     labor_fee = _LABOR_FEE.get(tkey, 25)
     decor_fee = _DECOR_FEE.get(tkey, 18)
@@ -553,10 +603,10 @@ def _enrich_plan_fees(plan: dict) -> dict:
     d['fees'] = {'labor_fee': labor_fee, 'labor_standard': f'人工费 {labor_fee} 元/束（含修剪、去刺、扎制、定型，按预算档标准收取）', 'decor_fee': decor_fee, 'decor_standard': f'装饰费 {decor_fee} 元/束（含丝带、贺卡、点缀饰材，按预算档标准收取）', 'stem_count': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in main + fillers + foliage), 'note': '花材按支数计费，人工费与装饰费为门店统一收取标准，下单前以门店确认为准。'}
     pkg_name = d.get('packaging') or '花束'
     pkg = {'name': pkg_name, 'id': 'PK_BOX' if '礼盒' in pkg_name else 'PK_BOUQUET'}
-    plan['budget_breakdown'] = _build_budget_breakdown(main, fillers, foliage, pkg, tier, plan.get('budget_num'))
+    plan['budget_breakdown'] = _build_budget_breakdown(main, fillers, foliage, pkg, tier, plan.get('budget_num'), plan.get('stem_count'))
     return plan
 
-def _alloc_stems(tier: dict, main: list[dict], fillers: list[dict], foliage: list[dict], budget_num: int | None=None) -> dict[str, int]:
+def _alloc_stems(tier: dict, main: list[dict], fillers: list[dict], foliage: list[dict], budget_num: int | None=None, stem_count: int | None=None) -> dict[str, int]:
     """按预算档 + 花材角色为每种花材分配具体支数。
 
     - 主花支数取预算档基准 _TIER_MAIN_STEMS，平均分给每种主花（不足 1 支补 1）；
@@ -566,8 +616,14 @@ def _alloc_stems(tier: dict, main: list[dict], fillers: list[dict], foliage: lis
     返回 {花名: 支数}，供方案明细 / 预算 / 步骤精确引用。
     """
     tkey = tier.get('tier', 'T2')
-    total_main = _TIER_MAIN_STEMS.get(tkey, 10)
-    if budget_num is not None and main:
+    # 用户明确支数优先（如「11 朵」）→ 直接作为主花总数，不被预算档覆盖。
+    if stem_count is not None and main:
+        total_main = int(stem_count)
+    else:
+        total_main = _TIER_MAIN_STEMS.get(tkey, 10)
+    # 有明确预算时按预算推算主花数量；但用户已显式给支数（stem_count）时
+    # 预算仅作参考、不覆盖支数，避免「11 朵」被预算约束悄悄改少。
+    if budget_num is not None and main and stem_count is None:
         labor = _LABOR_FEE.get(tkey, 25)
         decor = _DECOR_FEE.get(tkey, 18)
         pkg = 35 if tier.get('tier') == 'T3' else 8
@@ -601,7 +657,16 @@ def _build_diy_steps(main: list[dict], fillers: list[dict], foliage: list[dict],
     trim_m = '；'.join(f'{n}斜剪 45° 并去下半叶' for n in m) or '玫瑰斜剪 45° 并去下半叶'
     trim_f = '；'.join(f'{n}短剪保留 1/2 长度' for n in f1) or '满天星短剪成簇'
     trim_g = '；'.join(f'{n}留长 2/3 做托底勾边' for n in f2) or '尤加利留长做托底'
-    return [f"1. 备材处理（修剪）：{trim_m}。其中{('玫瑰需去刺' if any('玫瑰' in n for n in m) else '无刺花材无需去刺')}，{('百合需摘除雄蕊防染色' if any('百合' in n for n in m) else '无需特殊处理')}。", '2. 定高构图：以主花为视觉重心，整体高度约为花束/花器的 1.5 倍；先插主花确定骨架与朝向，各主花交错分布、花头朝向一致。', f'3. 填充层次：{trim_f} 填补空隙，{trim_g} 勾边制造空气感，形成前低后高、疏密有致。', f'4. 配色比例：按色系 {colors} 控制主花:配材 ≈ 7:3，避免头重脚轻或色彩打架。', f'5. 包装收尾：用「{pk_name}」（{pk_desc}）螺旋扎制并整理外层叶材外扩，丝带/韩素纸收尾，如有贺卡随花附赠。', '6. 醒花养护：完成后深水醒花 2-4 小时再摆放，详见「养护建议」。']
+    # 单一花材（无配材且无叶材）：DIY 步骤不得编造满天星/尤加利等外搭花材。
+    if not f1 and not f2:
+        step3 = f'填充层次：本束为单一花材，不额外搭配配材与叶材；各支主花交错分布、花头朝向一致并留出空隙，即可形成饱满层次。'
+        step4 = f'配色比例：单一花材按色系 {colors} 统一色调，可同色系深浅过渡，避免拼入杂色。'
+        outer = '整理外轮廓'
+    else:
+        step3 = f'填充层次：{trim_f} 填补空隙，{trim_g} 勾边制造空气感，形成前低后高、疏密有致。'
+        step4 = f'配色比例：按色系 {colors} 控制主花:配材 ≈ 7:3，避免头重脚轻或色彩打架。'
+        outer = '整理外层叶材外扩'
+    return [f"1. 备材处理（修剪）：{trim_m}。其中{('玫瑰需去刺' if any('玫瑰' in n for n in m) else '无刺花材无需去刺')}，{('百合需摘除雄蕊防染色' if any('百合' in n for n in m) else '无需特殊处理')}。", '2. 定高构图：以主花为视觉重心，整体高度约为花束/花器的 1.5 倍；先插主花确定骨架与朝向，各主花交错分布、花头朝向一致。', step3, step4, f'5. 包装收尾：用「{pk_name}」（{pk_desc}）螺旋扎制并{outer}，丝带/韩素纸收尾，如有贺卡随花附赠。', '6. 醒花养护：完成后深水醒花 2-4 小时再摆放，详见「养护建议」。']
 
 def _build_care_tips(main: list[dict]) -> str:
     """生成养护建议（通用 + 针对主花的特例提示）。"""
@@ -622,13 +687,17 @@ def _build_card_message(recipient: str, occasion_phrase: str, style_label: str, 
         return base + f'愿它替我传递「{tone}」。'
     return base + f'愿它替我传递{short_meaning}。'
 
-def _build_budget_breakdown(main: list[dict], fillers: list[dict], foliage: list[dict], packaging: dict | None, tier: dict, budget_num: int | None) -> dict:
-    """按花材档位估算预算分项（含每种花材支数 + 人工费/装饰费收取标准）。"""
+def _build_budget_breakdown(main: list[dict], fillers: list[dict], foliage: list[dict], packaging: dict | None, tier: dict, budget_num: int | None, stem_count: int | None=None) -> dict:
+    """按花材档位估算预算分项（含每种花材支数 + 人工费/装饰费收取标准）。
+
+    stem_count 为用户明确的支数（如「11 朵」），透传给 _alloc_stems，
+    保证预算明细与方案主花支数一致，不被预算档机械重算覆盖。
+    """
 
     def unit(name: str) -> int:
         return _PRICE_UNIT.get(_price_tier_of(name), 28)
     tkey = tier.get('tier', 'T2')
-    stems = _alloc_stems(tier, main, fillers, foliage, budget_num)
+    stems = _alloc_stems(tier, main, fillers, foliage, budget_num, stem_count)
     main_cost = sum(stems.get(m['name'], 1) * unit(m['name']) for m in main)
     filler_cost = sum(stems.get(f['name'], 1) * unit(f['name']) for f in fillers)
     foliage_cost = sum(stems.get(f['name'], 1) * unit(f['name']) for f in foliage)
@@ -636,7 +705,7 @@ def _build_budget_breakdown(main: list[dict], fillers: list[dict], foliage: list
     labor_fee = _LABOR_FEE.get(tkey, 25)
     decor_fee = _DECOR_FEE.get(tkey, 18)
     total = round(main_cost + filler_cost + foliage_cost + pkg_material + labor_fee + decor_fee)
-    items = [{'item': '主花', 'detail': '、'.join(f"{m['name']}×{stems.get(m['name'], 1)}" for m in main) or '玫瑰', 'amount': round(main_cost)}, {'item': '配材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in fillers) or '满天星', 'amount': round(filler_cost)}, {'item': '叶材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in foliage) or '尤加利', 'amount': round(foliage_cost)}, {'item': '包装材料', 'detail': packaging['name'] if packaging else '花束', 'amount': pkg_material}, {'item': '装饰费', 'detail': f'含丝带/贺卡/点缀（{decor_fee} 元/束，按预算档标准）', 'amount': decor_fee}, {'item': '人工费', 'detail': f'含修剪、去刺、扎制、定型（{labor_fee} 元/束，按预算档标准）', 'amount': labor_fee}]
+    items = [{'item': '主花', 'detail': '、'.join(f"{m['name']}×{stems.get(m['name'], 1)}" for m in main) or '无', 'amount': round(main_cost)}, {'item': '配材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in fillers) or '无', 'amount': round(filler_cost)}, {'item': '叶材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in foliage) or '无', 'amount': round(foliage_cost)}, {'item': '包装材料', 'detail': packaging['name'] if packaging else '花束', 'amount': pkg_material}, {'item': '装饰费', 'detail': f'含丝带/贺卡/点缀（{decor_fee} 元/束，按预算档标准）', 'amount': decor_fee}, {'item': '人工费', 'detail': f'含修剪、去刺、扎制、定型（{labor_fee} 元/束，按预算档标准）', 'amount': labor_fee}]
     return {'total_estimate': total, 'currency': 'CNY', 'items': items, 'fees': {'labor': labor_fee, 'labor_standard': '按预算档收取：入门档 15 元 / 精致档 25 元 / 高级档 40 元（含修剪、去刺、扎制、定型）', 'decor': decor_fee, 'decor_standard': '按预算档收取：入门档 10 元 / 精致档 18 元 / 高级档 30 元（含丝带、贺卡、点缀饰材）', 'note': '花材费用按支数计，人工与装饰费为门店统一标准，下单前请以门店确认为准。'}, 'note': '以上为按花材档位做的估算，实际价格以门店/供应商为准。'}
 
 def _suitable_for(recipient: str, occasion: str) -> list[str]:
@@ -710,13 +779,15 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     style_label = style.get('name', parent_style.get('name', '韩式'))
     budget_num = int(dims['budget']) if dims.get('budget') else None
     tier = _get_tier(budget_num, scene.get('budget_anchor') if scene else None)
+    single_flower = dims.get('single_flower')
+    stem_count = int(dims['stem_count']) if dims.get('stem_count') not in (None, '', 'null') else None
     prefer = list(scene.get('main_flower_preference', [])) if scene else []
     keep_main = [n for n in dims.get('_keep_main', '').split(',') if n] if dims.get('_keep_main') else []
-    main, fillers, foliage = _resolve_flowers(dims, style, tier, prefer_flowers=prefer or keep_main, exclude_flowers=exclude_flowers)
+    main, fillers, foliage = _resolve_flowers(dims, style, tier, prefer_flowers=prefer or keep_main, exclude_flowers=exclude_flowers, single_flower=single_flower)
     main_flowers = [{'name': f['name'], 'role': '主花', 'flower_language': f.get('flower_language', [])} for f in main]
     filler_flowers = [{'name': f['name'], 'role': '填充'} for f in fillers]
     foliage_flowers = [{'name': f['name'], 'role': '叶材'} for f in foliage]
-    stems = _alloc_stems(tier, main, fillers, foliage, budget_num)
+    stems = _alloc_stems(tier, main, fillers, foliage, budget_num, stem_count)
     for fl in main_flowers + filler_flowers + foliage_flowers:
         fl['qty'] = stems.get(fl['name'], 1)
         fl['unit_price'] = _PRICE_UNIT.get(_price_tier_of(fl['name']), 28)
@@ -741,12 +812,21 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     lo, hi = tier['range']
     est = f'{lo}-{hi} 元' if budget_num is None else f"约 {budget_num} 元（{tier['label']}档）"
     effect_prompt = f"{style_label}风格花束，主花为{'、'.join(f['name'] for f in main) or '玫瑰'}，搭配{'、'.join(f['name'] for f in fillers) or '满天星'}与{'、'.join(f['name'] for f in foliage) or '尤加利'}，色调{'/'.join(color_scheme)}，{(packaging['name'] if packaging else '花束')}包装，背景干净柔和，摄影级静物，高级感"
+    # 单一花材：覆盖为纯色单花描述，避免 effect_prompt 残留「搭配满天星」等外搭措辞。
+    if single_flower and main:
+        sf_name = main[0]['name']
+        pk_name = packaging['name'] if packaging else '花束'
+        effect_prompt = f"{style_label}风格纯{sf_name}花束，仅使用{sf_name}一种花材，{pk_name}包装，色调统一，背景干净柔和，摄影级静物，高级感"
     occ_label = dims.get('occasion') or (scene['name'] if scene else '定制')
     notes = []
     if scene:
         notes.append(f"场景模板：{scene['name']} —— {scene.get('notes', '')}")
     notes.append(f"风格：{style_label}（{style.get('description', '')}）")
-    notes.append(f"预算档：{tier['label']}（{tier['config']}）")
+    # 单一花材方案不展示预算档模板的配材举例（如「满天星/小雏菊」），避免误导为方案内容。
+    if single_flower:
+        notes.append(f"预算档：{tier['label']}")
+    else:
+        notes.append(f"预算档：{tier['label']}（{tier['config']}）")
     if exclude_flowers:
         notes.append(f"已按反馈移除：{'、'.join(sorted(exclude_flowers))}")
     freshness_days = {'高': '约 7-10 天', '中': '约 5-7 天', '低': '约 3-5 天'}
@@ -759,12 +839,17 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     suitable_for = _suitable_for(dims.get('recipient', ''), occ_label)
     caution = _build_caution(main)
     mood_tags = _mood_tags(color_scheme, tone)
-    _stems = _alloc_stems(tier, main, fillers, foliage, budget_num)
+    _stems = _alloc_stems(tier, main, fillers, foliage, budget_num, stem_count)
     _flower_qty_text = '、'.join(f"{f['name']}×{_stems.get(f['name'], 1)}" for f in main + fillers + foliage if f) or '玫瑰×10'
     tkey = tier.get('tier', 'T2')
     labor_fee = _LABOR_FEE.get(tkey, 25)
     decor_fee = _DECOR_FEE.get(tkey, 18)
-    plan = {'plan_id': 'DIY_' + uuid.uuid4().hex[:6], 'version': version, 'parent_id': parent_id, 'name': f'{style_label}·{occ_label}花束', 'diy': True, 'style': style_label, 'style_id': style_id, 'substyle_id': substyle_id, 'substyle': style.get('name') if substyle_id and resolved is not parent else None, 'recipient': dims.get('recipient', '通用'), 'occasion': occ_label, 'scene_id': scene['id'] if scene else None, 'scene': scene['name'] if scene else None, 'budget_num': budget_num, 'budget_tier': tier['label'], 'design': {'main_flowers': main_flowers, 'fillers': filler_flowers, 'foliage': foliage_flowers, 'color_scheme': color_scheme, 'packaging': packaging['name'] if packaging else '花束', 'meaning': meaning, 'notes': notes, 'difficulty': difficulty, 'est_time': est_time, 'shelf_life': shelf_life, 'suitable_for': suitable_for, 'caution': caution, 'mood_tags': mood_tags, 'fees': {'labor_fee': labor_fee, 'labor_standard': f'人工费 {labor_fee} 元/束（含修剪、去刺、扎制、定型，按预算档标准收取）', 'decor_fee': decor_fee, 'decor_standard': f'装饰费 {decor_fee} 元/束（含丝带、贺卡、点缀饰材，按预算档标准收取）', 'stem_count': _flower_qty_text, 'note': '花材按支数计费，人工费与装饰费为门店统一收取标准，下单前以门店确认为准。'}}, 'estimated_price': est, 'effect_prompt': effect_prompt, 'desc': f"为你设计了一份{style_label}{occ_label}花束：花材共 {_flower_qty_text}，色调{'/'.join(color_scheme)}，寓意{meaning}。含人工费 {labor_fee} 元 + 装饰费 {decor_fee} 元，预算{est}。", 'diy_steps': _build_diy_steps(main, fillers, foliage, color_scheme, packaging), 'care_tips': _build_care_tips(main), 'card_message': _build_card_message(dims.get('recipient', '朋友'), scene['name'] if scene else occ_label, style_label, tone, short_meaning), 'budget_breakdown': _build_budget_breakdown(main, fillers, foliage, packaging, tier, budget_num)}
+    plan = {'plan_id': 'DIY_' + uuid.uuid4().hex[:6], 'version': version, 'parent_id': parent_id, 'name': f'{style_label}·{occ_label}花束', 'diy': True, 'style': style_label, 'style_id': style_id, 'substyle_id': substyle_id, 'substyle': style.get('name') if substyle_id and resolved is not parent else None, 'recipient': dims.get('recipient', '通用'), 'occasion': occ_label, 'scene_id': scene['id'] if scene else None, 'scene': scene['name'] if scene else None, 'budget_num': budget_num, 'budget_tier': tier['label'], 'design': {'main_flowers': main_flowers, 'fillers': filler_flowers, 'foliage': foliage_flowers, 'color_scheme': color_scheme, 'packaging': packaging['name'] if packaging else '花束', 'meaning': meaning, 'notes': notes, 'difficulty': difficulty, 'est_time': est_time, 'shelf_life': shelf_life, 'suitable_for': suitable_for, 'caution': caution, 'mood_tags': mood_tags, 'fees': {'labor_fee': labor_fee, 'labor_standard': f'人工费 {labor_fee} 元/束（含修剪、去刺、扎制、定型，按预算档标准收取）', 'decor_fee': decor_fee, 'decor_standard': f'装饰费 {decor_fee} 元/束（含丝带、贺卡、点缀饰材，按预算档标准收取）', 'stem_count': _flower_qty_text, 'note': '花材按支数计费，人工费与装饰费为门店统一收取标准，下单前以门店确认为准。'}}, 'estimated_price': est, 'effect_prompt': effect_prompt, 'desc': f"为你设计了一份{style_label}{occ_label}花束：花材共 {_flower_qty_text}，色调{'/'.join(color_scheme)}，寓意{meaning}。含人工费 {labor_fee} 元 + 装饰费 {decor_fee} 元，预算{est}。", 'diy_steps': _build_diy_steps(main, fillers, foliage, color_scheme, packaging), 'care_tips': _build_care_tips(main), 'card_message': _build_card_message(dims.get('recipient', '朋友'), scene['name'] if scene else occ_label, style_label, tone, short_meaning), 'budget_breakdown': _build_budget_breakdown(main, fillers, foliage, packaging, tier, budget_num, stem_count)}
+    # 打标：供 _merge_plan 强制单一花材 / 明确支数（LLM 输出不得违背用户显式要求）。
+    if single_flower:
+        plan['_single_flower'] = single_flower
+    if stem_count is not None:
+        plan['stem_count'] = stem_count
     return plan
 
 def _retrieve_for_design(requirements: str) -> str:
@@ -846,9 +931,47 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
                 plan['budget_breakdown'] = ld['budget_breakdown']
             else:
                 tier = _get_tier(plan.get('budget_num'), None)
-                plan['budget_breakdown'] = _build_budget_breakdown(real_main, real_fill, real_foli, pkg, tier, plan.get('budget_num'))
+                plan['budget_breakdown'] = _build_budget_breakdown(real_main, real_fill, real_foli, pkg, tier, plan.get('budget_num'), plan.get('stem_count'))
         if ld.get('card_message') not in (None, '', []):
             plan['card_message'] = ld['card_message']
+    # ===== 硬性约束：用户明确的单一花材 / 支数，LLM 输出不得违背 =====
+    _sf = plan.get('_single_flower')
+    _sc = plan.get('stem_count')
+    if _sf:
+        sf_flower = _known_flower(_sf)
+        sf_name = sf_flower.get('name', _sf) if sf_flower else _sf
+        if _sc is not None:
+            qty = int(_sc)
+        else:
+            _t = _get_tier(plan.get('budget_num'), None)
+            qty = _TIER_MAIN_STEMS.get(_t.get('tier', 'T2'), 10)
+        # 严格只保留该单一花材，清空被 LLM 混入的其他花/配材/叶材。
+        plan['design']['main_flowers'] = [{'name': sf_name, 'role': '主花', 'flower_language': (sf_flower.get('flower_language', []) if sf_flower else []), 'qty': qty}]
+        plan['design']['fillers'] = []
+        plan['design']['foliage'] = []
+        # notes 还原为规则引擎的真实说明：过滤掉含其它花材名的条目（可能是 LLM 残留或
+        # 预算档模板举例），并补一条单花说明，保证方案里不再出现无关花材字样。
+        _fl_terms = {t for t in _all_flower_terms() if t != sf_name and t != _sf}
+        plan['design']['notes'] = [n for n in (baseline.get('design', {}).get('notes') or []) if not any(t in n for t in _fl_terms)]
+        plan['design']['notes'].append(f"单一花材：仅用{sf_name}一种花材，不搭配配材/叶材。")
+        # 寓意一并按该花材真实花语重建，避免 LLM 残留「康乃馨代表母爱」等其它花材文案。
+        plan['design']['meaning'] = '、'.join(dict.fromkeys(sf_flower.get('flower_language', []))) if sf_flower else '美好心意'
+        style_label = plan.get('style') or '韩式'
+        pk_name = plan['design'].get('packaging') or '花束'
+        meaning = plan['design'].get('meaning') or '美好心意'
+        est = plan.get('estimated_price') or ''
+        # 方案名也须同步：LLM 若起了「康乃馨花束」之类的名字，覆盖为纯该花材。
+        plan['name'] = f"{style_label}·纯{sf_name}花束"
+        plan['effect_prompt'] = f"{style_label}风格纯{sf_name}花束，仅使用{sf_name}一种花材，{pk_name}包装，色调统一，背景干净柔和，摄影级静物，高级感"
+        plan['desc'] = f"为你设计了一份纯{sf_name}花束：{sf_name}×{qty}，寓意{meaning}。{('预算' + str(est) + '。') if est else ''}"
+        pkg = {'name': pk_name, 'id': 'PK_BOX' if '礼盒' in pk_name else 'PK_BOUQUET'}
+        plan['diy_steps'] = _build_diy_steps(plan['design']['main_flowers'], [], [], plan['design'].get('color_scheme') or [], pkg)
+        tier = _get_tier(plan.get('budget_num'), None)
+        plan['budget_breakdown'] = _build_budget_breakdown(plan['design']['main_flowers'], [], [], pkg, tier, plan.get('budget_num'), plan.get('stem_count'))
+    elif _sc is not None and plan['design'].get('main_flowers'):
+        # 仅明确支数（非单一花材）：统一把主花支数设为用户指定数量。
+        for fl in plan['design']['main_flowers']:
+            fl['qty'] = int(_sc)
     _anchor_style(plan)
     plan = _enrich_plan_fees(plan)
     return plan
@@ -862,7 +985,15 @@ def design_with_llm(requirements: str) -> dict:
     baseline = _build_plan(_extract(requirements))
     try:
         knowledge = _retrieve_for_design(requirements)
-        system = '你是资深花艺设计师。依据用户需求与下方【知识库召回】设计一份花艺方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述（含花材与支数，如「玫瑰×10 配满天星×3」）,"effect_prompt":"生图 prompt（描述花材/色彩/形态/包装，与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语],"qty":支数}],"fillers":[{"name":花名,"role":"填充","qty":支数}],"foliage":[{"name":叶材名,"role":"叶材","qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤(数组，需具体到每种花材的修剪方式与数量，如「玫瑰×10 斜剪45°去刺去叶」),"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：花材必须从【候选花材】中选取真实名称；配色与风格须与知识库一致；每种花材务必给出具体支数 qty（按预算合理分配，主花 6-16 支、配材/叶材 1-4 支）；diy_steps 要具体到每种花材怎么修剪（斜剪/去刺/去叶/摘雄蕊）、怎么装饰；若用户未指定某维度，按花语与场景合理默认，不要留空。'
+        # 用户显式约束（单一花材 / 支数）注入到设计 prompt，引导 LLM 不跑偏。
+        req = extract_requirement(requirements)
+        hard_constraints: list[str] = []
+        if req.single_flower:
+            hard_constraints.append(f"用户明确要求『纯{req.single_flower}』单一花材：禁止混入任何其他花材、配材或叶材（不得出现康乃馨、非洲菊、满天星、尤加利等），design.fillers 与 design.foliage 必须为空数组，main_flowers 只能含「{req.single_flower}」。")
+        if req.stem_count is not None:
+            hard_constraints.append(f"用户明确要求主花 {req.stem_count} 支（朵），main_flowers 的 qty 必须为 {req.stem_count}。")
+        constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
+        system = '你是资深花艺设计师。依据用户需求与下方【知识库召回】设计一份花艺方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述（含花材与支数，如「玫瑰×10 配满天星×3」）,"effect_prompt":"生图 prompt（描述花材/色彩/形态/包装，与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语],"qty":支数}],"fillers":[{"name":花名,"role":"填充","qty":支数}],"foliage":[{"name":叶材名,"role":"叶材","qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤(数组，需具体到每种花材的修剪方式与数量，如「玫瑰×10 斜剪45°去刺去叶」),"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：花材必须从【候选花材】中选取真实名称；配色与风格须与知识库一致；每种花材务必给出具体支数 qty（按预算合理分配，主花 6-16 支、配材/叶材 1-4 支）；diy_steps 要具体到每种花材怎么修剪（斜剪/去刺/去叶/摘雄蕊）、怎么装饰；若用户未指定某维度，按花语与场景合理默认，不要留空。' + constraint_block
         user = f'用户需求：{requirements}\n\n{knowledge}'
         resp = call_llm([{'role': 'system', 'content': system}, {'role': 'user', 'content': user}], response_format={'type': 'json_object'})
         content = resp.choices[0].message.content
@@ -895,9 +1026,20 @@ def revise_with_llm(plan: str, feedback: str) -> dict:
     fb = _extract_feedback(feedback)
     dims.update(fb['dims'])
     baseline = _build_plan(dims, version=original.get('version', 1) + 1, parent_id=original.get('plan_id'), exclude_flowers=fb['exclude'])
+    # 继承原方案的单一花材 / 支数约束，避免改版后跑偏。
+    if original.get('_single_flower'):
+        baseline['_single_flower'] = original['_single_flower']
+    if original.get('stem_count') is not None:
+        baseline['stem_count'] = original['stem_count']
     try:
         knowledge = _retrieve_for_design(f"{original.get('desc', '')} {feedback}")
-        system = '你是资深花艺设计师。基于【已有方案】与【用户反馈】调整出一版新方案，只输出 JSON、不要额外解释。字段须严格同设计：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述,"effect_prompt":"生图 prompt（与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语]}],"fillers":[{"name":花名,"role":"填充"}],"foliage":[{"name":叶材名,"role":"叶材"}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤,"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：反馈明确要改的维度必须落实；花材从知识库真实名称选；未提及的维度保持原方案，不要随意改动。'
+        hard_constraints: list[str] = []
+        if original.get('_single_flower'):
+            hard_constraints.append(f"原方案为『纯{original['_single_flower']}』单一花材：除用户反馈明确要求加入其他花材外，必须保持单一花材，禁止混入康乃馨、非洲菊、满天星、尤加利等。")
+        if original.get('stem_count') is not None:
+            hard_constraints.append(f"原方案主花为 {original['stem_count']} 支，除非反馈要求改数量，否则 qty 保持 {original['stem_count']}。")
+        constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
+        system = '你是资深花艺设计师。基于【已有方案】与【用户反馈】调整出一版新方案，只输出 JSON、不要额外解释。字段须严格同设计：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述,"effect_prompt":"生图 prompt（与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语]}],"fillers":[{"name":花名,"role":"填充"}],"foliage":[{"name":叶材名,"role":"叶材"}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤,"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：反馈明确要改的维度必须落实；花材从知识库真实名称选；未提及的维度保持原方案，不要随意改动。' + constraint_block
         user = f'已有方案：{json.dumps(original, ensure_ascii=False)}\n用户反馈：{feedback}\n\n{knowledge}'
         resp = call_llm([{'role': 'system', 'content': system}, {'role': 'user', 'content': user}], response_format={'type': 'json_object'})
         llm_plan = json.loads(resp.choices[0].message.content)
