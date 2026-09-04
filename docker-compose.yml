@@ -23,7 +23,7 @@ services:
     container_name: flora-agent
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     # 若使用上方 postgres 容器，.env 中 DATABASE_URL 写：
