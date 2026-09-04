@@ -1,7 +1,9 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.pyo
 .env
+.env.*
 data/
 *.db
 deploy/certs/
+.workbuddy/
