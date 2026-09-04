@@ -1,4 +1,4 @@
-# 广州 ECS 部署清单（花艺智能体）
+# 广州 ECS 部署清单（跳舞兰花卉智能体）
 
 > 针对实例：`b56a5198e4d449e89d29d0101fe90731`（OpenClaw-于琴）
 > 华南3（广州）· 2核2G · 40G 系统盘 · 公网 IP `8.138.203.6`
@@ -75,7 +75,7 @@ free -h && df -h /
 
 **分叉处理：**
 
-- `80/443` 被 OpenClaw 的 Web 服务占用 → 要么把花艺智能体的 Nginx 改用别的端口（如 8443），要么复用现有 Nginx（把 `deploy/nginx.conf` 里的 `location` 块并入它的配置，`proxy_pass` 指向 `http://127.0.0.1:8000`）
+- `80/443` 被 OpenClaw 的 Web 服务占用 → 要么把跳舞兰花卉智能体的 Nginx 改用别的端口（如 8443），要么复用现有 Nginx（把 `deploy/nginx.conf` 里的 `location` 块并入它的配置，`proxy_pass` 指向 `http://127.0.0.1:8000`）
 - `8000` 被占 → 改 `docker-compose.yml` 端口映射（如 `"8001:8000"`）
 - Docker 未装 → 第 5 步装
 

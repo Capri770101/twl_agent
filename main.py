@@ -53,14 +53,14 @@ async def lifespan(app: FastAPI):
         logger.exception('image_tasks 表自检失败：请执行 migrations/001_image_tasks.sql')
         raise RuntimeError('image_tasks 表不可用，请先执行 migrations/001_image_tasks.sql 或检查数据库权限。') from exc
     recover_incomplete_tasks()
-    logger.info('花艺智能体服务启动 | env=%s | port=%s', settings.APP_ENV, settings.PORT)
+    logger.info('跳舞兰花卉智能体服务启动 | env=%s | port=%s', settings.APP_ENV, settings.PORT)
     yield
-    logger.info('花艺智能体服务关闭')
+    logger.info('跳舞兰花卉智能体服务关闭')
 
 
 app = FastAPI(
-    title='花艺智能体 API',
-    description='基于 ReAct 的花艺顾问 AI，支持微信小程序接入',
+    title='跳舞兰花卉智能体 API',
+    description='跳舞兰花卉智能体：基于 ReAct 的花艺顾问 AI，支持微信小程序等多平台接入',
     version='1.0.0',
     lifespan=lifespan
 )
