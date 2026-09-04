@@ -129,10 +129,12 @@ def _apply_one_transform(name: str, arg: Any, value: Any) -> Any:
         except (TypeError, ValueError):
             return value
     if name == 'prepend_url':
-        prefix = (arg or '').rstrip('/')
-        text = str(value)
+        text = str(value).strip()
+        if not text:
+            return ''
         if text.lower().startswith(('http://', 'https://')):
             return text
+        prefix = (arg or '').rstrip('/')
         return prefix + (text if text.startswith('/') else '/' + text)
     return value
 
