@@ -70,10 +70,17 @@ CANONICAL_ENTITIES: dict[str, dict[str, Any]] = {
 }
 
 
-def tool_result(ok: bool, data: Any = None, error: str | None = None) -> str:
-    """把工具执行结果统一封装成 JSON 字符串（ok / data / error 三键恒定）。"""
+def tool_result(ok: bool, data: Any = None, error: str | None = None, meta: dict[str, Any] | None = None) -> str:
+    """把工具执行结果统一封装成 JSON 字符串（ok / data / error 三键恒定）。
+
+    meta 为可选补充信息（如查询是否已被店铺限定、过滤是否生效），
+    仅在传入时输出，不影响既有的 data 消费方（渲染器只取 data）。
+    """
     import json
-    return json.dumps({'ok': ok, 'data': data, 'error': error}, ensure_ascii=False)
+    payload: dict[str, Any] = {'ok': ok, 'data': data, 'error': error}
+    if meta:
+        payload['meta'] = meta
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _norm(s: str) -> str:

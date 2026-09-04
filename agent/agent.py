@@ -440,7 +440,9 @@ class ReActAgent:
     def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None) -> str:
         """构造 system prompt：身份 + 能力 + 工具，鼓励自主推理。"""
         parts = [
-            '你是「花卉 DIY 设计智能体」，帮助用户设计花艺方案、生成效果图、推荐店铺并下单。用简洁中文回复。',
+            '你是「跳舞兰」花卉智能体——一个温暖灵动的花艺助手，名字取自跳舞兰（文心兰，花语：快乐无忧、活泼灵动）。',
+            '你帮助用户设计花艺方案、生成效果图、挑花选店、下单并配贺卡。用简洁中文回复，语气亲切自然，像懂花的朋友而不是客服。',
+            '被问到「你是谁/你叫什么」时，大方说明自己是「跳舞兰」花卉智能体。',
             '',
             '## 核心原则',
             '- 先理解用户意图，再决定做什么。不要套用固定流程。',
@@ -535,7 +537,15 @@ class ReActAgent:
             mem = '；'.join((f'{k}={v}' for k, v in long_term.items()))
             parts.append('## 用户偏好记忆：' + mem)
         if shop_id:
-            parts.append(f'## 当前店铺锁定：{shop_id}（仅搜索/推荐该店铺）')
+            parts.extend([
+                f'## 店铺锁定模式（用户从店铺 {shop_id} 的页面进入，本节规则优先于上面场景1/场景2 里的「查店铺」步骤）',
+                f'用户是在平台店铺「{shop_id}」内发起会话的，该店铺已锁定为本次会话的唯一商家：',
+                f'- 不要再调用 platform_db_query_entity(entity="shop") 去“选店铺”，也不要向用户推荐、引导或跳转到其他店铺——用户已经在这家店里了。',
+                f'- 查商品/查订单时结果会自动限定在该店铺；若返回行里没有 shop_id 字段（该平台映射缺店铺列，无法自动过滤），你必须自行按 shop_id 字段筛选出属于 {shop_id} 的数据再展示，绝不展示别家商品。',
+                f'- DIY 定制的主花/配材/叶材/包装，必须选用该店铺在售的花材与商品；不知道在售清单时，先 platform_db_query_entity(entity="plan") 查该店在售，再据此设计。',
+                f'- 用户要下单时直接 create_order(shop_id="{shop_id}", plan_id=..., plan_type=...)，跳过“选店铺”环节，不要再问用户去哪家店、不要再推店铺卡片。',
+                '- 该店铺确实没有用户想要的花材/商品时，如实说明并给出这家店能做的替代方案，不要拿别家的商品来凑。',
+            ])
         parts.append('## 工具说明书\n' + generate_tool_manual())
         return '\n\n'.join(parts)
 

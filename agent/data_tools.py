@@ -39,12 +39,36 @@ def platform_db_sample_table(source_id: str, schema: str='public', table: str=''
         return tool_result(False, error=str(exc))
 
 
-@register_tool(name='platform_db_query_entity', description='按指定 source_id 的 active 映射只读查询标准业务实体；没有 active 映射、字段白名单或实体映射时拒绝执行。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string'}, 'entity': {'type': 'string', 'description': 'plan/shop/order/user'}, 'keyword': {'type': 'string'}, 'limit': {'type': 'integer'}}, 'required': ['source_id', 'entity']}, tags=['database', 'query', 'external'])
-def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit: int=10) -> str:
+@register_tool(name='platform_db_query_entity', description='按指定 source_id 的 active 映射只读查询标准业务实体；没有 active 映射、字段白名单或实体映射时拒绝执行。会话已绑定店铺（从某店铺进入）时，结果自动限定在该店铺内，无需也不应再查店铺列表。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string'}, 'entity': {'type': 'string', 'description': 'plan/shop/order/user'}, 'keyword': {'type': 'string'}, 'limit': {'type': 'integer'}, 'shop_id': {'type': 'string', 'description': '可选：只看该店铺的数据。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['source_id', 'entity']}, inject_context=True, tags=['database', 'query', 'external'])
+def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit: int=10, shop_id: str='', _context: dict | None=None) -> str:
+    # 会话锁定店铺优先兜底：LLM 漏传 shop_id 时也不会漏出跨店数据。
+    locked_shop = str((_context or {}).get('shop_id') or '').strip()
+    effective_shop = str(shop_id or '').strip() or locked_shop
+    # 锁定店铺下不允许越店查别的店（防止模型自作主张查别家商品）。
+    if locked_shop and effective_shop != locked_shop:
+        return tool_result(False, error=f'当前会话已锁定店铺 {locked_shop}，不允许查询其他店铺（{effective_shop}）的数据')
     try:
-        return tool_result(True, query_external_entity(source_id, entity, keyword, limit))
+        rows = query_external_entity(source_id, entity, keyword, limit, shop_id=effective_shop)
     except Exception as exc:
         return tool_result(False, error=str(exc))
+    meta: dict[str, Any] = {}
+    if effective_shop:
+        meta['shop_scoped'] = True
+        meta['shop_id'] = effective_shop
+        # 映射缺店铺列时 SQL 层无法过滤，须明确告知模型自行按 shop_id 字段筛选。
+        meta['filtered_by'] = 'mapping_shop_column' if rows_scoped_by_sql(entity, rows, effective_shop) else 'none_needs_model_filter'
+    return tool_result(True, rows, meta=meta or None)
+
+
+def rows_scoped_by_sql(entity: str, rows: list[dict[str, Any]], shop_id: str) -> bool:
+    """判断结果是否真的按店铺过滤过。
+
+    映射含 shop_id 列时 SQL 已过滤；没有该列时结果未过滤，
+    由调用方（模型）根据行内 shop_id 字段自行筛选。空结果视为已过滤（无从漏出）。
+    """
+    if not rows:
+        return True
+    return 'shop_id' in (rows[0] or {})
 
 
 @register_tool(name='platform_mapping_draft', description='根据 platform_db_discover 返回的脱敏 schema profile 生成结构化映射草案，包含候选表字段、证据、置信度和风险；仅 draft，不会写文件、激活映射或写入目标库。', parameters={'type': 'object', 'properties': {'profile': {'type': 'object'}}, 'required': ['profile']}, tags=['database', 'mapping', 'external'])

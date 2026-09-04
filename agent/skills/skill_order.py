@@ -192,13 +192,19 @@ async def _submit_platform_order(payload: dict) -> dict[str, Any]:
     return data
 
 
-@register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。shop_id 必须是平台真实店铺 ID（来自 platform_db_query_entity）；plan_id 支持 latest/DIY_xxx（会话内方案）或平台在售方案 ID（配合 source_id 读取）。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自 platform_db_query_entity entity=shop 的返回）'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
+@register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。会话从某店铺进入（已锁定店铺）时无需再查店铺列表，直接下单即可；此时若传入其他 shop_id 会被拒绝。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自平台查询返回的店铺 ID）。会话已锁定店铺时可省略，会自动使用锁定的店铺'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
 async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: str = '', _context: dict | None = None) -> str:
     """组装订单信息 → 调用平台自有下单 API → 返回 order_card / pay_jump 数据。"""
     user_id = (_context or {}).get('user_id', '')
     session_id = (_context or {}).get('session_id', '')
     if not user_id:
         return json.dumps({'error': '缺少用户身份，无法下单'}, ensure_ascii=False)
+    # 会话从某家店铺进入时锁定该店：允许模型省略 shop_id，但禁止把单下到别家。
+    locked_shop = str((_context or {}).get('shop_id') or '').strip()
+    if locked_shop:
+        if shop_id and str(shop_id) not in (locked_shop, 'first'):
+            return json.dumps({'error': f'当前会话已锁定店铺 {locked_shop}，不能向其他店铺（{shop_id}）下单'}, ensure_ascii=False)
+        shop_id = locked_shop
     if not shop_id or shop_id == 'first':
         return json.dumps({'error': '需要指定平台真实店铺 ID：请先用 platform_db_query_entity(entity="shop") 查询可用店铺并把 shop_id 传给我'}, ensure_ascii=False)
     if plan_type != 'diy':
@@ -209,13 +215,17 @@ async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: st
     if plan is None and source_id and plan_id and plan_type == 'existing':
         try:
             from backend.data_gateway.external import query_external_entity
-            rows = query_external_entity(source_id, 'plan', keyword=plan_id, limit=1)
+            rows = query_external_entity(source_id, 'plan', keyword=plan_id, limit=1, shop_id=shop_id)
             if rows:
                 plan = rows[0]
         except Exception as exc:  # noqa: BLE001
             return json.dumps({'error': f'回读平台在售方案失败: {exc}'}, ensure_ascii=False)
     if not plan:
         return json.dumps({'error': '未找到可下单的方案：DIY 方案请先设计并确认（plan_id 用 latest），平台在售方案请用 platform_db_query_entity 查询后传回 source_id 与方案 ID'}, ensure_ascii=False)
+    # 方案自带店铺归属时，锁定店铺下必须与之一致，避免拿别店的商品在本店下单。
+    plan_shop = str(plan.get('shop_id') or '').strip()
+    if locked_shop and plan_shop and plan_shop != locked_shop:
+        return json.dumps({'error': f'该方案属于店铺 {plan_shop}，与当前锁定的店铺 {locked_shop} 不一致，无法下单'}, ensure_ascii=False)
     if plan_type == 'diy' and not plan.get('diy') and not str(plan.get('plan_id', '')).startswith('DIY_'):
         # 用户显式要下 DIY，但解析到的是平台商品 → 纠正类型
         if plan.get('price') is not None:
