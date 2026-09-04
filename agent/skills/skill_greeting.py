@@ -7,7 +7,7 @@
 
 渲染方式：Pillow 模板合成（无外部生图依赖、文字清晰、秒级同步出图）。
 - 画布默认 900×1200（竖版贺卡），内置 5 套模板：warm / blush / green / letter / night；
-- 中文字体自动探测（配置 CARD_FONT_PATH 或常见系统路径；Docker 镜像已装 fonts-noto-cjk）；
+- 中文字体自动探测（配置 CARD_FONT_PATH 或常见系统路径；Docker 镜像已装 fonts-wqy-microhei）；
 - 结果经 backend.storage.object_store.save_generated 写入 data/generated/，
   image_url 形如 /generated/greet_*.png（可配 IMAGE_PUBLIC_BASE_URL 转公网 CDN 前缀）。
 
@@ -347,7 +347,7 @@ def _find_font_path() -> str:
             return p
     raise RuntimeError(
         '未找到中文字体，无法渲染贺卡：请配置 CARD_FONT_PATH 指向系统中文字体文件'
-        '（如 Noto Sans CJK / 微软雅黑），Docker 部署已内置 fonts-noto-cjk。'
+        '（如文泉驿微米黑 / 微软雅黑），Docker 部署已内置 fonts-wqy-microhei。'
     )
 
 
