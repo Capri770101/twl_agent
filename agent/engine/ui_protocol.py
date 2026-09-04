@@ -23,6 +23,7 @@ class UIType(StrEnum):
     ORDER_CARD = "order_card"
     PAY_JUMP = "pay_jump"
     IMAGE_TASK = "image_task"  # 生图结果：同步已 done 直接给 result_url，异步给 poll 轮询
+    GREETING_CARD = "greeting_card"  # 电子贺卡：模板合成已同步完成，data 直接含 image_url
 
 
 class AgentActionType(StrEnum):
@@ -36,6 +37,7 @@ class AgentActionType(StrEnum):
     CREATE_ORDER = "create_order"
     OPEN_PAYMENT = "open_payment"
     START_IMAGE_TASK = "start_image_task"
+    SHOW_GREETING_CARD = "show_greeting_card"
     REQUEST_PLATFORM = "request_platform"
 
 
@@ -111,3 +113,14 @@ class PayJump(BaseModel):
     order_id: str
     page_path: str = "/pages/order/confirm"
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class GreetingCard(BaseModel):
+    """greeting_card 数据：电子贺卡（模板合成，同步完成，无需轮询）。"""
+
+    image_url: str  # 贺卡大图（/generated/greet_*.png）
+    text: str = ""  # 祝福语正文
+    recipient: str = ""  # 收卡人称呼，如「亲爱的妈妈」
+    sender: str = ""  # 落款，如「爱你的女儿」
+    template: str = "warm"  # 实际使用的模板名（warm/blush/green/letter/night）
+    note: str = ""  # 兜底说明（如超长截断/自定义处理）

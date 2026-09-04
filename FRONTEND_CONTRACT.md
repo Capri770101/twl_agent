@@ -4,6 +4,8 @@
 >
 > 本智能体是**纯后端 API**，只产出结构化的 `ui / data / action`。**所有 UI 渲染、按钮交互、页面跳转都由宿主平台的前端负责**。
 >
+> 方案卡片现在可通过标准工具 `show_plan_card` 直接输出，模型不需要手写 `ui="plan_card"`。
+>
 > 因此，接入平台**必须先实现下列前端组件**，否则对话会出现「智能体返回了方案数据、前端却没地方展示」的断层：
 >
 > | UI 组件 | 触发场景 |
@@ -13,6 +15,7 @@
 > | `order_card` 订单确认卡 | 用户确认方案+店铺后创建订单 |
 > | `pay_jump` 支付跳转 | 订单已创建，需要打开支付页 |
 > | `image_task` 生图进度 | 生成效果图（需轮询任务） |
+> | `greeting_card` 电子贺卡 | 下单后/主动要求生成电子贺卡（同步出图） |
 > | `dialog_options` 选项按钮 | 让用户在几个选项里选择 |
 > | `text` 文本气泡 | 知识问答 / 兜底文本（最简单，必须有） |
 >
@@ -292,6 +295,39 @@ data: {"ui": "plan_card", "data": {"plans": [...]}}
 
 `status`：`processing`（生成中）/ `done`（成功，带 `result_url`）/ `failed`（失败，带 `error`）。任务状态由服务端数据库持久化；服务重启时遗留的 `processing` 任务会变成 `failed`，前端不要无限轮询。部署方如果没有 `image_tasks` 表，请先执行 [`migrations/001_image_tasks.sql`](migrations/001_image_tasks.sql)。注意：接口实际返回状态值是 `done`，不是 `completed`。
 
+### 8. `greeting_card` —— 电子贺卡（同步出图，无需轮询）
+
+- **何时出现**：下单成功后智能体主动问「要不要配张贺卡」，或用户直接要求做贺卡。
+- **渲染要求**：直接展示 `data.image_url` 大图（模板合成，**已同步完成**，不需要轮询）；卡片下附文案，提供「换模板 / 改文案重做」入口——回传触发新一轮对话即可。
+- **对应能力**：`show_greeting_card`
+- **配套工具**：`suggest_greetings`（预设祝福语候选）→ `render_greeting_card`（渲染成图）
+
+```json
+{
+  "reply": "贺卡做好啦，送给妈妈的生日祝福～",
+  "ui": "greeting_card",
+  "data": {
+    "image_url": "/generated/greet_20260904120000_ab12cd.png",
+    "text": "妈妈，生日快乐！愿岁月对您温柔……",
+    "recipient": "亲爱的妈妈",
+    "sender": "爱你的女儿",
+    "template": "warm",
+    "note": "模板 warm（温暖奶油风：米金渐变、暖色小花，适合家人/温馨场合）"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `image_url` | string | 贺卡大图地址（相对地址，接 IMAGE_PUBLIC_BASE_URL 前缀即为公网 URL） |
+| `text` | string | 实际展示的祝福语正文（超长已截断） |
+| `recipient` | string | 收卡人称呼（无则空） |
+| `sender` | string | 落款（无则空） |
+| `template` | string | 模板名：`warm`/`blush`/`green`/`letter`/`night` |
+| `note` | string | 备注（含模板风格说明，可展示为小字） |
+
+「换模板 / 改文案重做」只需把用户原话（如「换成墨绿风」「再文艺一点」）作为新消息发回 `/chat`，智能体会再次调用 `render_greeting_card`。
+
 ---
 
 ## 三、action 与 required_capabilities 对照表
@@ -305,6 +341,7 @@ data: {"ui": "plan_card", "data": {"plans": [...]}}
 | `order_card` | `create_order` | `create_order` | 展示订单详情；对接平台订单服务 |
 | `pay_jump` | `open_payment` | `open_payment` | 用平台支付能力打开收银/支付页 |
 | `image_task` | `start_image_task` | `start_image_task` | 展示生成状态 + 轮询 `GET /tasks/{task_id}` |
+| `greeting_card` | `show_greeting_card` | `show_greeting_card` | 展示贺卡大图 + 文案；重做指令回传 |
 
 > `required_capabilities` 只表示**接入方需要具备的前端/业务能力**，不是智能体可自行调用的接口。能力缺失时按 `action.fallback` 或 `reply` 做文本降级，不要中断会话。
 
@@ -321,6 +358,7 @@ data: {"ui": "plan_card", "data": {"plans": [...]}}
 - [ ] 实现 `order_card`：明细 + 合计 + 确认交互
 - [ ] 实现 `pay_jump`：跳转到平台自己的支付页
 - [ ] 实现 `image_task`：生成中状态 + `GET /tasks/{id}` 轮询 + 结果图展示
+- [ ] 实现 `greeting_card`：贺卡大图 + 文案 + 「换模板/改文案重做」回传
 - [ ] `/chat/stream` 收到 `card` 事件时能正确渲染卡片
 - [ ] 任一能力缺失时有文本降级（渲染 `reply` + `action.fallback`），不报错中断
 - [ ] 可以用 `GET /ui-contract` 拉取清单，与本仓库 `agent/engine/ui_protocol.py` 字段保持一致

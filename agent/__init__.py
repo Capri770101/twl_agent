@@ -14,5 +14,6 @@ from agent import diy_tools as _diy_tools  # noqa: F401
 from agent import memory_tools as _memory_tools  # noqa: F401
 from agent import tools as _tools  # noqa: F401
 from agent.skills import skill_order as _skill_order  # noqa: F401
+from agent.skills import skill_greeting as _skill_greeting  # noqa: F401
 
 __all__ = ['tools', 'toolkit']

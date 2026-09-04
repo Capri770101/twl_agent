@@ -983,3 +983,12 @@ def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage
         intent = 'other'
     return {'reply': reply, 'ui': ui, 'data': data or {}, 'stage': stage, 'intent': intent}
 
+
+@register_tool(name='show_plan_card', description='标准方案卡片输出工具。用于展示现成方案或 DIY 方案，调用时只需传 plans 列表，工具会自动包装为 plan_card 并结束本轮对话。', parameters={'type': 'object', 'properties': {'plans': {'type': 'array', 'description': '方案卡片列表，每项应符合 plan_card 约定'}, 'reply': {'type': 'string', 'description': '给用户的自然语言说明'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 view_plan 或 diy_design'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}}, 'required': ['plans']}, tags=['meta'])
+def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='view_plan', intent: str='design') -> dict[str, Any]:
+    """方案卡片终结工具：统一输出 plan_card。"""
+    if intent not in ('buying', 'qa', 'chitchat', 'design', 'other'):
+        intent = 'design'
+    if stage not in ('view_plan', 'diy_design', 'plan_confirm', 'select_mode', 'analyze'):
+        stage = 'view_plan'
+    return {'reply': reply, 'ui': UIType.PLAN_CARD.value, 'data': {'plans': plans or []}, 'stage': stage, 'intent': intent}

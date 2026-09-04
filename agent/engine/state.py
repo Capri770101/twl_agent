@@ -29,6 +29,7 @@ class SessionStage(StrEnum):
     SHOP_RECOMMEND = "shop_recommend"  # 推荐店铺
     ORDER_CONFIRM = "order_confirm"  # 组装订单
     DONE = "done"                    # 已生成支付跳转参数
+    GREETING_CARD = "greeting_card"  # 为订单配电子贺卡 / 生成贺卡图
 
     @classmethod
     def ordered(cls) -> list[SessionStage]:
@@ -36,5 +37,5 @@ class SessionStage(StrEnum):
         return [
             cls.ANALYZE, cls.SELECT_MODE, cls.VIEW_PLAN, cls.DIY_DESIGN,
             cls.IMAGE_GEN, cls.PLAN_CONFIRM, cls.SHOP_RECOMMEND,
-            cls.ORDER_CONFIRM, cls.DONE,
+            cls.ORDER_CONFIRM, cls.DONE, cls.GREETING_CARD,
         ]

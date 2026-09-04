@@ -194,7 +194,7 @@ class ReActAgent:
                 messages.append(assistant_msg)
                 new_msgs.append({**assistant_msg, 'content': ''})
                 for tc in tool_calls:
-                    if tc['name'] == 'respond_to_user':
+                    if tc['name'] in ('respond_to_user', 'show_plan_card'):
                         respond_args = tc['arguments']
                         obs = json.dumps(respond_args, ensure_ascii=False)
                         messages.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
@@ -462,7 +462,7 @@ class ReActAgent:
             '  2. 用户回答后，调 generate_diy_plan(requirements="送给妈妈的生日花束，预算200，喜欢粉色")',
             '  3. 方案生成后展示给用户（plan_card），问「方案满意吗？」',
             '  4. 用户确认后要买：platform_db_query_entity(entity="shop") 找店铺 → create_order(shop_id=店铺ID, plan_id="latest", plan_type="diy")',
-            '  5. 调 respond_to_user(reply="方案已设计好...", ui="plan_card", data={plans:[...]})',
+            '  5. 调 show_plan_card(plans=[...], reply="方案已设计好...")',
             '',
             '### 场景3：用户问花艺知识',
             '用户说「百合花什么季节开花」「玫瑰的花语是什么」→',
@@ -486,6 +486,14 @@ class ReActAgent:
             '  - 绝不编造商品或订单，绝不拿别家数据冒充；',
             '  - 接入由部署方配置 PLATFORM_DB_<SOURCE_ID>_URL 与 active 映射后生效，对话内不会自动完成。',
             '',
+            '### 场景7：为订单配电子贺卡（下单成功后可主动引导）',
+            '用户刚下单成功，或明确说「配张贺卡」「写句祝福」「做张卡片」→',
+            '  1. 先调 suggest_greetings(recipient="收卡人", occasion="场合") 取候选祝福语（优先用方案里已确认的送花对象/场合；不确定可留空让词库出通用候选）',
+            '  2. 把候选展示给用户挑（每条带序号与适用备注）；用户选定、或直接给了自定义文案后',
+            '  3. 调 render_greeting_card(text="祝福语", recipient="亲爱的妈妈", sender="落款", template="warm/blush/green/letter/night") 渲染成贺卡图（秒级出图，无需轮询）',
+            '  4. 贺卡会以 greeting_card 卡片自动展示；可追问用户要不要换模板 / 改文案重做',
+            '  注意：贺卡渲染是模板合成（文字清晰），不要为「做贺卡」调用 generate_effect_image（那是给花束效果图用的异步生图）。',
+            '',
             '## 下单契约（重要）',
             '- 下单一律走平台自有下单接口 create_order：需部署方已配置 PLATFORM_ORDER_API_URL（可选 KEY），未配置时工具会明确报错并引导去平台下单，绝不写本地订单表。',
             '- shop_id 必须是 platform_db_query_entity(entity="shop") 返回的平台真实店铺 ID；plan_id 用 "latest"（会话内 DIY/最近方案）或平台在售方案 ID（配 source_id 只读回读）。',
@@ -498,8 +506,11 @@ class ReActAgent:
             '- generate_effect_image(plan)：为方案生成效果图（方案完成后系统常自动触发）',
             '- retrieve_knowledge(domain, query)：查花艺知识库（花材/风格/搭配/预算/包装/商家智库）',
             '- create_order(shop_id, plan_id, plan_type, source_id)：提交平台下单并返回支付跳转',
+            '- suggest_greetings(recipient, occasion, style)：按收卡人×场合×语气返回预设祝福语候选（内置情景词库）',
+            '- render_greeting_card(text, recipient, sender, template)：把祝福语模板合成电子贺卡图，返回 image_url（同步出图）',
             '- save_memory / save_user_profile：记住用户偏好',
-            '- respond_to_user(reply, ui, data, stage, intent)：结束本轮输出',
+            '- respond_to_user(reply, ui, data, stage, intent)：通用终结工具',
+            '- show_plan_card(plans, reply, stage, intent)：标准方案卡片输出工具',
             '- platform_db_discover / platform_db_sample_table / platform_mapping_*：部署接入期由配置方使用；日常对话不需要',
             '',
             '## respond_to_user 参数说明',
@@ -547,7 +558,8 @@ class ReActAgent:
         """基于本轮工具产出推导 UI 焦点（focus），不再做状态机拦截。
 
         skill 编排模式下，focus 仅用于前端高亮「用户当前在做什么」，不限制流程：
-        - 有订单 → done；店铺查询(platform_db_query_entity entity=shop) → shop_recommend；
+        - 有订单 → done；电子贺卡渲染 → greeting_card；
+        - 店铺查询(platform_db_query_entity entity=shop) → shop_recommend；
         - 有生图 → image_gen；DIY 方案生成/改版 → diy_design；
         - 平台在售方案浏览(entity=plan) → view_plan；
         - 否则保持进入时的焦点（incoming），避免无工具轮次焦点乱跳。
@@ -555,6 +567,8 @@ class ReActAgent:
         ordered = [tc.name for tc in tool_log if tc.status == 'ok']
         if 'create_order' in ordered:
             return SessionStage.DONE
+        if 'render_greeting_card' in ordered:
+            return SessionStage.GREETING_CARD
         if _entity_query_ok(tool_log, 'shop'):
             return SessionStage.SHOP_RECOMMEND
         if 'generate_effect_image' in ordered:
@@ -585,6 +599,8 @@ class ReActAgent:
             return data if data.get('order_id') or data.get('page_path') else None
         if ui == UIType.IMAGE_TASK:
             return data if data.get('task_id') or data.get('result_url') else None
+        if ui == UIType.GREETING_CARD:
+            return data if data.get('image_url') else None
         return data
 
     def _derive_ui(self, tool_log: list[ToolCallRecord], stage: SessionStage, reply: str) -> tuple[UIType, dict[str, Any]]:
@@ -600,6 +616,7 @@ class ReActAgent:
             'revise_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}),
             'generate_effect_image': lambda r: (UIType.IMAGE_TASK, {'task_id': r.get('task_id'), 'poll': r.get('poll'), **({'result_url': r['result_url']} if r.get('result_url') else {})}),
             'create_order': lambda r: (UIType.ORDER_CARD, r),
+            'render_greeting_card': lambda r: (UIType.GREETING_CARD, r),
         }
         for tc in reversed(tool_log):
             if tc.status != 'ok':
@@ -608,6 +625,9 @@ class ReActAgent:
                 result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
             except (json.JSONDecodeError, TypeError):
                 result = {}
+            if isinstance(result, dict) and result.get('error'):
+                # 工具自身返回 {error}（如下单/渲染失败）：不产卡片，回退 text 如实播报
+                continue
             # platform_db_query_entity 返回 tool_result 封装 {ok, data:[规范行], error}，
             # 按调用参数的 entity 分流：plan → plan_card、shop → shop_card；失败/空结果不产卡片。
             if tc.name == 'platform_db_query_entity':

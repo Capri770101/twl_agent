@@ -30,6 +30,7 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {}
 MCP_SAFE_TOOL_NAMES = frozenset({
     'retrieve_knowledge', 'generate_diy_plan', 'revise_diy_plan',
     'platform_db_query_entity', 'platform_mapping_get_active',
+    'suggest_greetings', 'render_greeting_card',
 })
 
 
