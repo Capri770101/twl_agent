@@ -73,9 +73,10 @@ def _qualified(dialect: str, schema: str, table: str) -> str:
 
 
 def _current_db_user_sql(dialect: str) -> str:
+    # 别名 database / user 在 MySQL 是保留字，必须按方言加引号，否则 1064 语法错。
     if dialect == 'postgresql':
-        return 'current_database() AS database, current_user AS user, version() AS version'
-    return 'DATABASE() AS database, CURRENT_USER() AS user, VERSION() AS version'
+        return 'current_database() AS "database", current_user AS "user", version() AS "version"'
+    return 'DATABASE() AS `database`, CURRENT_USER() AS `user`, VERSION() AS `version`'
 
 
 def _ilike_expr(dialect: str, col_ident: str) -> str:
