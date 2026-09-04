@@ -164,7 +164,7 @@ ALLOWED_ORIGINS=https://your-miniprogram.com,https://your-h5.com
 
 当前代码中的 `/chat` 返回字段为：`reply`、`ui`、`data`、`action`、`tool_calls`、`session_id`、`stage`。
 
-`/chat/stream` 使用 SSE，常见事件为：`thinking`、`tool_call`、`tool_result`、`text`、`error`。
+`/chat/stream` 使用 SSE，真实事件（以线上实测为准）为：`tool_call`、`text`、`card`、`done`、`error`。注意：实测中没有 `thinking` 和 `tool_result` 这两个事件。
 
 ---
 
