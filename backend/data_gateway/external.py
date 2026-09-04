@@ -106,6 +106,50 @@ def _safe_limit(value: int, maximum: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# 结果转换（展示层规整，按 active 映射的 transforms 配置执行，不写库）
+# --------------------------------------------------------------------------- #
+def _parse_transform(spec: str) -> tuple[str, Any]:
+    """解析转换规则字符串，返回 (name, arg)。
+
+    支持：
+    - 'cents_to_yuan'：整型/字符串数值 ÷100，规整为「元」（如 8800 -> 88.0）
+    - 'prepend_url:<BASE>'：为相对路径补 CDN 基址（已是 http(s):// 则原样返回）
+    """
+    if spec and spec.startswith('prepend_url:'):
+        return 'prepend_url', spec[len('prepend_url:'):]
+    return spec, None
+
+
+def _apply_one_transform(name: str, arg: Any, value: Any) -> Any:
+    if value is None:
+        return None
+    if name == 'cents_to_yuan':
+        try:
+            return round(float(value) / 100.0, 2)
+        except (TypeError, ValueError):
+            return value
+    if name == 'prepend_url':
+        prefix = (arg or '').rstrip('/')
+        text = str(value)
+        if text.lower().startswith(('http://', 'https://')):
+            return text
+        return prefix + (text if text.startswith('/') else '/' + text)
+    return value
+
+
+def _apply_transforms(rows: list[dict[str, Any]], transforms: dict[str, str]) -> list[dict[str, Any]]:
+    """transforms: {canonical_col: spec}。对查询返回做展示层规整（原地修改后返回）。"""
+    if not transforms:
+        return rows
+    parsed = {col: _parse_transform(spec) for col, spec in transforms.items()}
+    for row in rows:
+        for col, (name, arg) in parsed.items():
+            if col in row:
+                row[col] = _apply_one_transform(name, arg, row[col])
+    return rows
+
+
+# --------------------------------------------------------------------------- #
 # 连接层
 # --------------------------------------------------------------------------- #
 def _parse_mysql_url(url: str) -> dict[str, Any]:
@@ -308,7 +352,9 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
         sql += ' LIMIT %s'
         params.append(limit)
         rows = conn.execute(sql, params).fetchall()
-    return [dict(row) for row in rows]
+    rows = [dict(row) for row in rows]
+    transforms = selected.get('transforms') or {}
+    return _apply_transforms(rows, transforms)
 
 
 def discover_external(source_id: str, schema: str = 'public', sample_rows: int = 0) -> dict[str, Any]:
