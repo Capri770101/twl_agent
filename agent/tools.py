@@ -899,13 +899,17 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
     plan = _enrich_plan_fees(plan)
     return plan
 
-def design_with_llm(requirements: str) -> dict:
+def design_with_llm(requirements: str, shop_id: str = '') -> dict:
     """语义化设计：RAG 检索知识库 + DeepSeek 生成方案，规则引擎作兜底与结构补全。
 
     相对纯规则引擎，LLM 能理解「治愈系」「有故事感」「不按常理」等模糊/语义化需求，
     从知识库召回的真实花材中组织出更贴合的方案文案、选花与配色，而非套模板。
+
+    shop_id 非空（用户从某家店铺进入）时，方案的原料范围被硬限定在该店铺在售清单内。
     """
     baseline = _build_plan(_extract(requirements))
+    if shop_id:
+        baseline['shop_id'] = shop_id
     try:
         knowledge = _retrieve_for_design(requirements)
         # 用户显式约束（单一花材 / 支数）注入到设计 prompt，引导 LLM 不跑偏。
@@ -915,6 +919,8 @@ def design_with_llm(requirements: str) -> dict:
             hard_constraints.append(f"用户明确要求『纯{req.single_flower}』单一花材：禁止混入任何其他花材、配材或叶材（不得出现康乃馨、非洲菊、满天星、尤加利等），design.fillers 与 design.foliage 必须为空数组，main_flowers 只能含「{req.single_flower}」。")
         if req.stem_count is not None:
             hard_constraints.append(f"用户明确要求主花 {req.stem_count} 支（朵），main_flowers 的 qty 必须为 {req.stem_count}。")
+        if shop_id:
+            hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
         system = '你是资深花艺设计师。依据用户需求与下方【知识库召回】设计一份花艺方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述（含花材与支数，如「玫瑰×10 配满天星×3」）,"effect_prompt":"生图 prompt（描述花材/色彩/形态/包装，与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语],"qty":支数}],"fillers":[{"name":花名,"role":"填充","qty":支数}],"foliage":[{"name":叶材名,"role":"叶材","qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤(数组，需具体到每种花材的修剪方式与数量，如「玫瑰×10 斜剪45°去刺去叶」),"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：花材必须从【候选花材】中选取真实名称；配色与风格须与知识库一致；每种花材务必给出具体支数 qty（按预算合理分配，主花 6-16 支、配材/叶材 1-4 支）；diy_steps 要具体到每种花材怎么修剪（斜剪/去刺/去叶/摘雄蕊）、怎么装饰；若用户未指定某维度，按花语与场景合理默认，不要留空。' + constraint_block
         user = f'用户需求：{requirements}\n\n{knowledge}'
@@ -931,24 +937,37 @@ def design_with_llm(requirements: str) -> dict:
         logger.exception('[design] LLM 语义生成失败，回退规则引擎')
         return baseline
 
-def design_diy_plan(requirements: str) -> dict:
+def _shop_scope_rule(shop_id: str) -> str:
+    """店铺锁定场景下的原料约束文案（用户从某家店铺进入时注入设计/改版 prompt）。"""
+    return (f'本次方案必须在店铺 {shop_id} 内完成：主花、配材、叶材与包装只能选用该店铺在售的花材与商品，'
+            f'禁止使用该店没有的花材。若还不知道该店在售清单，先调用 '
+            f'platform_db_query_entity(entity="plan", shop_id="{shop_id}") 查询该店在售花材/商品，再据此设计。')
+
+
+def design_diy_plan(requirements: str, shop_id: str = '') -> dict:
     """设计一份结构化 DIY 花艺方案（RAG + LLM 语义生成，规则引擎兜底）。
 
     链路：RAG 检索知识库 → DeepSeek 生成语义化方案 → 规则引擎 _build_plan 补全结构/兜底。
     返回可供 UI 渲染、生图与下单承接的结构化 dict。
+    shop_id 非空时方案原料限定在该店铺在售范围内。
     """
-    return design_with_llm(requirements)
+    return design_with_llm(requirements, shop_id=shop_id)
 
-def revise_with_llm(plan: str, feedback: str) -> dict:
+def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     """语义化改版：RAG 检索 + DeepSeek 基于已有方案与反馈调整，规则引擎兜底。
 
     反馈里明确要改的（预算/风格/色系/移除花材）必须落实；未提及维度保持原方案。
+    shop_id 非空（或从原方案继承）时，改版后的原料仍限定在该店铺在售范围内。
     """
     original = _parse_plan(plan)
+    # 店铺锁定沿用原方案，避免改版后跳出该店在售范围。
+    shop_id = shop_id or str(original.get('shop_id') or '')
     dims = _dims_from_plan(original)
     fb = _extract_feedback(feedback)
     dims.update(fb['dims'])
     baseline = _build_plan(dims, version=original.get('version', 1) + 1, parent_id=original.get('plan_id'), exclude_flowers=fb['exclude'])
+    if shop_id:
+        baseline['shop_id'] = shop_id
     # 继承原方案的单一花材 / 支数约束，避免改版后跑偏。
     if original.get('_single_flower'):
         baseline['_single_flower'] = original['_single_flower']
@@ -961,6 +980,8 @@ def revise_with_llm(plan: str, feedback: str) -> dict:
             hard_constraints.append(f"原方案为『纯{original['_single_flower']}』单一花材：除用户反馈明确要求加入其他花材外，必须保持单一花材，禁止混入康乃馨、非洲菊、满天星、尤加利等。")
         if original.get('stem_count') is not None:
             hard_constraints.append(f"原方案主花为 {original['stem_count']} 支，除非反馈要求改数量，否则 qty 保持 {original['stem_count']}。")
+        if shop_id:
+            hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
         system = '你是资深花艺设计师。基于【已有方案】与【用户反馈】调整出一版新方案，只输出 JSON、不要额外解释。字段须严格同设计：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述,"effect_prompt":"生图 prompt（与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语]}],"fillers":[{"name":花名,"role":"填充"}],"foliage":[{"name":叶材名,"role":"叶材"}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤,"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：反馈明确要改的维度必须落实；花材从知识库真实名称选；未提及的维度保持原方案，不要随意改动。' + constraint_block
         user = f'已有方案：{json.dumps(original, ensure_ascii=False)}\n用户反馈：{feedback}\n\n{knowledge}'
@@ -971,10 +992,12 @@ def revise_with_llm(plan: str, feedback: str) -> dict:
         new_plan['version'] = original.get('version', 1) + 1
         new_plan['parent_id'] = original.get('plan_id')
         new_plan['diy'] = True
-        return json.dumps(new_plan, ensure_ascii=False)
+        if shop_id:
+            new_plan['shop_id'] = shop_id
+        return new_plan
     except Exception:
         logger.exception('[revise] LLM 语义改版失败，回退规则引擎')
-        return json.dumps(baseline, ensure_ascii=False)
+        return baseline
 
 @register_tool(name='respond_to_user', description='当你准备好向用户输出本轮最终回复时，必须调用该工具结束本轮对话。携带：reply（自然语言回复）、ui（UI 动作类型）、data（按 ui 类型填充）、stage（协商后的下一业务阶段）、intent（你判断的用户本轮真实意图）。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言回复'}, 'ui': {'type': 'string', 'enum': [e.value for e in UIType], 'description': '小程序渲染的 UI 动作类型'}, 'data': {'type': 'object', 'description': '按 ui 类型约定的结构化数据'}, 'stage': {'type': 'string', 'description': '下一业务阶段，如 analyze/select_mode/view_plan/diy_design/image_gen/shop_recommend/done'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图：buying=有购买/挑选花束的明确意图；qa=问花卉/花艺知识或咨询（花期/养护/寓意/送什么花好）；chitchat=纯闲聊寒暄；design=要 DIY 定制专属花束；other=其他。判定依据是用户『想干什么』，不是本轮是否调了工具。'}}, 'required': ['reply', 'ui', 'data', 'stage']}, tags=['meta'])
 def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage: str='analyze', intent: str='other') -> dict[str, Any]:

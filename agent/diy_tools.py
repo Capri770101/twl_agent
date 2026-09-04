@@ -39,20 +39,22 @@ def _parse_plan(plan: str) -> dict:
     return {}
 
 
-@register_tool(name='generate_diy_plan', description='根据用户需求设计一份结构化 DIY 花艺方案：抽取维度→查知识库→组装主花/配材/配比、色彩方案、包装、寓意文案与预算估算，并返回可供生图的 effect_prompt。输出另含分步插花指引(diy_steps)、养护建议(care_tips)、贺卡寄语文案(card_message)与预算明细(budget_breakdown)。', parameters={'type': 'object', 'properties': {'requirements': {'type': 'string', 'description': '用户的 DIY 需求描述'}}, 'required': ['requirements']}, inject_context=True, tags=['diy'])
-async def generate_diy_plan(requirements: str, _context: dict | None=None) -> str:
+@register_tool(name='generate_diy_plan', description='根据用户需求设计一份结构化 DIY 花艺方案：抽取维度→查知识库→组装主花/配材/配比、色彩方案、包装、寓意文案与预算估算，并返回可供生图的 effect_prompt。输出另含分步插花指引(diy_steps)、养护建议(care_tips)、贺卡寄语文案(card_message)与预算明细(budget_breakdown)。会话已绑定店铺时，方案原料自动限定在该店铺在售范围内。', parameters={'type': 'object', 'properties': {'requirements': {'type': 'string', 'description': '用户的 DIY 需求描述'}, 'shop_id': {'type': 'string', 'description': '可选：限定该店铺在售原料。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['requirements']}, inject_context=True, tags=['diy'])
+async def generate_diy_plan(requirements: str, shop_id: str='', _context: dict | None=None) -> str:
     from agent.tools import design_diy_plan
 
-    plan = design_diy_plan(requirements)
+    # 会话锁定店铺优先：漏传参数也不会设计出该店没有的原料。
+    plan = design_diy_plan(requirements, shop_id=str(shop_id or (_context or {}).get('shop_id') or '').strip())
     await _store_diy_plan(plan, _context)
     return json.dumps(plan, ensure_ascii=False)
 
 
-@register_tool(name='revise_diy_plan', description='基于已有方案 + 自然语言反馈，调整出下一版花艺方案：可调预算（便宜点/高档）、改风格、改色系、移除指定花材（不要X/去掉X）。返回带 version 与 parent_id 的可追溯新方案。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '上一版方案 JSON 或含 JSON 的文本'}, 'feedback': {'type': 'string', 'description': '用户反馈，如 便宜点/换成红玫瑰/不要康乃馨/颜色再大胆'}}, 'required': ['plan', 'feedback']}, inject_context=True, tags=['diy'])
+@register_tool(name='revise_diy_plan', description='基于已有方案 + 自然语言反馈，调整出下一版花艺方案：可调预算（便宜点/高档）、改风格、改色系、移除指定花材（不要X/去掉X）。返回带 version 与 parent_id 的可追溯新方案。改版会继承原方案的店铺限定，原料不会跳出该店在售范围。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '上一版方案 JSON 或含 JSON 的文本'}, 'feedback': {'type': 'string', 'description': '用户反馈，如 便宜点/换成红玫瑰/不要康乃馨/颜色再大胆'}}, 'required': ['plan', 'feedback']}, inject_context=True, tags=['diy'])
 async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) -> str:
     from agent.tools import revise_with_llm
 
-    new_plan = revise_with_llm(plan, feedback)
+    ctx_shop = str((_context or {}).get('shop_id') or '').strip()
+    new_plan = revise_with_llm(plan, feedback, shop_id=ctx_shop)
     await _store_diy_plan(new_plan, _context)
     return json.dumps(new_plan, ensure_ascii=False)
 

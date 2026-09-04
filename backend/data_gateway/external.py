@@ -68,7 +68,13 @@ def sample_external_table(source_id: str, schema: str, table: str, limit: int = 
     return {'source_id': source_id, 'schema': schema, 'table': table, 'rows': [{k: _redact(v, k) for k, v in dict(row).items()} for row in rows], 'limit': limit}
 
 
-def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10) -> list[dict[str, Any]]:
+def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '') -> list[dict[str, Any]]:
+    """只读查询标准业务实体。
+
+    shop_id 非空时，若该实体的 active 映射含店铺列（canonical 名 shop_id），
+    则按店铺过滤——用于「从某家店铺进入」的场景，把结果硬限定在该店铺内。
+    映射没有店铺列时无法在 SQL 层过滤，此时返回未过滤结果（调用方需知晓）。
+    """
     if not _IDENTIFIER.match(entity or ''):
         raise ValueError('invalid entity')
     from backend.data_gateway.mapping_store import get_active_mapping
@@ -91,10 +97,17 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
     limit = max(1, min(int(limit or 1), 100))
     sql = f'SELECT {", ".join(aliases)} FROM {_qualified(schema, table)}'
     params: list[Any] = []
+    conditions: list[str] = []
     name_col = columns.get('name')
     if keyword and name_col and _IDENTIFIER.match(name_col):
-        sql += f' WHERE "{name_col}" ILIKE %s'
+        conditions.append(f'"{name_col}" ILIKE %s')
         params.append(f'%{keyword}%')
+    shop_col = columns.get('shop_id')
+    if shop_id and shop_col and _IDENTIFIER.match(shop_col):
+        conditions.append(f'CAST("{shop_col}" AS text) = %s')
+        params.append(str(shop_id))
+    if conditions:
+        sql += ' WHERE ' + ' AND '.join(conditions)
     sql += ' LIMIT %s'
     params.append(limit)
     with _connect_external(source_id) as conn:
