@@ -214,10 +214,17 @@ async def ui_contract() -> dict[str, Any]:
             'render': '生图进度：展示生成中 + 按 poll 轮询 GET /tasks/{task_id}；成功后展示 result_url/image_url',
             'example': {'task_id': 'task_img_0001', 'poll': '/tasks/task_img_0001', 'result_url': ''},
         },
+        {
+            'ui': UIType.GREETING_CARD.value,
+            'action_type': 'show_greeting_card',
+            'required_capabilities': ['show_greeting_card'],
+            'render': '电子贺卡：直接展示 data.image_url 大图 + 文案 + 「换模板/改文案重做」入口（同步完成，无需轮询）',
+            'example': {'image_url': '/generated/greet_20260904120000_ab12cd.png', 'text': '妈妈，生日快乐！……', 'recipient': '亲爱的妈妈', 'sender': '爱你的女儿', 'template': 'warm', 'note': '模板 warm（温暖奶油风：米金渐变、暖色小花，适合家人/温馨场合）'},
+        },
     ]
     return {
         'ui_types': ui_types,
-        'required_components': ['text', 'dialog_options', 'plan_card', 'shop_card', 'order_card', 'pay_jump', 'image_task'],
+        'required_components': ['text', 'dialog_options', 'plan_card', 'shop_card', 'order_card', 'pay_jump', 'image_task', 'greeting_card'],
         'contract_doc': 'FRONTEND_CONTRACT.md',
         'schema_source': 'agent/engine/ui_protocol.py',
         'note': '本后端只产出结构化 ui/data/action，前端渲染由宿主平台负责。接入前请先实现上述组件，否则会出现“有数据无展示”。',

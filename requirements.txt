@@ -16,3 +16,6 @@ psycopg[binary]>=3.2.0
 # 认证与 MCP
 PyJWT>=2.8.0
 mcp[cli]>=1.12.4,<2.0.0
+
+# 电子贺卡模板合成（中文排版依赖系统中文字体，Docker 已装 fonts-noto-cjk）
+pillow>=10.0.0

@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     IMAGE_HEIGHT: int = 1024
     IMAGE_PUBLIC_BASE_URL: str = ""  # 生图结果公网前缀（如 https://cdn.example.com）；留空则用本服务 /generated 相对路径
 
+    # ── 电子贺卡（模板合成，Pillow 渲染）──
+    CARD_FONT_PATH: str = ""  # 中文字体文件路径；留空则按常见系统路径自动探测（Docker 镜像已装 fonts-noto-cjk）
+    CARD_WIDTH: int = 900  # 贺卡画布宽(px)
+    CARD_HEIGHT: int = 1200  # 贺卡画布高(px)
+
     # ── 微信小程序 ──
     WECHAT_APPID: str = Field(default="", validation_alias=AliasChoices('WECHAT_APPID', 'WX_APPID'))
     WECHAT_SECRET: str = Field(default="", validation_alias=AliasChoices('WECHAT_SECRET', 'WX_SECRET'))
