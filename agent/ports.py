@@ -25,15 +25,10 @@ class SessionStore(Protocol):
     async def load_history(self, conversation_id: str, limit: int) -> list[dict[str, Any]]: ...
 
 
-class PlanRepository(Protocol):
-    async def get_plan(self, plan_id: str) -> dict[str, Any] | None: ...
-    async def search_plans(self, keyword: str, requirement: Any | None = None, location: dict[str, float] | None = None) -> list[dict[str, Any]]: ...
-    async def list_shop_plans(self, shop_id: str) -> list[dict[str, Any]]: ...
-
-
-class ShopRepository(Protocol):
-    async def get_shop(self, shop_id: str) -> dict[str, Any] | None: ...
-    async def search_shops(self, requirement: Any | None = None, location: dict[str, float] | None = None, limit: int = 10) -> list[dict[str, Any]]: ...
+# 本地商品/订单镜像已随 2026-09 架构重构移除：不再有 PlanRepository / ShopRepository
+# 等本地仓储契约。商品/店铺/订单一律通过平台只读查询
+# （backend.data_gateway.external.query_external_entity，须有 active 映射）与平台自有
+# 下单 API（backend 侧 create_order 适配器）访问，契约见 backend/data_gateway/。
 
 
 class LLMProvider(Protocol):

@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     VISION_ALLOWED_ROOT: str = str(BASE_DIR / 'data' / 'generated')
     VISION_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
 
+    # ── 平台自有下单 API（智能体不直写任何库，下单一律调平台侧能力）──
+    # 由部署方 / 平台方申请开通并配置；未配置时 create_order 明确报错，不静默、不落本地订单表。
+    PLATFORM_ORDER_API_URL: str = ""  # 例 https://api.flower-platform.com/v1/orders
+    PLATFORM_ORDER_API_KEY: str = ""  # 可选，下单 API 鉴权凭据（如 Bearer token）
+
     # ── 腾讯地图（可选）──
     TENCENT_MAP_KEY: str = ""
 

@@ -1,4 +1,9 @@
-"""数据发现与数据库工具。"""
+"""数据发现与数据库工具。
+
+只保留一套面向「平台外部数据库」的工具：``platform_db_*``（只读发现/查询/映射管理）。
+历史（2026-09 重构）：基于智能体本地 DATABASE_URL 的 ``db_auto_*`` 适配工具已移除——
+本地商品/订单镜像全是空表，会误导 LLM 返回空结果；商品数据一律只读平台库。
+"""
 
 from __future__ import annotations
 
@@ -7,16 +12,7 @@ from typing import Any
 from agent.toolkit import register_tool
 from backend.data_gateway.external import discover_external, query_external_entity, sample_external_table, test_external_connection
 from backend.data_gateway.mapping_store import get_active_mapping, list_mapping_drafts, save_mapping_draft, update_mapping_status
-from backend.data_gateway import (
-    auto_create_order,
-    auto_list_orders,
-    auto_query,
-    auto_search_plans,
-    auto_search_shops,
-    infer_mapping,
-    generate_mapping_draft,
-    tool_result,
-)
+from backend.data_gateway import generate_mapping_draft, tool_result
 
 
 @register_tool(name='platform_db_discover', description='只读发现目标平台外部 PostgreSQL 数据库的表、字段、类型、外键和可选脱敏样本，供 AI 生成 data_mapping.json 草案；不会写入目标库。连接凭据只从服务端环境变量读取。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string', 'description': '外部数据源 ID，对应 PLATFORM_DB_<SOURCE_ID>_URL 环境变量'}, 'schema': {'type': 'string', 'description': '数据库 schema，默认 public'}, 'sample_rows': {'type': 'integer', 'description': '每表样本行数，默认 0，最多 5'}}, 'required': ['source_id']}, tags=['database', 'discovery', 'external'])
@@ -87,53 +83,5 @@ def platform_mapping_set_status(mapping_id: str, status: str, actor: str) -> str
 def platform_mapping_get_active(source_id: str) -> str:
     try:
         return tool_result(True, get_active_mapping(source_id))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_map', description='自动推断当前数据库到标准业务实体的字段映射。', parameters={'type': 'object', 'properties': {'force_refresh': {'type': 'boolean'}}, 'required': []}, tags=['database', 'adapter'])
-def db_auto_map(force_refresh: bool=False) -> str:
-    try:
-        return tool_result(True, infer_mapping(force_refresh=force_refresh))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_query', description='按自动映射查询标准业务实体（plan/shop/order/user），返回统一字段的数据，适合未知数据库只读查询。', parameters={'type': 'object', 'properties': {'entity': {'type': 'string', 'description': '实体：plan | shop | order | user'}, 'keyword': {'type': 'string', 'description': '可选，按名称模糊搜索'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': ['entity']}, tags=['database', 'adapter'])
-def db_auto_query(entity: str, keyword: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_query(entity=entity, keyword=keyword, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_search_plans', description='按自动映射搜索方案/商品（plan），返回标准字段，适合未知数据库只读搜索现成花束。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': []}, tags=['database', 'adapter'])
-def db_auto_search_plans(keyword: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_search_plans(keyword=keyword, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_search_shops', description='按自动映射搜索店铺（shop），返回标准字段，适合未知数据库只读搜索店铺。', parameters={'type': 'object', 'properties': {'keyword': {'type': 'string', 'description': '搜索关键词'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': []}, tags=['database', 'adapter'])
-def db_auto_search_shops(keyword: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_search_shops(keyword=keyword, limit=limit))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_create_order', description='按自动映射创建订单。需要 data_mapping.json 中配置 write_enabled=true，否则拒绝写入。', parameters={'type': 'object', 'properties': {'user_id': {'type': 'string', 'description': '用户 ID'}, 'plan_id': {'type': 'string', 'description': '方案/商品 ID'}, 'total_price': {'type': 'number', 'description': '订单总价'}, 'status': {'type': 'string', 'description': '订单状态，默认 created'}, 'order_id': {'type': 'string', 'description': '可选，指定订单 ID'}, 'items': {'type': 'array', 'items': {'type': 'object'}, 'description': '可选订单明细'}}, 'required': ['user_id', 'plan_id', 'total_price']}, tags=['database', 'adapter', 'order'])
-def db_auto_create_order(user_id: str, plan_id: str, total_price: float, status: str='created', order_id: str='', items: list[dict] | None=None) -> str:
-    try:
-        return tool_result(True, auto_create_order(user_id=user_id, plan_id=plan_id, total_price=total_price, status=status, order_id=order_id, items=items))
-    except Exception as exc:
-        return tool_result(False, error=str(exc))
-
-
-@register_tool(name='db_auto_list_orders', description='按自动映射读取订单列表，可选按用户过滤。', parameters={'type': 'object', 'properties': {'user_id': {'type': 'string', 'description': '可选，用户 ID'}, 'limit': {'type': 'integer', 'description': '返回行数'}}, 'required': []}, tags=['database', 'adapter', 'order'])
-def db_auto_list_orders(user_id: str='', limit: int=10) -> str:
-    try:
-        return tool_result(True, auto_list_orders(user_id=user_id, limit=limit))
     except Exception as exc:
         return tool_result(False, error=str(exc))

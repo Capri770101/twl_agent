@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Callable
@@ -56,6 +57,36 @@ def _is_chitchat(text: str) -> bool:
 logger = logging.getLogger('agent')
 _AFFIRMATIVE = ('好', '可以', '确认', '同意', '生成', '要', '行', '是', '看看')
 _NEGATIVE = ('不用', '不要', '不需要', '不必', '算了', '跳过', '无需', '别', '放弃')
+
+
+def _platform_source_ids() -> list[str]:
+    """扫描进程环境变量，返回已配置的平台数据源 source_id（小写去重排序）。
+
+    与 backend/data_gateway/external.py 一致：连接串从
+    ``PLATFORM_DB_<SOURCE_ID>_URL`` 读取（部署方注入容器环境变量）。
+    未配置任何平台库时返回空列表，供 system prompt 如实告知 LLM。
+    """
+    ids: set[str] = set()
+    for key in os.environ:
+        if key.startswith('PLATFORM_DB_') and key.endswith('_URL'):
+            mid = key[len('PLATFORM_DB_'):-len('_URL')]
+            if mid:
+                ids.add(mid.lower())
+    return sorted(ids)
+
+
+def _entity_query_ok(tool_log: list[ToolCallRecord], entity: str) -> bool:
+    """本轮是否有成功的 platform_db_query_entity 调用且 arguments.entity 匹配。
+
+    entity 取值：plan / shop / order / user（对应平台只读查询的标准业务实体）。
+    """
+    return any(
+        tc.status == 'ok'
+        and tc.name == 'platform_db_query_entity'
+        and (tc.arguments or {}).get('entity') == entity
+        for tc in tool_log
+    )
+
 
 def is_allowed(role: str, action: str) -> bool:
     """角色权限检查（兼容接口）。"""
@@ -246,7 +277,7 @@ class ReActAgent:
             if new_stage == SessionStage.DONE:
                 ordered = [tc.name for tc in tool_log if tc.status == 'ok']
                 if 'create_order' not in ordered:
-                    new_stage = SessionStage.SHOP_RECOMMEND if 'search_shops' in ordered else incoming
+                    new_stage = SessionStage.SHOP_RECOMMEND if _entity_query_ok(tool_log, 'shop') else incoming
             ui_arg = str(respond_args.get('ui', ''))
             try:
                 ui = UIType(ui_arg)
@@ -301,7 +332,7 @@ class ReActAgent:
             if new_stage == SessionStage.DONE:
                 ordered = [tc.name for tc in tool_log if tc.status == 'ok']
                 if 'create_order' not in ordered:
-                    new_stage = SessionStage.SHOP_RECOMMEND if 'search_shops' in ordered else incoming
+                    new_stage = SessionStage.SHOP_RECOMMEND if _entity_query_ok(tool_log, 'shop') else incoming
             ui, data = self._derive_ui(tool_log, new_stage, final_reply)
 
         llm_intent = str(respond_args.get('intent', '') or '') if respond_args else ''
@@ -350,7 +381,8 @@ class ReActAgent:
             _qa_intent = llm_intent == 'qa'
         else:
             _qa_intent = bool(re.search('什么|怎么|为什么|多久|花期|养护|寓意|百科|介绍|季节', message)) and (not any(w in message for w in ('买', '送', '预算', '下单', 'diy', '方案', '推荐', '想要', '需要', '束')))
-        if _qa_intent and ui == UIType.PLAN_CARD and (not any(tc.name in ('generate_diy_plan', 'revise_diy_plan', 'generate_effect_image', 'search_shops', 'create_order') and tc.status == 'ok' for tc in tool_log)):
+        _has_plan_evidence = any(tc.name in ('generate_diy_plan', 'revise_diy_plan', 'generate_effect_image', 'create_order') and tc.status == 'ok' for tc in tool_log) or _entity_query_ok(tool_log, 'plan') or _entity_query_ok(tool_log, 'shop')
+        if _qa_intent and ui == UIType.PLAN_CARD and (not _has_plan_evidence):
             ui = UIType.TEXT
             data = {}
             logger.info('[agent] 知识问答轮次，丢弃 LLM 擅自推送的方案卡')
@@ -417,19 +449,19 @@ class ReActAgent:
             '',
             '## 工具调用指南（什么时候调什么）',
             '',
-            '### 场景1：用户要买现有花束',
+            '### 场景1：用户要买「平台在售花束」/ 看推荐',
             '用户说「给妈妈买束花」「有什么玫瑰推荐」→',
-            '  1. 调 search_plans(keyword="母亲") 或 search_plans(keyword="玫瑰")',
-            '  2. 看返回的方案列表，挑选合适的推荐给用户',
-            '  3. 用户选定后，调 search_shops(plan="方案ID") 找能做这家花束的店',
-            '  4. 调 respond_to_user(reply="推荐这家店...", ui="shop_card", data={shops:[...]})',
+            '  1. 调 platform_db_query_entity(source_id="<平台数据源>", entity="plan", keyword="母亲" 或 "玫瑰") 只读查平台在售方案（keyword 用用户原话；不传则取最近/全部，limit 控制条数）',
+            '  2. 从返回行（id / name / price / desc / image / merchant / tags / shop_id）挑选合适的推荐给用户',
+            '  3. 用户选定并要买：先 platform_db_query_entity(entity="shop") 查能做/配送的店铺，再 create_order(shop_id=店铺真实ID, plan_id=方案ID, plan_type="existing", source_id=同一数据源)',
+            '  4. 用 respond_to_user 结束：给方案卡 ui="plan_card" data={plans:[...]}；只咨询/比价也可 ui="text"',
             '',
             '### 场景2：用户要 DIY 定制',
             '用户说「帮我设计一束花」「想要独一无二的」→',
             '  1. 先问清楚：送给谁？什么场合？预算多少？喜欢什么颜色？（问1-2个关键问题）',
             '  2. 用户回答后，调 generate_diy_plan(requirements="送给妈妈的生日花束，预算200，喜欢粉色")',
-            '  3. 方案生成后展示给用户，问「方案满意吗？」',
-            '  4. 用户满意后，调 search_shops(plan="latest_diy") 找店铺',
+            '  3. 方案生成后展示给用户（plan_card），问「方案满意吗？」',
+            '  4. 用户确认后要买：platform_db_query_entity(entity="shop") 找店铺 → create_order(shop_id=店铺ID, plan_id="latest", plan_type="diy")',
             '  5. 调 respond_to_user(reply="方案已设计好...", ui="plan_card", data={plans:[...]})',
             '',
             '### 场景3：用户问花艺知识',
@@ -443,29 +475,32 @@ class ReActAgent:
             '  1. 调 revise_diy_plan(plan="当前方案JSON", feedback="换粉色，不要百合")',
             '  2. 展示修改后的方案',
             '',
-            '### 场景5：用户要查订单',
+            '### 场景5：用户查订单',
             '用户说「我上次订的花发货了吗」→',
-            '  1. 调 db_auto_list_orders(user_id="用户ID")',
-            '  2. 告知订单状态',
+            '  1. 调 platform_db_query_entity(source_id="<平台数据源>", entity="order", keyword="订单号/用户ID") 只读查询',
+            '  2. 告知订单状态；订单/配送以下单平台侧为准（order 实体需该 source 的 active 映射已配置，否则如实说明）',
             '',
-            '### 场景6：接入未知数据库',
-            '第一次接入新数据库时：',
-            '  1. 调 source_inspect() 了解整体结构',
-            '  2. 调 db_discover() 看具体表和数据',
-            '  3. 调 db_auto_map() 推断字段映射',
-            '  4. 之后用 db_auto_search_plans / db_auto_search_shops 查询',
+            '### 场景6：平台数据未接入 / 查询报错',
+            'platform_db_query_entity 报「未配置外部数据源连接」或「没有该来源的 active mapping」时：',
+            '  - 如实告知用户：该平台暂未接入商品/店铺/订单数据，无法查询与下单；',
+            '  - 绝不编造商品或订单，绝不拿别家数据冒充；',
+            '  - 接入由部署方配置 PLATFORM_DB_<SOURCE_ID>_URL 与 active 映射后生效，对话内不会自动完成。',
             '',
-            '## 工具列表',
-            '- search_plans(keyword)：搜索现有花束方案。关键词用用户的话，如「母亲」「玫瑰」。',
-            '- search_shops(plan)：搜索能做某方案的店铺。plan 传方案 ID 或 "latest"。',
-            '- generate_diy_plan(requirements)：生成 DIY 方案。requirements 传用户需求描述。',
-            '- revise_diy_plan(plan, feedback)：修改方案。plan 传当前方案 JSON，feedback 传修改意见。',
-            '- generate_effect_image(plan)：为方案生成效果图。plan 传 "latest_diy" 或方案描述。',
-            '- match_shop_items(shop_id, flowers)：匹配店铺库存。flowers 传花材列表。',
-            '- search_diy_plans(keyword)：搜索历史 DIY 方案模板。',
-            '- retrieve_knowledge(domain, query)：查花艺知识。domain=flower/style/budget 等。',
-            '- save_memory(key, value)：记住用户偏好。key=preferred_style, value="韩式"。',
-            '- respond_to_user(reply, ui, data, intent)：结束思考，返回回复。',
+            '## 下单契约（重要）',
+            '- 下单一律走平台自有下单接口 create_order：需部署方已配置 PLATFORM_ORDER_API_URL（可选 KEY），未配置时工具会明确报错并引导去平台下单，绝不写本地订单表。',
+            '- shop_id 必须是 platform_db_query_entity(entity="shop") 返回的平台真实店铺 ID；plan_id 用 "latest"（会话内 DIY/最近方案）或平台在售方案 ID（配 source_id 只读回读）。',
+            '- 订单金额/状态以平台下单接口返回为准；智能体只组装信息并提交，不直写平台库。',
+            '',
+            '## 核心工具速览（完整工具说明书自动附在文末）',
+            '- platform_db_query_entity(source_id, entity, keyword, limit)：只读查平台 plan/shop/order/user（实时数据，展示商品/店铺优先用它）',
+            '- generate_diy_plan(requirements)：设计 DIY 花艺方案',
+            '- revise_diy_plan(plan, feedback)：按反馈改方案',
+            '- generate_effect_image(plan)：为方案生成效果图（方案完成后系统常自动触发）',
+            '- retrieve_knowledge(domain, query)：查花艺知识库（花材/风格/搭配/预算/包装/商家智库）',
+            '- create_order(shop_id, plan_id, plan_type, source_id)：提交平台下单并返回支付跳转',
+            '- save_memory / save_user_profile：记住用户偏好',
+            '- respond_to_user(reply, ui, data, stage, intent)：结束本轮输出',
+            '- platform_db_discover / platform_db_sample_table / platform_mapping_*：部署接入期由配置方使用；日常对话不需要',
             '',
             '## respond_to_user 参数说明',
             '- reply：给用户的文字回复（1-2句话）',
@@ -478,6 +513,13 @@ class ReActAgent:
             '- 结构化内容用卡片展示，文字只给结论。',
             '- 不要用 **markdown** 加粗，不要用 # 标题。',
         ]
+        sources = _platform_source_ids()
+        if sources:
+            parts.append('## 已接入平台数据源（source_id）')
+            parts.append('platform_db_query_entity / create_order 只能使用以下已配置数据源：' + '、'.join(sources) + '。用户提到的平台不在其中时，说明尚未接入，不要猜测或套用其他 source_id。')
+        else:
+            parts.append('## 平台接入状态')
+            parts.append('当前未配置任何平台数据库（无 PLATFORM_DB_<SOURCE_ID>_URL）：平台在售方案/店铺/订单均不可查，涉及下单会明确报错。此时可正常做 DIY 设计与效果图；用户要买平台花束时，如实告知平台暂未接入。')
         if long_term:
             mem = '；'.join((f'{k}={v}' for k, v in long_term.items()))
             parts.append('## 用户偏好记忆：' + mem)
@@ -505,19 +547,22 @@ class ReActAgent:
         """基于本轮工具产出推导 UI 焦点（focus），不再做状态机拦截。
 
         skill 编排模式下，focus 仅用于前端高亮「用户当前在做什么」，不限制流程：
-        - 有订单 → done；有店铺 → shop_recommend；有生图 → image_gen；
-        - 有方案（generate_diy_plan / search_plans）→ diy_design；
+        - 有订单 → done；店铺查询(platform_db_query_entity entity=shop) → shop_recommend；
+        - 有生图 → image_gen；DIY 方案生成/改版 → diy_design；
+        - 平台在售方案浏览(entity=plan) → view_plan；
         - 否则保持进入时的焦点（incoming），避免无工具轮次焦点乱跳。
         """
         ordered = [tc.name for tc in tool_log if tc.status == 'ok']
         if 'create_order' in ordered:
             return SessionStage.DONE
-        if 'search_shops' in ordered:
+        if _entity_query_ok(tool_log, 'shop'):
             return SessionStage.SHOP_RECOMMEND
         if 'generate_effect_image' in ordered:
             return SessionStage.IMAGE_GEN
-        if 'generate_diy_plan' in ordered or 'search_plans' in ordered:
+        if 'generate_diy_plan' in ordered or 'revise_diy_plan' in ordered:
             return SessionStage.DIY_DESIGN
+        if _entity_query_ok(tool_log, 'plan'):
+            return SessionStage.VIEW_PLAN
         return incoming
 
     @staticmethod
@@ -550,17 +595,36 @@ class ReActAgent:
         店铺卡（已复现：generate_diy_plan > save_memory 时 ui 退化为 text）。
         这里从最近一次成功工具回溯，跳过不产出卡片的辅助工具，命中即返回。
         """
-        renderers: dict[str, Callable[[dict[str, Any]], tuple[UIType, dict[str, Any]]]] = {'search_plans': lambda r: (UIType.PLAN_CARD, {'plans': r}), 'get_plan_detail': lambda r: (UIType.PLAN_CARD, {'plans': [r] if isinstance(r, dict) else r}), 'generate_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}), 'revise_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}), 'search_shops': lambda r: (UIType.SHOP_CARD, {'shops': r}), 'generate_effect_image': lambda r: (UIType.IMAGE_TASK, {'task_id': r.get('task_id'), 'poll': r.get('poll'), **({'result_url': r['result_url']} if r.get('result_url') else {})}), 'create_order': lambda r: (UIType.ORDER_CARD, r)}
+        renderers: dict[str, Callable[[dict[str, Any]], tuple[UIType, dict[str, Any]]]] = {
+            'generate_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}),
+            'revise_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}),
+            'generate_effect_image': lambda r: (UIType.IMAGE_TASK, {'task_id': r.get('task_id'), 'poll': r.get('poll'), **({'result_url': r['result_url']} if r.get('result_url') else {})}),
+            'create_order': lambda r: (UIType.ORDER_CARD, r),
+        }
         for tc in reversed(tool_log):
             if tc.status != 'ok':
-                continue
-            render = renderers.get(tc.name)
-            if not render:
                 continue
             try:
                 result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
             except (json.JSONDecodeError, TypeError):
                 result = {}
+            # platform_db_query_entity 返回 tool_result 封装 {ok, data:[规范行], error}，
+            # 按调用参数的 entity 分流：plan → plan_card、shop → shop_card；失败/空结果不产卡片。
+            if tc.name == 'platform_db_query_entity':
+                if not isinstance(result, dict) or result.get('ok') is not True:
+                    continue
+                rows = result.get('data')
+                if not isinstance(rows, list) or not rows:
+                    continue
+                entity = (tc.arguments or {}).get('entity')
+                if entity == 'plan':
+                    return (UIType.PLAN_CARD, {'plans': rows})
+                if entity == 'shop':
+                    return (UIType.SHOP_CARD, {'shops': rows})
+                continue
+            render = renderers.get(tc.name)
+            if not render:
+                continue
             if isinstance(result, list) and (not result):
                 continue
             return render(result)
