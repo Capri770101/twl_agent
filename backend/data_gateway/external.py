@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import re
 from typing import Any
@@ -132,17 +133,37 @@ def _parse_mysql_url(url: str) -> dict[str, Any]:
     #      → 传 ssl={'ca':..,'cert':..,'key':..}（验证服务端证书）
     #   2) 仅要求加密（服务端 REQUIRE SSL，无客户端证书、不验证 CA）：
     #      ?ssl=true / ?ssl=1 / ?sslmode=require / ?sslmode=required
-    #      → 传 ssl_mode='REQUIRED'（pymysql>=1.1.0 支持，仅加密不验证书）
+    #      → 优先用 pymysql>=1.1.0 的 ssl_mode='REQUIRED'（仅加密不验证书）；
+    #        若安装的是旧分支（无 ssl_mode 参数，如被镜像换成伪装 2.x 的 fork），
+    #        退回 ssl={'cert_reqs': CERT_NONE} 同样满足“服务端 REQUIRE SSL，不验证 CA”。
+    #        用签名探测而非版本号判断，避免被伪版本号误导。
     certs = {src: params[src] for src in ('ssl_ca', 'ssl_cert', 'ssl_key') if params.get(src)}
     if certs:
         kwargs['ssl'] = certs
     else:
         flag = (params.get('sslmode') or params.get('ssl') or '').lower()
-        if flag in ('true', '1', 'yes', 'required', 'require'):
-            kwargs['ssl_mode'] = 'REQUIRED'
-        elif flag in ('preferred', 'prefer'):
-            kwargs['ssl_mode'] = 'PREFERRED'
+        if flag in ('true', '1', 'yes', 'required', 'require', 'preferred', 'prefer'):
+            if _pymysql_supports_ssl_mode():
+                kwargs['ssl_mode'] = 'REQUIRED' if flag in ('true', '1', 'yes', 'required', 'require') else 'PREFERRED'
+            else:
+                import ssl as _ssl
+                kwargs['ssl'] = {'cert_reqs': _ssl.CERT_NONE}
     return kwargs
+
+
+def _pymysql_supports_ssl_mode() -> bool:
+    """探测已安装的 pymysql 是否支持 ssl_mode 参数（>=1.1.0 才有）。
+
+    生产容器曾因镜像源换成旧分支（自报 2.2.8、无 ssl_mode）而失败，故用
+    签名探测而非 __version__，避免被伪版本号误导。
+    """
+    if pymysql is None:
+        return False
+    try:
+        sig = inspect.signature(pymysql.connections.Connection.__init__)
+        return 'ssl_mode' in sig.parameters
+    except Exception:
+        return False
 
 
 class _ExternalConn:
