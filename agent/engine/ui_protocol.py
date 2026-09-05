@@ -66,6 +66,7 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     session_id: str = ""
     stage: str = ""  # 当前 SessionStage 值，便于前端感知进度
+    products: list[ProductItem] = Field(default_factory=list)  # 商品卡片数组（platform_db_query_entity entity=plan 的结构化结果）
 
 
 class ErrorResponse(BaseModel):
@@ -124,3 +125,21 @@ class GreetingCard(BaseModel):
     sender: str = ""  # 落款，如「爱你的女儿」
     template: str = "warm"  # 实际使用的模板名（warm/blush/green/letter/night）
     note: str = ""  # 兜底说明（如超长截断/自定义处理）
+
+
+class ProductItem(BaseModel):
+    """商品卡片结构化数据：供小程序直接渲染商品卡 + 立即购买。
+
+    字段对齐同事平台约定的 products 数组（最小集合）：
+    - plan_id：对应平台 productId（平台方案/商品主键）
+    - name：商品名
+    - price_yuan：已转换为「元」的金额（原始库为「分」，由映射 transforms 转换）
+    - image：已拼接 CDN 前缀的完整 URL（原始库为相对路径）
+    - stock：库存
+    """
+
+    plan_id: str = ""
+    name: str = ""
+    price_yuan: float = 0.0
+    image: str = ""
+    stock: int = 0

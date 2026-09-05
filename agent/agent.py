@@ -264,7 +264,7 @@ class ReActAgent:
             required_capabilities=[capability] if capability else [],
             fallback=final_reply or '当前平台暂未实现对应能力，请使用文本方式继续引导。',
         )
-        return ChatResponse(user_id=user_id, reply=final_reply, ui=ui, data=data, action=action, tool_calls=tool_log, session_id=sid, stage=new_stage.value)
+        return ChatResponse(user_id=user_id, reply=final_reply, ui=ui, data=data, action=action, tool_calls=tool_log, session_id=sid, stage=new_stage.value, products=self._extract_products(tool_log))
 
     async def _post_process(
         self, respond_args, tool_log, incoming, message, final_reply,
@@ -659,6 +659,41 @@ class ReActAgent:
                 continue
             return render(result)
         return (UIType.TEXT, {})
+
+    def _extract_products(self, tool_log: list[ToolCallRecord]) -> list[dict[str, Any]]:
+        """从本轮工具日志提取 platform_db_query_entity(entity=plan) 的成功结果，
+
+        规整为同事平台约定的 products 数组（plan_id/name/price_yuan/image/stock）。
+        展示层转换已在 query_external_entity 完成（price→元、image→CDN URL），此处直接复用。
+        """
+        for tc in reversed(tool_log):
+            if tc.status != 'ok' or tc.name != 'platform_db_query_entity':
+                continue
+            try:
+                result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(result, dict) or result.get('ok') is not True:
+                continue
+            if (tc.arguments or {}).get('entity') != 'plan':
+                continue
+            rows = result.get('data')
+            if not isinstance(rows, list) or not rows:
+                continue
+            products: list[dict[str, Any]] = []
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                products.append({
+                    'plan_id': str(r.get('id', '')),
+                    'name': str(r.get('name', '')),
+                    'price_yuan': r.get('price') or 0,
+                    'image': str(r.get('image', '')),
+                    'stock': r.get('stock') or 0,
+                })
+            return products
+        return []
+
 if __name__ == '__main__':
     setup_logging()
     from backend.storage.db import init_db
