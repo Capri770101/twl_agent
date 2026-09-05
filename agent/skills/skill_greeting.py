@@ -536,7 +536,7 @@ def _render_card_image(text: str, recipient: str, sender: str, template: str) ->
         draw.text((w - 110 - sw, sender_y), s_text, font=s_font, fill=ink)
 
     # 底部水印小字
-    foot = '以花传情 · 跳舞兰'
+    foot = '以花传情 · 你的专属花艺小助手'
     f_font = _load_font(18)
     fw = _text_width(foot, f_font)
     draw.text(((w - fw) / 2, h - 78), foot, font=f_font, fill=sub + (150,))
