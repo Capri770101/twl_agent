@@ -192,7 +192,11 @@ async def _submit_platform_order(payload: dict) -> dict[str, Any]:
     return data
 
 
-@register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。会话从某店铺进入（已锁定店铺）时无需再查店铺列表，直接下单即可；此时若传入其他 shop_id 会被拒绝。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自平台查询返回的店铺 ID）。会话已锁定店铺时可省略，会自动使用锁定的店铺'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
+# 2026-09-05 架构决定：关闭智能体「直接下单」能力（详见 MEMORY.md）。
+# 订单改由客户在微信小程序侧点击商品卡片进入现有结算页完成（微信支付/分账/配送范围/订单导入复用平台现有逻辑）。
+# 智能体只负责推荐结构化商品（reply + products 数组），不创建订单、不调用任何下单接口、不配置 PLATFORM_ORDER_API_URL。
+# 如需恢复直连下单，取消下方注释即可（并同步恢复 agent.py system prompt 中「用户要买→create_order」的指引）。
+# @register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。会话从某店铺进入（已锁定店铺）时无需再查店铺列表，直接下单即可；此时若传入其他 shop_id 会被拒绝。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自平台查询返回的店铺 ID）。会话已锁定店铺时可省略，会自动使用锁定的店铺'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
 async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: str = '', _context: dict | None = None) -> str:
     """组装订单信息 → 调用平台自有下单 API → 返回 order_card / pay_jump 数据。"""
     user_id = (_context or {}).get('user_id', '')
