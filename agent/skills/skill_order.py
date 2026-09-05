@@ -215,7 +215,10 @@ async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: st
     if plan is None and source_id and plan_id and plan_type == 'existing':
         try:
             from backend.data_gateway.external import query_external_entity
-            rows = query_external_entity(source_id, 'plan', keyword=plan_id, limit=1, shop_id=shop_id)
+            # 下单回读：image 照常拼 CDN 前缀（订单卡片要显示图），
+            # 但 price 必须保留平台原始「分」金额，绝不能转成「元」，
+            # 否则平台下单金额会错乱（同事验收清单第 7 条：下单仍使用原始分金额）。
+            rows = query_external_entity(source_id, 'plan', keyword=plan_id, limit=1, shop_id=shop_id, transform_fields=['image'])
             if rows:
                 plan = rows[0]
         except Exception as exc:  # noqa: BLE001
