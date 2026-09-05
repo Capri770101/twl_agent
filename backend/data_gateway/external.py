@@ -139,11 +139,16 @@ def _apply_one_transform(name: str, arg: Any, value: Any) -> Any:
     return value
 
 
-def _apply_transforms(rows: list[dict[str, Any]], transforms: dict[str, str]) -> list[dict[str, Any]]:
-    """transforms: {canonical_col: spec}。对查询返回做展示层规整（原地修改后返回）。"""
+def _apply_transforms(rows: list[dict[str, Any]], transforms: dict[str, str], only=None) -> list[dict[str, Any]]:
+    """transforms: {canonical_col: spec}。对查询返回做展示层规整（原地修改后返回）。
+
+    only: 可选字段白名单（set/list）。为 None 时转换全部；否则只转换白名单内的字段。
+    用途：下单回读时只对 image 做 CDN 前缀转换（订单卡片要显示图），
+    而 price 必须保留原始「分」金额，不能转成「元」，否则平台订单金额错乱。
+    """
     if not transforms:
         return rows
-    parsed = {col: _parse_transform(spec) for col, spec in transforms.items()}
+    parsed = {col: _parse_transform(spec) for col, spec in transforms.items() if only is None or col in only}
     for row in rows:
         for col, (name, arg) in parsed.items():
             if col in row:
@@ -308,7 +313,7 @@ def sample_external_table(source_id: str, schema: str, table: str, limit: int = 
     }
 
 
-def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '') -> list[dict[str, Any]]:
+def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '', transform_fields=None) -> list[dict[str, Any]]:
     """只读查询标准业务实体。
 
     shop_id 非空时，若该实体的 active 映射含店铺列（canonical 名 shop_id），
@@ -356,7 +361,8 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
         rows = conn.execute(sql, params).fetchall()
     rows = [dict(row) for row in rows]
     transforms = selected.get('transforms') or {}
-    return _apply_transforms(rows, transforms)
+    only = set(transform_fields) if transform_fields else None
+    return _apply_transforms(rows, transforms, only=only)
 
 
 def discover_external(source_id: str, schema: str = 'public', sample_rows: int = 0) -> dict[str, Any]:
