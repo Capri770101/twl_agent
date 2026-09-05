@@ -1,4 +1,4 @@
-"""knowledge 包：跳舞兰花卉智能体的领域知识库（花材/风格/搭配/预算/包装）。"""
+"""knowledge 包：花卉智能体的领域知识库（花材/风格/搭配/预算/包装）。"""
 
 from agent.knowledge.store import get_by_id, query_knowledge
 
