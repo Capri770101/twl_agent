@@ -185,6 +185,41 @@ async def load_history(conversation_id: str, limit: int) -> list[dict[str, Any]]
     return messages
 
 
+async def search_user_history(user_id: str, query: str = '', limit: int = 8, exclude_session: str | None = None) -> list[dict[str, Any]]:
+    """按关键词跨会话检索该用户的历史消息（只读）。
+
+    sessions 表带 user_id，因此能跨会话回溯——用于回答「上次那家店」「我之前买过什么」。
+    只取 user / assistant 文本消息：tool 消息是工具原始返回，对回顾没有意义且很长。
+
+    query 为空时退化为「最近消息」，仍能回答「上次聊了什么」。
+    exclude_session 用于排除当前会话，避免把正在聊的内容当「历史」重复捞回来。
+    """
+    if not user_id:
+        return []
+    limit = max(1, min(int(limit or 8), 20))
+    keyword = (query or '').strip()
+    params: list[Any] = [user_id]
+    sql = (
+        "SELECT m.session_id, m.role, m.content, m.created_at, s.title "
+        "FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+        "WHERE s.user_id = ? AND m.role IN ('user','assistant') "
+        "AND m.content IS NOT NULL AND m.content <> '' "
+    )
+    if keyword:
+        # PostgreSQL 用 ILIKE 做大小写无关匹配（本模块强制 PG，不支持 SQLite）
+        sql += 'AND m.content ILIKE ? '
+        params.append(f'%{keyword}%')
+    if exclude_session:
+        sql += 'AND m.session_id <> ? '
+        params.append(exclude_session)
+    sql += 'ORDER BY m.created_at DESC, m.id DESC LIMIT ?'
+    params.append(limit)
+    with transaction() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    # 时间倒序是为了取「最近」，展示时翻回正序更符合阅读习惯
+    return [dict(r) for r in reversed(rows)]
+
+
 async def save_message(conversation_id: str, role: str, content: str, ui: Any = None, data: Any = None) -> None:
     with transaction() as conn:
         conn.execute('INSERT INTO messages(session_id, role, content, ui, data, created_at) VALUES (?,?,?,?,?,?)',
