@@ -1,13 +1,16 @@
 'use strict';
 
 /*
- * 跳舞兰 · 调用监控面板（纯前端，无框架）
- * - 密钥仅存 sessionStorage，不落盘、不进源码
- * - 所有 /api/metrics 请求带 X-Dashboard-Key；SSE 因无法自定义 header 改走 ?key=
- * - 同源部署（api.tiaowulan.com），API 用绝对路径 /api/metrics/*
+ * 花艺智能体 · 调用监控面板（纯前端，无框架）
+ * - 密钥仅存 sessionStorage，不落盘、不进前端源码
+ * - 所有 /api/metrics 请求带 X-Dashboard-Key；SSE 无法自定义 header，改走 ?key=
+ * - 同源部署，API 用绝对路径 /api/metrics/*
+ * - 布局要点：长标签（工具名/平台名）一律用横向条形图，避免标签重叠；
+ *   容器高度按条目数动态计算，条目多也不挤压。
  */
 const API = '/api/metrics';
 const KEY_STORAGE = 'dash_key';
+const MAX_FEED_ROWS = 30;
 
 let KEY = sessionStorage.getItem(KEY_STORAGE) || '';
 let charts = {};
@@ -24,11 +27,21 @@ function fmtTime(iso) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-// 时间分桶（hour/day）格式化为可读标签
 function fmtBucket(iso) {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return String(iso);
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:00`;
+  return `${pad(d.getHours())}:00`;
+}
+
+function fmtNum(n) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString('zh-CN');
+}
+
+// 耗时：>=1000ms 用秒展示，避免一长串数字影响扫读
+function fmtDur(ms) {
+  if (ms == null) return '—';
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms';
 }
 
 function escapeHtml(s) {
@@ -51,57 +64,44 @@ function setConn(state, text) {
   if ($('connText')) $('connText').textContent = text;
 }
 
-async function loadSummary() {
-  const s = await api('/summary');
-  $('kpiTotal').textContent = s.total_calls != null ? s.total_calls : '—';
-  $('kpi24h').textContent = s.calls_24h != null ? s.calls_24h : '—';
-  const errPct = (s.calls_24h > 0)
-    ? ((s.errors_24h || 0) / s.calls_24h * 100).toFixed(1) + '%'
-    : '0%';
-  $('kpiErr').textContent = errPct;
-  $('kpiPlat').textContent = s.active_platforms_24h != null ? s.active_platforms_24h : '—';
-  $('kpiLat').textContent = (s.avg_latency_24h != null) ? s.avg_latency_24h + 'ms' : '—';
-  if ($('updated')) $('updated').textContent = '更新于 ' + fmtTime(new Date());
+/* ---------- 空状态 / 容器高度 ---------- */
+
+function setEmpty(boxId, isEmpty, text) {
+  const box = $(boxId);
+  if (!box) return;
+  let ov = box.querySelector('.empty');
+  if (isEmpty) {
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.className = 'empty';
+      box.appendChild(ov);
+    }
+    ov.textContent = text || '暂无数据';
+    ov.style.display = 'flex';
+  } else if (ov) {
+    ov.style.display = 'none';
+  }
 }
 
-async function loadCalls() {
-  const rows = await api('/calls?hours=24&bucket=hour');
-  const labels = rows.map((r) => fmtBucket(r.bucket));
-  const total = rows.map((r) => r.total);
-  const errs = rows.map((r) => r.errors);
-  drawLine('callsChart', labels, [
-    { label: '调用量', data: total, color: '#4f8cff' },
-    { label: '错误', data: errs, color: '#ff5b5b' },
-  ], false);
-  drawLine('errorChart', labels, [
-    { label: '错误数', data: errs, color: '#ff5b5b' },
-  ], true);
+// 横向条形图：每条约占 28px，太矮会挤压标签
+function sizeBoxForBars(boxId, count) {
+  const box = $(boxId);
+  if (!box) return;
+  const h = Math.max(180, count * 28 + 32);
+  box.style.height = h + 'px';
 }
 
-async function loadPlatforms() {
-  const rows = await api('/platforms');
-  const labels = rows.map((r) => r.platform_id || '未知');
-  const data = rows.map((r) => r.total_calls);
-  drawBar('platformChart', labels, data, '#7c5cff');
-}
-
-async function loadTools() {
-  const rows = await api('/tools');
-  const labels = rows.map((r) => r.tool_name);
-  const data = rows.map((r) => r.total);
-  drawBar('toolChart', labels, data, '#22c08b');
-}
+/* ---------- 绘图 ---------- */
 
 function destroy(canvasId) {
   if (charts[canvasId]) { charts[canvasId].destroy(); charts[canvasId] = null; }
 }
 
-function drawLine(canvasId, labels, series, noFill) {
+function drawLine(canvasId, labels, series) {
   const el = $(canvasId);
   if (!el) return;
-  const ctx = el.getContext('2d');
   destroy(canvasId);
-  charts[canvasId] = new Chart(ctx, {
+  charts[canvasId] = new Chart(el.getContext('2d'), {
     type: 'line',
     data: {
       labels,
@@ -109,10 +109,11 @@ function drawLine(canvasId, labels, series, noFill) {
         label: s.label,
         data: s.data,
         borderColor: s.color,
-        backgroundColor: noFill ? 'transparent' : s.color + '22',
-        fill: !noFill,
+        backgroundColor: s.fill ? s.color + '20' : 'transparent',
+        fill: !!s.fill,
         tension: 0.3,
         pointRadius: 0,
+        pointHoverRadius: 4,
         borderWidth: 2,
       })),
     },
@@ -120,43 +121,145 @@ function drawLine(canvasId, labels, series, noFill) {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { display: series.length > 1 } },
-      scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      plugins: {
+        legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true, font: { size: 11 } } },
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 12 } },
+        y: { beginAtZero: true, grid: { color: '#f0f3f8' }, ticks: { precision: 0, font: { size: 11 } } },
+      },
     },
   });
 }
 
-function drawBar(canvasId, labels, data, color) {
+function drawHBar(canvasId, labels, data, color, tooltipFn) {
   const el = $(canvasId);
   if (!el) return;
-  const ctx = el.getContext('2d');
   destroy(canvasId);
-  charts[canvasId] = new Chart(ctx, {
+  charts[canvasId] = new Chart(el.getContext('2d'), {
     type: 'bar',
-    data: { labels, datasets: [{ label: '次数', data, backgroundColor: color }] },
+    data: {
+      labels,
+      datasets: [{
+        label: '调用次数',
+        data,
+        backgroundColor: color,
+        borderRadius: 4,
+        barThickness: 'flex',
+        maxBarThickness: 18,
+      }],
+    },
     options: {
+      indexAxis: 'y',          // 横向：长工具名/平台名不会被裁切或重叠
       responsive: true,
       maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: tooltipFn ? { callbacks: { label: tooltipFn } } : {},
+      },
+      scales: {
+        x: { beginAtZero: true, grid: { color: '#f0f3f8' }, ticks: { precision: 0, font: { size: 11 } } },
+        y: { grid: { display: false }, ticks: { font: { size: 11.5 }, autoSkip: false } },
+      },
     },
   });
 }
 
-function addFeed(d) {
-  const ul = $('liveFeed');
-  if (!ul) return;
-  const li = document.createElement('li');
-  const st = d.status === 'error' ? 'err' : 'ok';
-  li.innerHTML =
-    `<span class="t">${fmtTime(d.created_at)}</span>` +
-    `<span class="badge ${st}">${st === 'err' ? '错误' : '成功'}</span>` +
-    `<span class="plat">${escapeHtml(d.platform_id || '—')}</span>` +
-    `<span class="uid">${escapeHtml((d.user_id || '').slice(0, 12))}</span>` +
-    `<span class="lat">${d.latency_ms != null ? d.latency_ms + 'ms' : '?'} · ${escapeHtml(d.model || '')}</span>`;
-  ul.prepend(li);
-  while (ul.children.length > 30) ul.removeChild(ul.lastChild);
+/* ---------- 数据加载 ---------- */
+
+async function loadSummary() {
+  const s = await api('/summary');
+  $('kpiTotal').textContent = fmtNum(s.total_calls);
+  $('kpi24h').textContent = fmtNum(s.calls_24h);
+  $('kpiErr').textContent = (s.calls_24h > 0)
+    ? ((s.errors_24h || 0) / s.calls_24h * 100).toFixed(1) + '%'
+    : '0%';
+  $('kpiPlat').textContent = fmtNum(s.active_platforms_24h);
+  $('kpiLat').textContent = fmtDur(s.avg_latency_24h);
+  if ($('updated')) $('updated').textContent = '更新于 ' + fmtTime(new Date());
 }
+
+async function loadCalls() {
+  const rows = await api('/calls?hours=24&bucket=hour');
+  setEmpty('callsBox', rows.length === 0, '近 24 小时暂无调用');
+  const labels = rows.map((r) => fmtBucket(r.bucket));
+  drawLine('callsChart', labels, [
+    { label: '调用量', data: rows.map((r) => r.total), color: '#4f8cff', fill: true },
+    { label: '错误', data: rows.map((r) => r.errors), color: '#ef4b4b', fill: false },
+  ]);
+}
+
+async function loadPlatforms() {
+  const rows = await api('/platforms');
+  setEmpty('platformBox', rows.length === 0, '暂无平台调用数据');
+  sizeBoxForBars('platformBox', rows.length);
+  drawHBar(
+    'platformChart',
+    rows.map((r) => r.platform_id || '未知'),
+    rows.map((r) => r.total_calls),
+    '#7c5cff',
+    (ctx) => {
+      const r = rows[ctx.dataIndex] || {};
+      return [
+        '累计调用：' + fmtNum(r.total_calls),
+        '近 24h：' + fmtNum(r.calls_24h),
+        '独立用户：' + fmtNum(r.distinct_users),
+        '错误数：' + fmtNum(r.errors),
+      ];
+    }
+  );
+}
+
+async function loadTools() {
+  const rows = await api('/tools');
+  setEmpty('toolBox', rows.length === 0, '暂无工具调用数据');
+  sizeBoxForBars('toolBox', rows.length);
+  drawHBar(
+    'toolChart',
+    rows.map((r) => r.tool_name),
+    rows.map((r) => r.total),
+    '#17b978',
+    (ctx) => {
+      const r = rows[ctx.dataIndex] || {};
+      return [
+        '调用：' + fmtNum(r.total),
+        '成功：' + fmtNum(r.success) + '　失败：' + fmtNum(r.errors),
+        '平均耗时：' + fmtDur(r.avg_latency_ms),
+      ];
+    }
+  );
+}
+
+/* ---------- 实时调用流（表格） ---------- */
+
+function addFeedRow(d) {
+  const tbody = $('liveFeed');
+  if (!tbody) return;
+  // 首次有数据时清掉占位行
+  const placeholder = tbody.querySelector('.empty-row');
+  if (placeholder) placeholder.remove();
+
+  const tr = document.createElement('tr');
+  const ok = d.status !== 'error';
+  tr.innerHTML =
+    `<td class="num dim">${fmtTime(d.created_at)}</td>` +
+    `<td>${escapeHtml(d.platform_id || '—')}</td>` +
+    `<td class="mono dim" title="${escapeHtml(d.user_id || '')}">${escapeHtml((d.user_id || '—').slice(0, 18))}</td>` +
+    `<td><span class="badge ${ok ? 'ok' : 'err'}">${ok ? '成功' : '错误'}</span></td>` +
+    `<td class="num">${fmtDur(d.latency_ms)}</td>` +
+    `<td class="num dim">${d.tool_calls != null ? d.tool_calls : '—'}</td>` +
+    `<td class="dim">${escapeHtml(d.model || '—')}</td>`;
+  tbody.prepend(tr);
+  while (tbody.children.length > MAX_FEED_ROWS) tbody.removeChild(tbody.lastChild);
+}
+
+function renderFeedEmpty() {
+  const tbody = $('liveFeed');
+  if (!tbody || tbody.children.length) return;
+  tbody.innerHTML = '<tr class="empty-row"><td colspan="7">暂无调用记录，有新调用会自动出现</td></tr>';
+}
+
+/* ---------- 实时流与刷新 ---------- */
 
 function startStream() {
   if (es) es.close();
@@ -165,10 +268,9 @@ function startStream() {
   es.onmessage = (ev) => {
     try {
       const d = JSON.parse(ev.data);
-      addFeed(d);
-      // 新事件到来时顺手刷新概览，保持 KPI 新鲜
-      loadSummary().catch(() => {});
-    } catch (_) { /* ignore */ }
+      addFeedRow(d);
+      loadSummary().catch(() => {});   // 有新调用就顺手刷新概览
+    } catch (_) { /* 忽略解析异常 */ }
   };
   es.onerror = () => setConn('off', '连接中断，重连中…');
 }
@@ -176,6 +278,7 @@ function startStream() {
 async function refreshAll() {
   try {
     await Promise.all([loadSummary(), loadCalls(), loadPlatforms(), loadTools()]);
+    renderFeedEmpty();
     setConn('on', '已连接');
   } catch (e) {
     if (e.message !== 'unauthorized' && e.message !== 'disabled') {
@@ -225,5 +328,6 @@ window.addEventListener('DOMContentLoaded', () => {
   $('loginBtn').addEventListener('click', doLogin);
   $('keyInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
   $('logoutBtn').addEventListener('click', () => logout('已退出'));
+  renderFeedEmpty();
   if (KEY) enterApp();
 });

@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>跳舞兰 · 调用监控</title>
+  <title>花艺智能体 · 调用监控</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
   <!-- 登录遮罩：密钥只存在 sessionStorage，不落盘、不进前端源码 -->
   <div id="login" class="login-mask">
     <div class="login-card">
-      <div class="login-logo">🌼 跳舞兰</div>
+      <div class="login-logo">🌼</div>
       <h2>调用监控面板</h2>
-      <p class="login-sub">请输入 DASHBOARD_API_KEY 进入（仅本次会话有效）</p>
+      <p class="login-sub">请输入 DASHBOARD_API_KEY（仅本次会话有效）</p>
       <input id="keyInput" type="password" placeholder="DASHBOARD_API_KEY" autocomplete="off" />
       <button id="loginBtn">进入面板</button>
       <p id="loginErr" class="login-err"></p>
@@ -22,7 +22,7 @@
   <!-- 主面板 -->
   <div id="app" class="app hidden">
     <header class="topbar">
-      <div class="brand">🌼 跳舞兰 · 调用监控</div>
+      <div class="brand">🌼 调用监控</div>
       <div class="status">
         <span id="connDot" class="dot off"></span>
         <span id="connText">连接中…</span>
@@ -32,36 +32,93 @@
       <button id="logoutBtn" class="ghost">退出</button>
     </header>
 
-    <section class="kpis">
-      <div class="kpi"><div class="kpi-label">累计调用</div><div class="kpi-val" id="kpiTotal">—</div></div>
-      <div class="kpi"><div class="kpi-label">近 24h 调用</div><div class="kpi-val" id="kpi24h">—</div></div>
-      <div class="kpi"><div class="kpi-label">近 24h 错误率</div><div class="kpi-val" id="kpiErr">—</div></div>
-      <div class="kpi"><div class="kpi-label">近 24h 活跃平台</div><div class="kpi-val" id="kpiPlat">—</div></div>
-      <div class="kpi"><div class="kpi-label">近 24h 平均延迟</div><div class="kpi-val" id="kpiLat">—</div></div>
-    </section>
+    <main class="wrap">
+      <!-- 概览指标 -->
+      <section class="kpis">
+        <div class="kpi">
+          <div class="kpi-label">累计调用</div>
+          <div class="kpi-val" id="kpiTotal">—</div>
+          <div class="kpi-foot">全部时间</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">近 24h 调用</div>
+          <div class="kpi-val" id="kpi24h">—</div>
+          <div class="kpi-foot">按小时见下方趋势</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">近 24h 错误率</div>
+          <div class="kpi-val" id="kpiErr">—</div>
+          <div class="kpi-foot">错误数 / 总调用</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">近 24h 活跃平台</div>
+          <div class="kpi-val" id="kpiPlat">—</div>
+          <div class="kpi-foot">去重 platform_id</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">近 24h 平均延迟</div>
+          <div class="kpi-val" id="kpiLat">—</div>
+          <div class="kpi-foot">含 LLM 推理耗时</div>
+        </div>
+      </section>
 
-    <section class="grid">
-      <div class="card span2">
-        <h3>调用量趋势（近 24h，按小时）</h3>
-        <canvas id="callsChart"></canvas>
-      </div>
-      <div class="card">
-        <h3>实时调用流</h3>
-        <ul id="liveFeed" class="feed"></ul>
-      </div>
-      <div class="card">
-        <h3>平台接入与活跃度</h3>
-        <canvas id="platformChart"></canvas>
-      </div>
-      <div class="card">
-        <h3>工具调用分布</h3>
-        <canvas id="toolChart"></canvas>
-      </div>
-      <div class="card">
-        <h3>错误率趋势（近 24h，按小时）</h3>
-        <canvas id="errorChart"></canvas>
-      </div>
-    </section>
+      <!-- 趋势（整行铺满，最醒目） -->
+      <section class="card">
+        <div class="card-head">
+          <h3>调用量趋势</h3>
+          <span class="card-sub">近 24 小时 · 按小时分桶</span>
+        </div>
+        <div class="chart-box" id="callsBox" style="height: 260px;">
+          <canvas id="callsChart"></canvas>
+        </div>
+      </section>
+
+      <!-- 两个分布图（横向条形，长标签不重叠） -->
+      <section class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h3>平台接入与活跃度</h3>
+            <span class="card-sub">按累计调用排序</span>
+          </div>
+          <div class="chart-box" id="platformBox">
+            <canvas id="platformChart"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h3>工具调用分布</h3>
+            <span class="card-sub">按累计调用排序</span>
+          </div>
+          <div class="chart-box" id="toolBox">
+            <canvas id="toolChart"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- 实时调用流（表格对齐，便于扫读） -->
+      <section class="card">
+        <div class="card-head">
+          <h3>实时调用流</h3>
+          <span class="card-sub">最新 30 条 · SSE 秒级推送</span>
+        </div>
+        <div class="table-wrap">
+          <table class="feed-table">
+            <thead>
+              <tr>
+                <th style="width:150px">时间</th>
+                <th style="width:110px">平台</th>
+                <th style="width:190px">用户</th>
+                <th style="width:80px">状态</th>
+                <th style="width:90px">耗时</th>
+                <th style="width:70px">工具数</th>
+                <th>模型</th>
+              </tr>
+            </thead>
+            <tbody id="liveFeed"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
   </div>
 
   <script src="./vendor/chart.umd.min.js"></script>
