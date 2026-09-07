@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import inspect
 import logging
@@ -328,6 +329,86 @@ def sample_external_table(source_id: str, schema: str, table: str, limit: int = 
     }
 
 
+# 营业状态实时推算（展示层派生，只读不写库）
+#
+# 平台库只存静态营业时段文本（如 '07:00-22:00'）与静态 status 字段，无法反映
+# 「此刻是否真在营业」。只读架构下不能回写平台库把 status 同步成实时值，因此改为
+# 在查询返回前按当前北京时间实时推导，让上层（智能体 / 前端）直接读结论，
+# 不必各自比对时间、也不会各自算出不同结果。
+
+_CST = datetime.timezone(datetime.timedelta(hours=8))
+
+# 匹配 07:00-22:00 / 9:00~18:00 / 18:00-次日02:00 等写法；第 3 组为可选的跨天标记
+_HOURS_RANGE = re.compile(r'(\d{1,2})\s*:\s*(\d{2})\s*[-~—－至到]\s*(次日|第二天|隔天)?\s*(\d{1,2})\s*:\s*(\d{2})')
+
+
+def _parse_clock_minutes(hh: str, mm: str) -> int | None:
+    """'07','30' -> 450（当日零起分钟数）；非法返回 None。24:00 视为 1440（当日结束）。"""
+    try:
+        hour, minute = int(hh), int(mm)
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= hour <= 24 and 0 <= minute <= 59):
+        return None
+    return hour * 60 + minute
+
+
+def compute_is_open_now(business_hours: Any, now: datetime.datetime | None = None) -> bool | None:
+    """按当前北京时间判断营业时段是否包含此刻。
+
+    返回 True=营业中 / False=已打烊 / None=无法判断（时段文本解析不出任何区间）。
+    多段（'09:00-12:00,14:00-18:00'）任一命中即营业；跨天（'18:00-次日02:00'）按跨零点处理。
+    解析不出区间时返回 None 而非 False——宁可「未知」，也不能把「看不懂」说成「已打烊」。
+
+    now 仅用于测试注入固定时刻；不传则取当前北京时间。
+    """
+    if business_hours is None:
+        return None
+    text = str(business_hours).strip()
+    if not text or text.lower() in {'none', 'null', 'nan', '-'}:
+        return None
+    if now is None:
+        now = datetime.datetime.now(_CST)
+    now_min = now.hour * 60 + now.minute
+    parsed_any = False
+    for m in _HOURS_RANGE.finditer(text):
+        start = _parse_clock_minutes(m.group(1), m.group(2))
+        end = _parse_clock_minutes(m.group(4), m.group(5))
+        if start is None or end is None:
+            continue
+        parsed_any = True
+        if end <= start or m.group(3):
+            # 跨零点：如 18:00-次日02:00
+            if now_min >= start or now_min <= end:
+                return True
+        elif start <= now_min < end:
+            return True
+    return False if parsed_any else None
+
+
+def _annotate_open_status(rows: list[dict[str, Any]]) -> None:
+    """对含 business_hours 的行补实时营业状态字段（原地修改，不写库）。
+
+    新增字段：
+    - is_open_now：True / False / None（None 表示时段文本无法解析）
+    - open_status_text：'营业中' / '已打烊' / 未知说明，供智能体直接引用
+
+    平台库原有的 status 字段保持原样不覆盖——它是平台侧的静态值，可能与推算结果
+    不一致；上层应以 is_open_now 为准，并提示「以店铺实际为准」。
+    """
+    for row in rows:
+        if 'business_hours' not in row:
+            continue
+        flag = compute_is_open_now(row.get('business_hours'))
+        row['is_open_now'] = flag
+        if flag is True:
+            row['open_status_text'] = '营业中'
+        elif flag is False:
+            row['open_status_text'] = '已打烊'
+        else:
+            row['open_status_text'] = '未知（营业时段原文无法解析，请按 business_hours 原文如实告知用户）'
+
+
 def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '', transform_fields=None) -> list[dict[str, Any]]:
     """只读查询标准业务实体。
 
@@ -377,7 +458,10 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
     rows = [dict(row) for row in rows]
     transforms = selected.get('transforms') or {}
     only = set(transform_fields) if transform_fields else None
-    return _apply_transforms(rows, transforms, only=only)
+    rows = _apply_transforms(rows, transforms, only=only)
+    # 营业状态按「此刻」实时推算（只读派生，不写平台库）
+    _annotate_open_status(rows)
+    return rows
 
 
 def discover_external(source_id: str, schema: str = 'public', sample_rows: int = 0) -> dict[str, Any]:
