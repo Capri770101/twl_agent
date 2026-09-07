@@ -42,7 +42,7 @@ async def exchange_token(req: TokenExchangeRequest, platform_id: str = Depends(r
     """
     user_id = derive_platform_user_id(platform_id, req.external_user_id)
     return {
-        'access_token': create_access_token(user_id),
+        'access_token': create_access_token(user_id, platform=platform_id),
         'token_type': 'bearer',
         'user_id': user_id,
         'platform_id': platform_id,
@@ -57,14 +57,14 @@ async def anonymous_login() -> dict[str, str]:
             detail='匿名登录已禁用：请使用 /auth/wx-login 或平台 API Key + /auth/token',
         )
     user_id = 'anon_' + secrets.token_urlsafe(18)
-    return {'access_token': create_access_token(user_id), 'token_type': 'bearer', 'user_id': user_id}
+    return {'access_token': create_access_token(user_id, platform='anonymous'), 'token_type': 'bearer', 'user_id': user_id}
 
 
 @router.post('/wx-login')
 async def wechat_login(req: WechatLoginRequest) -> dict[str, str]:
     identity = await login_wechat(req.code)
     return {
-        'access_token': create_access_token(identity['user_id']),
+        'access_token': create_access_token(identity['user_id'], platform='wechat'),
         'token_type': 'bearer',
         'user_id': identity['user_id'],
     }

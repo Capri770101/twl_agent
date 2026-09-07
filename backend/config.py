@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     PLATFORM_API_KEYS: str = ""
     # 匿名登录开关：开发联调用；生产环境默认关闭（未显式设置时强制 False）。
     ANONYMOUS_LOGIN_ENABLED: bool = True
+
+    # ── 监控面板（/api/metrics + 独立 dashboard 容器）──
+    # 生产必填：未配置时 /api/metrics 一律 503，避免面板被裸奔暴露。
+    # 建议用 `openssl rand -hex 32` 生成高强度随机串，与业务 JWT_SECRET 区分。
+    DASHBOARD_API_KEY: str = ""
     ZHIPU_API_KEY: str = ""
     VISION_ALLOWED_ROOT: str = str(BASE_DIR / 'data' / 'generated')
     VISION_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024

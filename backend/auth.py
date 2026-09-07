@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -22,13 +23,16 @@ def _secret() -> str:
     return settings.JWT_SECRET
 
 
-def create_access_token(user_id: str) -> str:
+def create_access_token(user_id: str, platform: str | None = None) -> str:
     now = datetime.now(UTC)
     payload = {
         'sub': user_id,
         'iat': now,
         'exp': now + timedelta(hours=settings.JWT_EXPIRE_HOURS),
     }
+    # platform 仅作监控归因用，不影响鉴权；缺失时面板侧记为 unknown
+    if platform:
+        payload['platform'] = platform
     return jwt.encode(payload, _secret(), algorithm='HS256')
 
 
@@ -43,6 +47,25 @@ def decode_access_token(token: str) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='登录凭证无效或已过期') from exc
 
 
+@dataclass
+class TokenPayload:
+    """解析后的 JWT 载荷（含监控归因用的 platform）。"""
+    user_id: str
+    platform: str | None
+
+
+def decode_access_token_full(token: str) -> TokenPayload:
+    """同 decode_access_token，但返回完整载荷（含 platform）。"""
+    try:
+        payload = jwt.decode(token, _secret(), algorithms=['HS256'])
+        user_id = payload.get('sub')
+        if not isinstance(user_id, str) or not user_id:
+            raise ValueError('missing subject')
+        return TokenPayload(user_id=user_id, platform=payload.get('platform'))
+    except (jwt.PyJWTError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='登录凭证无效或已过期') from exc
+
+
 async def current_user(authorization: str | None = Header(default=None)) -> str | None:
     """生产强制 Bearer JWT；开发环境可通过 AUTH_REQUIRED=false 关闭。"""
     if not settings.AUTH_REQUIRED:
@@ -50,6 +73,15 @@ async def current_user(authorization: str | None = Header(default=None)) -> str 
     if not authorization or not authorization.lower().startswith('bearer '):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='需要 Bearer 登录凭证')
     return decode_access_token(authorization.split(' ', 1)[1].strip())
+
+
+async def current_user_info(authorization: str | None = Header(default=None)) -> TokenPayload | None:
+    """返回含 platform 的令牌载荷，供监控埋点归因使用。鉴权逻辑同 current_user。"""
+    if not settings.AUTH_REQUIRED:
+        return None
+    if not authorization or not authorization.lower().startswith('bearer '):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='需要 Bearer 登录凭证')
+    return decode_access_token_full(authorization.split(' ', 1)[1].strip())
 
 
 def require_user(user_id: str, authenticated_user: str | None) -> None:

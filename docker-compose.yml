@@ -59,5 +59,17 @@ services:
     depends_on:
       - agent
 
+  # 调用监控面板（独立静态前端，经 nginx /dashboard/ 暴露，需 --profile nginx 启动）
+  dashboard:
+    build:
+      context: ./dashboard
+    container_name: flora-dashboard
+    restart: unless-stopped
+    profiles: ["nginx"]
+    expose:
+      - "80"
+    depends_on:
+      - agent
+
 volumes:
   pgdata:

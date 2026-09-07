@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from backend.config import settings
@@ -14,7 +15,8 @@ from backend.storage import memory as mem_store
 from backend.storage import tasks as task_store
 from agent.engine.ui_protocol import UIType
 from agent.agent import ReActAgent
-from backend.auth import current_user, require_user
+from backend.auth import current_user, current_user_info, require_user
+from backend.observability import record_call_start, record_call_end, record_tool_call
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -50,10 +52,19 @@ class CreateConvRequest(BaseModel):
 
 
 @router.post('/chat')
-async def chat(req: ChatRequest, authenticated_user: str | None = Depends(current_user)) -> Any:
+async def chat(
+    req: ChatRequest,
+    authenticated_user: str | None = Depends(current_user),
+    user_info: Any = Depends(current_user_info),
+) -> Any:
     """与智能体对话，返回结构化 UI 响应。"""
     require_user(req.user_id, authenticated_user)
     logger.info('chat user=%s msg=%s', req.user_id, req.message[:80])
+
+    # ── 监控埋点：入口 ──
+    _platform = getattr(user_info, 'platform', None) if user_info else None
+    _call_id = record_call_start(req.user_id, _platform, req.session_id, settings.LLM_MODEL)
+    _t0 = time.perf_counter()
 
     sid = req.session_id
     if sid:
@@ -69,10 +80,19 @@ async def chat(req: ChatRequest, authenticated_user: str | None = Depends(curren
             timeout=settings.REQUEST_TIMEOUT
         )
     except asyncio.TimeoutError:
+        record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='timeout', cid=_call_id)
         raise HTTPException(status_code=504, detail='处理超时，请简化问题后重试')
     except Exception as exc:
+        record_call_end('error', int((time.perf_counter() - _t0) * 1000), error=str(exc)[:500], cid=_call_id)
         logger.exception('智能体执行失败')
         raise HTTPException(status_code=500, detail='智能体执行失败，请稍后重试')
+
+    # ── 监控埋点：出口（成功）──
+    _latency = int((time.perf_counter() - _t0) * 1000)
+    _tool_calls = list(getattr(result, 'tool_calls', []) or [])
+    record_call_end('success', _latency, tool_calls=len(_tool_calls), cid=_call_id)
+    for _tc in _tool_calls:
+        record_tool_call(getattr(_tc, 'name', '?'), getattr(_tc, 'status', 'unknown'), cid=_call_id)
 
     final_sid = result.session_id
     await mem_store.update_conversation_preview(final_sid, req.message[:60])
@@ -80,10 +100,19 @@ async def chat(req: ChatRequest, authenticated_user: str | None = Depends(curren
 
 
 @router.post('/chat/stream')
-async def chat_stream(req: ChatRequest, authenticated_user: str | None = Depends(current_user)) -> StreamingResponse:
+async def chat_stream(
+    req: ChatRequest,
+    authenticated_user: str | None = Depends(current_user),
+    user_info: Any = Depends(current_user_info),
+) -> StreamingResponse:
     """SSE 流式对话端点。"""
     require_user(req.user_id, authenticated_user)
     logger.info('chat/stream user=%s msg=%s', req.user_id, req.message[:80])
+
+    # ── 监控埋点：入口 ──
+    _platform = getattr(user_info, 'platform', None) if user_info else None
+    _call_id = record_call_start(req.user_id, _platform, req.session_id, settings.LLM_MODEL)
+    _t0 = time.perf_counter()
 
     sid = req.session_id
     if sid:
@@ -94,14 +123,19 @@ async def chat_stream(req: ChatRequest, authenticated_user: str | None = Depends
         sid = await mem_store.create_conversation(req.user_id, title=req.message[:20], shop_id=req.shop_id)
 
     async def event_generator():
+        _ok = True
         try:
             async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id):
                 event_type = evt.get('event', 'text')
                 data = {k: v for k, v in evt.items() if k != 'event'}
                 yield f'event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
         except Exception as exc:
+            _ok = False
             logger.exception('SSE 流异常')
             yield f"event: error\ndata: {json.dumps({'message': '处理过程中出现错误，请稍后重试'}, ensure_ascii=False)}\n\n"
+        finally:
+            # 埋点出口：流式场景不细分工具级埋点（无结构化 tool_calls 回传），仅记录状态与耗时
+            record_call_end('success' if _ok else 'error', int((time.perf_counter() - _t0) * 1000), cid=_call_id)
 
     return StreamingResponse(event_generator(), media_type='text/event-stream',
                               headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'})

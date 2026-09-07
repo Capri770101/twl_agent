@@ -1,0 +1,117 @@
+:root {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --ink: #1f2733;
+  --muted: #7a8699;
+  --line: #e6ebf2;
+  --brand: #4f8cff;
+  --ok: #22c08b;
+  --err: #ff5b5b;
+  --purple: #7c5cff;
+  --shadow: 0 1px 3px rgba(20, 30, 50, 0.06), 0 6px 18px rgba(20, 30, 50, 0.06);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.hidden { display: none !important; }
+
+/* ---------- 登录遮罩 ---------- */
+.login-mask {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #4f8cff 0%, #7c5cff 100%);
+}
+.login-card {
+  width: 360px; max-width: 90vw;
+  background: #fff; border-radius: 16px; padding: 32px 28px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  text-align: center;
+}
+.login-logo { font-size: 26px; font-weight: 700; }
+.login-card h2 { margin: 14px 0 4px; font-size: 20px; }
+.login-sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+.login-card input {
+  width: 100%; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 10px; font-size: 14px; outline: none;
+}
+.login-card input:focus { border-color: var(--brand); }
+.login-card button {
+  width: 100%; margin-top: 14px; padding: 12px; border: 0; border-radius: 10px;
+  background: var(--brand); color: #fff; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.login-card button:hover { filter: brightness(1.05); }
+.login-err { color: var(--err); font-size: 13px; min-height: 18px; margin: 10px 0 0; }
+
+/* ---------- 主面板 ---------- */
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 24px; background: #fff; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-weight: 700; font-size: 16px; }
+.topbar .status { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.topbar .sep { color: var(--line); }
+.topbar .ghost {
+  margin-left: auto; background: transparent; border: 1px solid var(--line);
+  color: var(--muted); padding: 7px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.topbar .ghost:hover { color: var(--ink); border-color: var(--muted); }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(34, 192, 139, 0.18); }
+.dot.off { background: var(--err); box-shadow: 0 0 0 3px rgba(255, 91, 91, 0.18); }
+
+.kpis {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px;
+  padding: 20px 24px 0;
+}
+.kpi {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px; box-shadow: var(--shadow);
+}
+.kpi-label { color: var(--muted); font-size: 12px; }
+.kpi-val { font-size: 26px; font-weight: 700; margin-top: 6px; }
+
+.grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  padding: 14px 24px 28px;
+}
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px; box-shadow: var(--shadow); min-height: 280px;
+  display: flex; flex-direction: column;
+}
+.card.span2 { grid-column: span 2; }
+.card h3 { margin: 0 0 12px; font-size: 14px; color: var(--ink); }
+.card canvas { flex: 1; min-height: 220px; width: 100% !important; }
+
+.feed {
+  list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1;
+  font-size: 12.5px; line-height: 1.7;
+}
+.feed li {
+  display: flex; align-items: center; gap: 8px; padding: 6px 4px;
+  border-bottom: 1px dashed var(--line);
+}
+.feed .t { color: var(--muted); font-variant-numeric: tabular-nums; }
+.feed .plat { font-weight: 600; }
+.feed .uid { color: var(--muted); }
+.feed .lat { color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+.badge {
+  font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 600;
+}
+.badge.ok { background: rgba(34, 192, 139, 0.14); color: #169a6c; }
+.badge.err { background: rgba(255, 91, 91, 0.14); color: #d23b3b; }
+
+@media (max-width: 900px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .grid { grid-template-columns: 1fr; }
+  .card.span2 { grid-column: span 1; }
+}

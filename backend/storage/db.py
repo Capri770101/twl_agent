@@ -33,6 +33,33 @@ _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS mapping_drafts (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, schema_name TEXT NOT NULL, schema_fingerprint TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'draft', draft_json JSONB NOT NULL, created_by TEXT NOT NULL DEFAULT 'agent', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), reviewed_by TEXT, reviewed_at TIMESTAMPTZ)""",
     """CREATE INDEX IF NOT EXISTS idx_mapping_drafts_source ON mapping_drafts(source_id, schema_fingerprint, version DESC)""",
     """CREATE TABLE IF NOT EXISTS mapping_audit (id BIGSERIAL PRIMARY KEY, source_id TEXT NOT NULL, mapping_id TEXT, action TEXT NOT NULL, actor TEXT NOT NULL, details JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
+
+    # ── 调用监控埋点（供 /api/metrics 面板使用）──
+    # call_logs：每次 /chat 或 /chat/stream 一条；tool_call_logs：单次调用内每个工具一次。
+    # 均为 IF NOT EXISTS，init_db 启动时自动建，存量部署无感升级。
+    """CREATE TABLE IF NOT EXISTS call_logs (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        platform_id TEXT,
+        session_id TEXT,
+        model TEXT,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        tool_calls INTEGER NOT NULL DEFAULT 0,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
+    """CREATE TABLE IF NOT EXISTS tool_call_logs (
+        id BIGSERIAL PRIMARY KEY,
+        call_log_id BIGINT NOT NULL REFERENCES call_logs(id) ON DELETE CASCADE,
+        tool_name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
 ]
 
 _INDEXES = [
@@ -41,6 +68,9 @@ _INDEXES = [
     'CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id, category)',
     'CREATE INDEX IF NOT EXISTS idx_image_tasks_updated ON image_tasks(updated_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_image_tasks_user ON image_tasks(user_id, updated_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_call_logs_created ON call_logs(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_call_logs_platform ON call_logs(platform_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_tool_call_logs_call ON tool_call_logs(call_log_id)',
 ]
 
 
