@@ -184,8 +184,10 @@ class ReActAgent:
             try:
                 resp = call_llm(messages, tools=to_openai_tools())
             except Exception as exc:
+                # 安全：原始异常只落服务端日志（含完整 traceback），绝不回显给用户，避免泄露
+                # endpoint / 模型 ID / 密钥前缀 / 内部堆栈等敏感信息（K-1 修复）。
                 logger.exception('[agent] LLM 调用失败')
-                final_reply = f'抱歉，模型调用出错：{exc}'
+                final_reply = '抱歉，我这边服务暂时开小差了，请稍后再试一次～'
                 break
             msg = resp.choices[0].message
             tool_calls = self._parse_tool_calls(msg)

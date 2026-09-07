@@ -47,12 +47,15 @@ async def require_dashboard(request: Request) -> None:
 
 
 def _verify(request: Request) -> None:
-    # 同步端点内复用（在 async 依赖外也可直接调用）
+    # 同步端点内复用（在 async 依赖外也可直接调用）。
+    # K-2 修复：与 require_dashboard 保持一致——同时支持 header 与 SSE 的 query `?key=`。
+    # 否则 dashboard 用 EventSource（无法自定义 header）连 /api/metrics/stream?key= 时会被判 401。
     if not settings.DASHBOARD_API_KEY:
         raise HTTPException(status_code=503, detail='监控面板未启用：请在 .env 配置 DASHBOARD_API_KEY')
     key = (
         request.headers.get('X-Dashboard-Key')
         or request.headers.get('Authorization', '').removeprefix('Bearer ').strip()
+        or request.query_params.get('key', '')
     )
     if not key or not secrets.compare_digest(key, settings.DASHBOARD_API_KEY):
         raise HTTPException(status_code=401, detail='监控密钥无效')
