@@ -15,11 +15,38 @@ auto_create_order / auto_list_orders 及 data_mapping.json 人工写库配置）
 """
 from __future__ import annotations
 
+import datetime
+import decimal
 import re
 from typing import Any
 
 _IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _MAX_TABLES = 200
+
+
+def _json_default(obj: Any) -> Any:
+    """兜底序列化：平台库常见非 JSON 原生类型（Decimal / 日期时间 / bytes / UUID）。
+
+    MySQL 的 DECIMAL 经驱动返回 ``decimal.Decimal``（如店铺 rating=Decimal('5.0')），
+    直接 ``json.dumps`` 会抛 TypeError，导致整个工具调用失败、LLM 拿不到任何店铺数据。
+    因此这里是所有外部数据工具返回值的**统一兜底出口**，不是可选装饰。
+    """
+    if isinstance(obj, decimal.Decimal):
+        # 金额/评分统一转 float；无法转换时退化为字符串，绝不抛异常中断工具调用
+        try:
+            return float(obj)
+        except (ValueError, decimal.InvalidOperation):
+            return str(obj)
+    if isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
+        return obj.isoformat()
+    if isinstance(obj, datetime.timedelta):
+        return obj.total_seconds()
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return obj.decode('utf-8')
+        except UnicodeDecodeError:
+            return obj.hex()
+    return str(obj)
 
 CANONICAL_ENTITIES: dict[str, dict[str, Any]] = {
     'plan': {
@@ -80,7 +107,8 @@ def tool_result(ok: bool, data: Any = None, error: str | None = None, meta: dict
     payload: dict[str, Any] = {'ok': ok, 'data': data, 'error': error}
     if meta:
         payload['meta'] = meta
-    return json.dumps(payload, ensure_ascii=False)
+    # default 兜底：平台库的 Decimal / 日期等类型否则会让整个工具调用 500
+    return json.dumps(payload, ensure_ascii=False, default=_json_default)
 
 
 def _norm(s: str) -> str:
