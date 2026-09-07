@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import logging
 import os
 import re
 from typing import Any
@@ -24,6 +25,9 @@ try:
     import pymysql
 except ImportError:  # 未安装时仅 PostgreSQL 可用，避免硬性依赖
     pymysql = None
+
+
+logger = logging.getLogger(__name__)
 
 _IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 _MAX_TABLES = 200
@@ -403,14 +407,30 @@ def discover_external(source_id: str, schema: str = 'public', sample_rows: int =
                 'WHERE table_schema=%s AND table_name=%s ORDER BY ordinal_position LIMIT %s',
                 (schema, table, _MAX_COLUMNS),
             ).fetchall()
-            foreign_keys = conn.execute(
-                "SELECT kcu.column_name, ccu.table_name AS foreign_table, ccu.column_name AS foreign_column "
-                "FROM information_schema.table_constraints tc "
-                "JOIN information_schema.key_column_usage kcu ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema "
-                "JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name=tc.constraint_name AND ccu.table_schema=tc.table_schema "
-                "WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema=%s AND tc.table_name=%s",
-                (schema, table),
-            ).fetchall()
+            # 外键发现：MySQL 没有 information_schema.constraint_column_usage，
+            # 用 key_column_usage 的 referenced_* 列直接拿 FK 目标；任一方言失败时降级为空。
+            try:
+                if dialect == 'mysql':
+                    foreign_keys = conn.execute(
+                        "SELECT kcu.column_name, kcu.referenced_table_name AS foreign_table, "
+                        "kcu.referenced_column_name AS foreign_column "
+                        "FROM information_schema.key_column_usage kcu "
+                        "WHERE kcu.referenced_table_name IS NOT NULL "
+                        "AND kcu.table_schema=%s AND kcu.table_name=%s",
+                        (schema, table),
+                    ).fetchall()
+                else:
+                    foreign_keys = conn.execute(
+                        "SELECT kcu.column_name, ccu.table_name AS foreign_table, ccu.column_name AS foreign_column "
+                        "FROM information_schema.table_constraints tc "
+                        "JOIN information_schema.key_column_usage kcu ON tc.constraint_name=kcu.constraint_name AND tc.table_schema=kcu.table_schema "
+                        "JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name=tc.constraint_name AND ccu.table_schema=tc.table_schema "
+                        "WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema=%s AND tc.table_name=%s",
+                        (schema, table),
+                    ).fetchall()
+            except Exception as exc:
+                logger.warning('[external] 外键发现失败 source=%s table=%s（跳过该表外键）: %s', source_id, table, exc)
+                foreign_keys = []
             item: dict[str, Any] = {'table': table, 'columns': [_row_to_dict(c) for c in columns], 'foreign_keys': [_row_to_dict(f) for f in foreign_keys]}
             if sample_rows:
                 rows = conn.execute(f'SELECT * FROM {_qualified(dialect, schema, table)} LIMIT %s', (sample_rows,)).fetchall()
