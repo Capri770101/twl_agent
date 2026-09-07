@@ -50,7 +50,8 @@
 | 💌 **AI 电子贺卡** | 5 套模板（暖色 / 淡粉 / 绿色 / 信纸 / 夜色），可定制文案与署名 | 工具 `suggest_greetings` + `render_greeting_card` |
 | 🏪 **店铺只读查询** | 营业时间、配送时间、起送价、地址、电话、营业状态 | 工具 `platform_db_query_entity(entity='shop')` |
 | 🌹 **商品/方案查询** | 按花材 / 场景 / 价格筛选，返回图片、SKU、价格 | 工具 `search_products` |
-| 🧠 **历史会话多轮** | 按 `session_id` 回传上下文，支持「这家店上次聊到哪」 | `GET /conversations/{sid}/messages` |
+| 🧠 **历史会话多轮** | 按 `session_id` 回传上下文 | `GET /conversations/{sid}/messages` |
+| 🔍 **跨会话历史检索** | 按关键词回溯该用户**所有**历史会话，回答「上次那家店 / 我之前买过什么」 | 工具 `search_history` |
 | ⚡ **流式输出** | `tool_call` / `text` / `card` / `done` SSE 事件，工具进度可见 | `POST /chat/stream` |
 | 🔐 **多平台隔离** | 一套后端服务多平台，各平台独立密钥、独立用户派生 | `POST /auth/token` + JWT |
 | 📊 **调用监控** | 24h 调用量、平均延迟、按平台/工具分布、实时调用流 | 监控面板 + `/api/metrics/*` |
@@ -258,6 +259,8 @@ docker exec flora-nginx nginx -t && docker exec flora-nginx nginx -s reload
 | 贺卡 | `suggest_greetings` | 推荐贺卡文案 |
 | 贺卡 | `render_greeting_card` | 5 模板渲染（含中文字体探测） |
 | 平台只读 | `platform_db_query_entity` | entity=plan/shop/order/user 实时查平台库 |
+| 记忆 | `search_history` | 跨会话检索该用户历史对话（按 `user_id` 隔离，只读） |
+| 记忆 | `save_memory` / `save_user_profile` | 写入长期偏好到 `user_preferences` |
 | 上下文注入 | `inject_context` | 店铺锁定 / 平台映射上下文注入 |
 
 完整定义见 `agent/tools/`，运行时清单 = `len(agent.TOOL_REGISTRY)`。
