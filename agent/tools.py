@@ -352,16 +352,38 @@ def _all_flower_terms() -> list[str]:
         _ALL_FLOWER_TERMS = sorted(set(terms), key=len, reverse=True)
     return _ALL_FLOWER_TERMS
 
-def _detect_single_flower(text: str) -> str | None:
-    """检测『纯X / 只要X / 仅用X / 单一花材X / X一束就好』意图，返回指定花名；无此意图返回 None。
+# 连接词：出现即视为多花材混搭，不应判为单一花材（避免「红玫瑰11朵和百合」被误判）。
+_CONNECTIVE_WORDS = ('搭配', '配', '加', '和', '还有', '以及', '再加', '混搭', '组合',
+                     '与', '另外', '顺带', '附带', '点缀', '来点', '再来', '其它', '其他')
 
-    限定词可置于花名前（纯/只要/仅用/单一花材/only）或花名后（一束/就好/即可/就行/单色），
-    二者任一即可判定为单一花材。由于必须匹配到已知花名，『纯色系』『同色系』等纯配色
-    表述（不含花名）不会被误判。
+def _detect_single_flower(text: str) -> str | None:
+    """检测单一花材意图，返回指定花名；无此意图返回 None。
+
+    命中规则（任一）：
+    1. 限定词 + 花名：纯/只要/仅用/单一花材/only + <花名>
+    2. 花名 + 收束词：<花名> + 一束/就好/即可/就行/单色
+    3. 花名 + 数量 + 单位（朵/支/枝/束），且全文仅含这一种花、无其他花或连接词：
+       例「红玫瑰11朵」「白玫瑰9支」「百合一束」。避免「红玫瑰11朵百合5朵」被误判。
+
+    由于必须匹配到已知花名，『纯色系』『同色系』等纯配色表述（不含花名）不会被误判。
     """
+    # 规则 1 & 2：限定词 / 收束词
     for name in _all_flower_terms():
         if re.search(r'(纯|只要|仅[要用]|单[\s一]*一?\s*花材?|only)\s*' + re.escape(name), text, re.I) or \
            re.search(re.escape(name) + r'\s*(纯|一束|就好|即可|就行|单色)', text):
+            return name
+    # 规则 3：花名 + 数量 + 单位（长词优先，先命中「红玫瑰」再考虑「玫瑰」）
+    for name in _all_flower_terms():
+        if re.search(re.escape(name) + r'\s*\d+\s*[朵支枝束]', text) or \
+           re.search(r'\d+\s*[朵支枝束]\s*' + re.escape(name), text) or \
+           re.search(r'一\s*[朵支枝束]\s*' + re.escape(name), text):
+            # 出现其它不同花材或连接词 → 明确是多花材，整句不判为单花
+            other_flower = any(
+                n != name and n not in name and name not in n and re.search(re.escape(n), text)
+                for n in _all_flower_terms()
+            )
+            if other_flower or any(w in text for w in _CONNECTIVE_WORDS):
+                return None
             return name
     return None
 

@@ -105,6 +105,17 @@ def _safe_limit(value: int, maximum: int) -> int:
     return max(0, min(int(value or 0), maximum))
 
 
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    """将 DB-API 行（dict / 命名元组）规整为小写键 dict。
+
+    MySQL 的 information_schema 返回大写键（TABLE_NAME / COLUMN_NAME ...），
+    而 PostgreSQL 返回小写键；统一小写后下游按小写键访问，跨方言不再 KeyError。
+    """
+    if row is None:
+        return {}
+    return {str(k).lower(): v for k, v in dict(row).items()}
+
+
 # --------------------------------------------------------------------------- #
 # 结果转换（展示层规整，按 active 映射的 transforms 配置执行，不写库）
 # --------------------------------------------------------------------------- #
@@ -377,14 +388,14 @@ def discover_external(source_id: str, schema: str = 'public', sample_rows: int =
     dialect = _dialect_of(_source_url(source_id))
     with _connect_external(source_id) as conn:
         schema = _resolve_schema(conn, dialect, schema)
-        product = conn.execute('SELECT version() AS version').fetchone()
+        product = _row_to_dict(conn.execute('SELECT version() AS version').fetchone())
         tables = conn.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE' ORDER BY table_name LIMIT %s",
             (schema, _MAX_TABLES),
         ).fetchall()
         profile: list[dict[str, Any]] = []
         for table_row in tables:
-            table = table_row['table_name']
+            table = _row_to_dict(table_row)['table_name']
             if not _IDENTIFIER.match(table):
                 continue
             columns = conn.execute(
@@ -400,7 +411,7 @@ def discover_external(source_id: str, schema: str = 'public', sample_rows: int =
                 "WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema=%s AND tc.table_name=%s",
                 (schema, table),
             ).fetchall()
-            item: dict[str, Any] = {'table': table, 'columns': [dict(c) for c in columns], 'foreign_keys': [dict(f) for f in foreign_keys]}
+            item: dict[str, Any] = {'table': table, 'columns': [_row_to_dict(c) for c in columns], 'foreign_keys': [_row_to_dict(f) for f in foreign_keys]}
             if sample_rows:
                 rows = conn.execute(f'SELECT * FROM {_qualified(dialect, schema, table)} LIMIT %s', (sample_rows,)).fetchall()
                 item['sample_rows'] = [{k: _redact(v, k) for k, v in dict(row).items()} for row in rows]

@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     HY_LLM_MODEL: str = "hy3"
     HY_IMAGE_MODEL: str = "Hy-Image-3.0"
 
+    # ── LLM 行为开关 ──
+    # hy 兜底：默认关闭，避免跨厂商风格跳变（曾致答非所问）。需要兜底时显式置 true。
+    LLM_HY_FALLBACK_ENABLED: bool = False
+    # Qwen 思考链：默认关闭以提速（qwen3.x 为推理型，开启会先输出 reasoning_content 显著变慢）。
+    # 复杂推理场景可置 true 重新开启。
+    LLM_ENABLE_THINKING: bool = False
+
     # ── 图像生成 ──
     # 已实现：mock / qwen（阿里云百炼 Qwen-Image，原生 multimodal-generation 接口）/ hy
     # flux / dall-e / kling / comfyui 仅为占位，未实现会自动回落 mock

@@ -43,8 +43,8 @@ def _providers() -> list[dict[str, str]]:
     primary = {'name': 'primary', 'base_url': settings.llm_base_url, 'api_key': settings.llm_api_key, 'model': settings.llm_model}
     extras: list[dict[str, str]] = []
     
-    # 添加hy大模型作为备选provider
-    if settings.HY_API_KEY:
+    # hy 大模型兜底：默认关闭（LLM_HY_FALLBACK_ENABLED=False），纯 Qwen，避免跨厂商风格跳变
+    if settings.LLM_HY_FALLBACK_ENABLED and settings.HY_API_KEY:
         extras.append({
             'name': 'hy',
             'base_url': settings.HY_BASE_URL,
@@ -120,6 +120,10 @@ def _raw_call(provider: dict[str, str], messages: list[dict[str, Any]], tools: l
         kwargs['tool_choice'] = 'auto'
     if response_format:
         kwargs['response_format'] = response_format
+    # Qwen 思考链控制：仅对 DashScope/Qwen 模型生效，避免对非 Qwen provider 传未知参数导致 400。
+    # 默认关闭（LLM_ENABLE_THINKING=False）以提速；复杂推理场景可置 true 重新开启。
+    if 'dashscope' in provider['base_url'].lower() or provider['model'].lower().startswith('qwen'):
+        kwargs['extra_body'] = {'enable_thinking': bool(settings.LLM_ENABLE_THINKING)}
     logger.info('[llm] 请求 provider=%s model=%s tools=%s stream=%s', provider['name'], provider['model'], [t['function']['name'] for t in tools] if tools else None, stream)
     return client.chat.completions.create(**kwargs)
 
