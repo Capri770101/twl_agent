@@ -115,10 +115,74 @@ async def _generate_with_hy(prompt: str) -> str:
     raise RuntimeError('hy 大模型图像生成失败：无法提取图像数据')
 
 
-async def _generate_image_async(task_id: str, prompt: str) -> None:
-    """异步生成图像并更新任务状态。"""
+# 阿里云百炼（DashScope）Qwen-Image 原生生图地址
+_QWEN_IMAGE_URL_DEFAULT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+
+
+async def _generate_with_qwen(prompt: str) -> bytes:
+    """使用阿里云百炼 Qwen-Image 生成图像，返回图像字节数据。
+
+    为什么不用 OpenAI 兼容接口：实测 `POST /compatible-mode/v1/images/generations`
+    对 `qwen-image-3.0` 返回 **404**，百炼的 Qwen-Image 只走原生
+    `multimodal-generation` 接口。
+
+    两个易错点：
+    - 尺寸格式是 `"宽*高"`（如 `768*1024`），不是 OpenAI 的 `"宽x高"`；
+    - 返回的图片是**带签名的 OSS 临时地址**（有 Expires），必须立刻下载，
+      不能把该 URL 直接存起来给前端用（会过期 403）。
+    """
+    import httpx
+
+    api_key = settings.IMAGE_API_KEY or settings.llm_api_key
+    if not api_key:
+        raise RuntimeError('未配置 IMAGE_API_KEY，无法使用百炼 Qwen-Image 生图')
+
+    base_url = (settings.IMAGE_BASE_URL or _QWEN_IMAGE_URL_DEFAULT).strip() or _QWEN_IMAGE_URL_DEFAULT
+    model = settings.IMAGE_MODEL or 'qwen-image-3.0'
+    size = f'{settings.IMAGE_WIDTH}*{settings.IMAGE_HEIGHT}'
+
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+    payload = {
+        'model': model,
+        'input': {'messages': [{'role': 'user', 'content': [{'text': prompt}]}]},
+        'parameters': {'size': size, 'n': 1},
+    }
+
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        response = await client.post(base_url, headers=headers, json=payload)
+        response.raise_for_status()
+        result = response.json()
+
+    # 响应结构：output.choices[0].message.content[i].image = 图片地址
+    image_url = ''
     try:
-        png_data = await _generate_with_hy(prompt)
+        choices = (result.get('output') or {}).get('choices') or []
+        content = (choices[0].get('message') or {}).get('content') or []
+        for item in content:
+            if isinstance(item, dict) and item.get('image'):
+                image_url = item['image']
+                break
+    except (IndexError, AttributeError, TypeError):
+        image_url = ''
+    if not image_url:
+        raise RuntimeError(f'百炼生图失败：响应中未找到图片地址 -> {str(result)[:300]}')
+
+    _assert_public_image_url(image_url)
+    async with httpx.AsyncClient(timeout=120.0) as dl:
+        img_response = await dl.get(image_url)
+    img_response.raise_for_status()
+    if len(img_response.content) > _MAX_IMAGE_BYTES:
+        raise ValueError('generated image exceeds size limit')
+    return img_response.content
+
+
+async def _generate_image_async(task_id: str, prompt: str) -> None:
+    """异步生成图像并更新任务状态（按 IMAGE_PROVIDER 选择实现）。"""
+    try:
+        if settings.IMAGE_PROVIDER == 'qwen':
+            png_data = await _generate_with_qwen(prompt)
+        else:
+            png_data = await _generate_with_hy(prompt)
         result_url = save_generated(f'{task_id}.png', png_data)
         _update_task(task_id, 'done', result_url=result_url)
     except Exception as e:
@@ -126,11 +190,14 @@ async def _generate_image_async(task_id: str, prompt: str) -> None:
 
 
 async def create_image_task(prompt: str, user_id: str | None = None) -> str:
-    """创建生图任务，支持 hy 大模型或 mock 模式。"""
+    """创建生图任务，支持 百炼 qwen / hy 大模型 / mock 模式。"""
     task_id = uuid.uuid4().hex[:16]
     _save_task(task_id, 'processing', prompt, user_id=user_id)
-    
-    if settings.HY_API_KEY and settings.IMAGE_PROVIDER == 'hy':
+
+    if settings.IMAGE_PROVIDER == 'qwen' and (settings.IMAGE_API_KEY or settings.llm_api_key):
+        # 阿里云百炼 Qwen-Image 异步生成
+        asyncio.create_task(_generate_image_async(task_id, prompt))
+    elif settings.HY_API_KEY and settings.IMAGE_PROVIDER == 'hy':
         # 使用 hy 大模型异步生成图像
         asyncio.create_task(_generate_image_async(task_id, prompt))
     else:

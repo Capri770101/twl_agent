@@ -70,7 +70,9 @@ class Settings(BaseSettings):
     HY_IMAGE_MODEL: str = "Hy-Image-3.0"
 
     # ── 图像生成 ──
-    IMAGE_PROVIDER: str = "mock"  # mock / flux / dall-e / kling / comfyui / hy
+    # 已实现：mock / qwen（阿里云百炼 Qwen-Image，原生 multimodal-generation 接口）/ hy
+    # flux / dall-e / kling / comfyui 仅为占位，未实现会自动回落 mock
+    IMAGE_PROVIDER: str = "mock"
     IMAGE_API_KEY: str = ""
     IMAGE_BASE_URL: str = ""
     IMAGE_MODEL: str = ""
