@@ -90,6 +90,54 @@ def _platform_source_ids() -> list[str]:
     return sorted(ids)
 
 
+_IMAGE_DECLINE_WORDS = (
+    '不要生成', '不用生成', '别生成', '不生成', '不要出图', '不用出图', '别出图',
+    '取消生图', '不要效果图', '不用效果图', '别效果图', '不要预览图', '不用预览图',
+)
+_IMAGE_TOPIC_WORDS = ('效果图', '生图', '出图', '预览图', '生成图')
+_IMAGE_DECLINE_HINT = ('不要', '不用', '别', '取消', '不需要', '免了', '算了')
+
+
+def _decline_image(message: str) -> bool:
+    """用户是否明确表示不想生成效果图。
+
+    用于「生图补调」的意图豁免：用户已经说不要了，就绝不能再强行生成——
+    否则会出现用户说什么都回同一句「正在为您生成效果图预览」的死循环。
+    """
+    text = (message or '').strip()
+    if not text:
+        return False
+    if any(w in text for w in _IMAGE_DECLINE_WORDS):
+        return True
+    # 「不用了」「别了」这类省略语，需同时出现图相关词才算拒绝生图
+    return any(w in text for w in _IMAGE_TOPIC_WORDS) and any(w in text for w in _IMAGE_DECLINE_HINT)
+
+
+async def _find_pending_image_task(user_id: str, sid: str) -> dict | None:
+    """查找本会话已存在但仍在生成的任务，用于去重（绝不重复烧生图 API）。
+
+    返回该任务信息；若最近那个任务已完成 / 失败 / 不存在，则返回 None。
+    """
+    try:
+        from backend.storage.tasks import get_image_task
+        for msg in reversed(await mem_store.load_display_messages(sid)):
+            data = msg.get('data') if isinstance(msg.get('data'), dict) else {}
+            task_id = data.get('task_id')
+            if not task_id:
+                continue
+            task = await get_image_task(str(task_id))
+            if not task:
+                return None
+            if task.get('result_url'):
+                return None  # 已出图，不算 pending
+            if task.get('status') == 'processing':
+                return task
+            return None  # failed / 其它终态不再复用
+    except Exception:
+        logger.exception('[agent] 查找未完成的生图任务失败')
+    return None
+
+
 def _entity_query_ok(tool_log: list[ToolCallRecord], entity: str) -> bool:
     """本轮是否有成功的 platform_db_query_entity 调用且 arguments.entity 匹配。
 
@@ -407,6 +455,9 @@ class ReActAgent:
         # ── 6. 方案即生图 ──
         diy_done = any(tc.name in ('generate_diy_plan', 'revise_diy_plan') and tc.status == 'ok' for tc in tool_log)
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
+        # 产出新方案 → 清掉上一张图的补调标记，让新方案能重新触发一次生图
+        if diy_done:
+            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
         if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
             try:
                 from agent.tools import generate_effect_image as _gei
@@ -422,24 +473,46 @@ class ReActAgent:
             except Exception:
                 logger.exception('[agent] 方案即生图失败')
 
-        # ── 7. 生图补调 ──
+        # ── 7. 生图补调（幂等 + 去重 + 意图豁免）──
+        # 历史坑：这里曾因「标志永不清除 + 不去重 + 硬编码覆盖回复」造成死循环——
+        # 用户说什么都回同一句「正在为您生成效果图预览」，且每句话都新建一个生图任务烧 API。
         eff_confirmed = await mem_store.get_session_flag(user_id, sid, 'image_confirmed') == '1'
+        eff_forced = await mem_store.get_session_flag(user_id, sid, 'image_forced') == '1'
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
-        if eff_confirmed and (not eff_done) and (ui != UIType.PLAN_CARD) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
-            try:
-                from agent.tools import generate_effect_image as _gei
-                await mem_store.update_stage(sid, SessionStage.IMAGE_GEN.value)
-                raw = await _gei('latest_diy', {'user_id': user_id, 'session_id': sid, 'location': location})
-                eff = raw if isinstance(raw, dict) else json.loads(raw) if isinstance(raw, str) else {}
-                if 'task_id' in eff:
-                    ui = UIType.TEXT
-                    data = {'task_id': eff['task_id'], 'poll': eff.get('poll', True)}
+
+        if _decline_image(message):
+            # 意图豁免：用户明确不要生图 → 清标志，本轮及以后都不再补调
+            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+            logger.info('[agent] 用户拒绝生图，清除 image_ 标志并停止补调')
+        elif (eff_confirmed and (not eff_done) and (not eff_forced)
+              and (ui != UIType.PLAN_CARD)
+              and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM))):
+            eff: dict[str, Any] = {}
+            # 去重：会话里已有正在生成的任务就复用，绝不重复烧生图 API
+            pending = await _find_pending_image_task(user_id, sid)
+            if pending and pending.get('task_id'):
+                eff = {'task_id': pending['task_id'], 'poll': True, 'reused': True}
+                logger.info('[agent] 生图补调复用未完成任务 task_id=%s', eff['task_id'])
+            else:
+                try:
+                    from agent.tools import generate_effect_image as _gei
+                    await mem_store.update_stage(sid, SessionStage.IMAGE_GEN.value)
+                    raw = await _gei('latest_diy', {'user_id': user_id, 'session_id': sid, 'location': location})
+                    eff = raw if isinstance(raw, dict) else json.loads(raw) if isinstance(raw, str) else {}
+                    logger.info('[agent] 生图补调新建任务 task_id=%s', eff.get('task_id'))
+                except Exception:
+                    logger.exception('[agent] 生图补调失败')
+            if 'task_id' in eff:
+                # 幂等：标记本会话已补调过，避免之后每轮重复触发
+                await mem_store.set_session_flag(user_id, sid, 'image_forced', '1')
+                # 不再覆盖 LLM 回复：只有模型没给出实质回复时才用兜底文案
+                if not (final_reply or '').strip():
                     final_reply = '正在为您生成效果图预览，请稍候～ 🎨'
-                    tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok'))
-                    new_msgs.append({'role': 'tool', 'content': json.dumps(eff, ensure_ascii=False), 'tool_call_id': 'forced_effect_image'})
-                    logger.info('[agent] 生图补调成功 task_id=%s', eff['task_id'])
-            except Exception:
-                logger.exception('[agent] 生图补调失败')
+                data = {**(data or {}), 'task_id': eff['task_id'], 'poll': eff.get('poll', True)}
+                if eff.get('result_url'):
+                    data['result_url'] = eff['result_url']
+                tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok'))
+                new_msgs.append({'role': 'tool', 'content': json.dumps(eff, ensure_ascii=False), 'tool_call_id': 'forced_effect_image'})
 
         # ── 8. 回复清理 ──
         final_reply = _clean_reply(final_reply)
