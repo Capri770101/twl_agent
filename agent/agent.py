@@ -505,9 +505,14 @@ class ReActAgent:
             if 'task_id' in eff:
                 # 幂等：标记本会话已补调过，避免之后每轮重复触发
                 await mem_store.set_session_flag(user_id, sid, 'image_forced', '1')
-                # 不再覆盖 LLM 回复：只有模型没给出实质回复时才用兜底文案
-                if not (final_reply or '').strip():
-                    final_reply = '正在为您生成效果图预览，请稍候～ 🎨'
+                # 回复主体必须回应用户的发言：生图提示只作追加，绝不顶替模型原答复
+                # （历史坑：曾直接覆盖成固定文案，导致用户说什么都得到同一句）
+                _notice = '（效果图我在生成中，稍等一下就好～）'
+                if (final_reply or '').strip():
+                    if '效果图' not in final_reply:
+                        final_reply = final_reply.rstrip() + _notice
+                else:
+                    final_reply = '好的～' + _notice
                 data = {**(data or {}), 'task_id': eff['task_id'], 'poll': eff.get('poll', True)}
                 if eff.get('result_url'):
                     data['result_url'] = eff['result_url']
@@ -651,6 +656,16 @@ class ReActAgent:
         else:
             parts.append('## 平台接入状态')
             parts.append('当前未配置任何平台数据库（无 PLATFORM_DB_<SOURCE_ID>_URL）：平台在售方案/店铺/订单均不可查，涉及下单会明确报错。此时可正常做 DIY 设计与效果图；用户要买平台花束时，如实告知平台暂未接入。')
+        if stage == SessionStage.IMAGE_GEN:
+            parts.extend([
+                '## 当前状态：效果图正在生成中',
+                '本会话已确认要生成效果图，任务在后台进行，稍后会出图。',
+                '- **回复的第一句必须先接住用户这一轮说的话**，再顺带提一句图在生成中；',
+                '  不要整段只回「正在生成效果图」——那样用户会觉得答非所问。',
+                '- 用户追问「图呢 / 好了吗」：如实说明还在生成，顺便回应用户同时提出的其他问题。',
+                '- 用户明确说「不要生成了 / 不用图了」：立刻答应并停止，不要再提生图。',
+                '- 不要重复提交生图任务，图由系统后台产出，不需要你再调 generate_effect_image。',
+            ])
         if long_term:
             mem = '；'.join((f'{k}={v}' for k, v in long_term.items()))
             parts.append('## 用户偏好记忆：' + mem)
