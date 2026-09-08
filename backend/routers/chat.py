@@ -15,6 +15,7 @@ from backend.storage import memory as mem_store
 from backend.storage import tasks as task_store
 from agent.engine.ui_protocol import UIType
 from agent.agent import ReActAgent
+from agent.memory_consolidator import maybe_consolidate
 from backend.auth import current_user, current_user_info, require_user
 from backend.observability import record_call_start, record_call_end, record_tool_call
 
@@ -30,6 +31,22 @@ _agent = ReActAgent()
 
 def get_agent() -> ReActAgent:
     return _agent
+
+
+# 后台任务强引用：asyncio 只持有弱引用，不保存会被 GC 掉导致任务半途消失
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_consolidate(user_id: str, session_id: str) -> None:
+    """异步触发长期记忆提炼（L2）。失败静默，且绝不阻塞当前响应。"""
+    if not user_id or not session_id:
+        return
+    try:
+        task = asyncio.create_task(maybe_consolidate(user_id, session_id))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+    except RuntimeError:
+        logger.warning('[chat] 无运行中的事件循环，跳过记忆提炼')
 
 
 class ChatRequest(BaseModel):
@@ -96,6 +113,8 @@ async def chat(
 
     final_sid = result.session_id
     await mem_store.update_conversation_preview(final_sid, req.message[:60])
+    # 记忆提炼走后台任务：不占用本轮响应时间，失败也不影响已产出的答复
+    _spawn_consolidate(req.user_id, final_sid)
     return result.model_dump()
 
 
@@ -136,6 +155,7 @@ async def chat_stream(
         finally:
             # 埋点出口：流式场景不细分工具级埋点（无结构化 tool_calls 回传），仅记录状态与耗时
             record_call_end('success' if _ok else 'error', int((time.perf_counter() - _t0) * 1000), cid=_call_id)
+            _spawn_consolidate(req.user_id, sid)
 
     return StreamingResponse(event_generator(), media_type='text/event-stream',
                               headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no'})

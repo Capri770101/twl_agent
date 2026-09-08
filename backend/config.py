@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # 复杂推理场景可置 true 重新开启。
     LLM_ENABLE_THINKING: bool = False
 
+    # ── 记忆自动固化（L2 自我进化路径）──
+    # 对话结束后异步提炼用户明确表达的偏好写入长期记忆。默认开启；
+    # 按 MEMORY_CONSOLIDATE_EVERY 条新消息节流一次，关闭则退化为「靠 LLM 主动调 save_memory」。
+    MEMORY_CONSOLIDATE_ENABLED: bool = True
+    MEMORY_CONSOLIDATE_EVERY: int = 4
+
     # ── 图像生成 ──
     # 已实现：mock / qwen（阿里云百炼 Qwen-Image，原生 multimodal-generation 接口）/ hy
     # flux / dall-e / kling / comfyui 仅为占位，未实现会自动回落 mock
