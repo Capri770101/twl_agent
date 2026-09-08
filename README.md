@@ -52,6 +52,7 @@
 | 🌹 **商品/方案查询** | 按花材 / 场景 / 价格筛选，返回图片、SKU、价格 | 工具 `search_products` |
 | 🧠 **历史会话多轮** | 按 `session_id` 回传上下文 | `GET /conversations/{sid}/messages` |
 | 🔍 **跨会话历史检索** | 按关键词回溯该用户**所有**历史会话，回答「上次那家店 / 我之前买过什么」 | 工具 `search_history` |
+| 💾 **偏好自动沉淀** | 对话后自动提炼用户明确表达的偏好（送花对象 / 场合 / 预算 / 色系 / 忌讳），下次开聊即带上 | 后台任务 `maybe_consolidate` |
 | ⚡ **流式输出** | `tool_call` / `text` / `card` / `done` SSE 事件，工具进度可见 | `POST /chat/stream` |
 | 🔐 **多平台隔离** | 一套后端服务多平台，各平台独立密钥、独立用户派生 | `POST /auth/token` + JWT |
 | 📊 **调用监控** | 24h 调用量、平均延迟、按平台/工具分布、实时调用流 | 监控面板 + `/api/metrics/*` |
