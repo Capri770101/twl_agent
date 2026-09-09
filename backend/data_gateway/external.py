@@ -438,7 +438,7 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
         schema = _resolve_schema(conn, dialect, schema)
         aliases = [f'{_quote_ident(dialect, actual)} AS {_quote_ident(dialect, canonical)}'
                    for canonical, actual in columns.items()]
-        limit = max(1, min(int(limit or 1), 100))
+        limit = max(1, min(int(limit), 100)) if limit else 100
         sql = f'SELECT {", ".join(aliases)} FROM {_qualified(dialect, schema, table)}'
         params: list[Any] = []
         conditions: list[str] = []
