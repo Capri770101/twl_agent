@@ -27,12 +27,33 @@ from typing import Any
 from agent.engine.llm import call_llm
 from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
+from agent.ports import normalize_shop_id
 from agent.toolkit import execute_tool, generate_tool_manual, to_openai_tools
 from backend.config import settings, setup_logging
 from backend.storage import memory as mem_store
 
 _CHITCHAT_WORDS = ('你好', '您好', '在吗', '在么', '嗨', '哈喽', '谢谢', '感谢', '再见', '拜拜', '哈哈', '辛苦了', '赞', '呵呵')
 _BUY_INTENT = ('买', '送', '下单', '购买', '付款', '支付', '选一束', '挑一束', '想要', '需要', '来一束', '订一束')
+
+# 分隔线行（--- / *** / —— / ___ / === 及其带空格变体）：用户反馈这类分段排版难看，
+# 要求改为数字编号分点。prompt 已加规则，这里再兜一道 deterministic 清理。
+_SEPARATOR_LINE = re.compile(r'^[\s]*([-—*_=＝]{1}[\s]*){3,}$')
+
+
+def _strip_separator_lines(text: str) -> str:
+    """删掉回复里独立的分隔线行（如 ``---``、``***``、``——``），并收拢多余空行。
+
+    Args:
+        text: LLM 生成的最终回复文本。
+
+    Returns:
+        清理后的文本；非字符串或空文本原样返回。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    kept = [ln for ln in text.split('\n') if not _SEPARATOR_LINE.match(ln)]
+    out = re.sub(r'\n{3,}', '\n\n', '\n'.join(kept))
+    return out.strip('\n')
 
 
 def _now_context() -> str:
@@ -213,9 +234,13 @@ class ReActAgent:
 
     async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None) -> ChatResponse:
         t0 = time.perf_counter()
+        # 占位 shop_id（default/none/…）一律视为未锁店：前端从首页等非店铺入口进入时会
+        # 传 shop_id='default'，若不规范化会被当成真实店铺锁死会话 → 查什么都查不到。
+        shop_id = normalize_shop_id(shop_id)
         sid = await mem_store.get_or_create_session(user_id, session_id, shop_id=shop_id)
-        # shop_id 绑定在会话上，以会话存储的为准（创建时写入，整个会话不变）
-        session_shop = await mem_store.get_session_shop_id(sid)
+        # shop_id 绑定在会话上，以会话存储的为准（创建时写入，整个会话不变）；
+        # 存量会话里可能已写入 'default' 等占位值，读取时同样规范化掉。
+        session_shop = normalize_shop_id(await mem_store.get_session_shop_id(sid))
         shop_id = session_shop or shop_id
         stage = SessionStage(await mem_store.get_stage(sid))
         if stage == SessionStage.DONE and (not _is_chitchat(message)):
@@ -287,6 +312,9 @@ class ReActAgent:
         new_stage, ui, data, final_reply, llm_intent = await self._post_process(
             respond_args, tool_log, incoming, message, final_reply, user_id, sid, location, new_msgs,
         )
+        # 排版兜底：删掉 LLM 回复里独立的分隔线行（--- / *** / ——），改为靠 prompt
+        # 规则让其用数字编号分段；此处只做删除不做改写，不碰卡片数据。
+        final_reply = _strip_separator_lines(final_reply)
         _img_intent = any(w in message for w in ('效果图', '生图', '生成'))
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
         await mem_store.save_messages(sid, new_msgs)
@@ -652,6 +680,9 @@ class ReActAgent:
             '- 简短亲切，像专业花艺师在聊天。',
             '- 结构化内容用卡片展示，文字只给结论。',
             '- 不要用 **markdown** 加粗，不要用 # 标题。',
+            '- **禁止用「---」「——」「***」等分隔线分段**，也不要用破折号开头的列表；',
+            '  需要分点、分步骤或多套方案对比时，用数字编号「1. 2. 3.」逐条列出，每条一行，排版整洁；',
+            '  小标题写成「一、养护要点」这类形式，紧跟内容，不单独拉分隔线。',
         ]
         sources = _platform_source_ids()
         if sources:

@@ -16,12 +16,13 @@ from backend.storage import tasks as task_store
 from agent.engine.ui_protocol import UIType
 from agent.agent import ReActAgent
 from agent.memory_consolidator import maybe_consolidate
+from agent.ports import normalize_shop_id
 from backend.auth import current_user, current_user_info, require_user
 from backend.observability import record_call_start, record_call_end, record_tool_call
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 router = APIRouter(tags=['chat'])
 logger = logging.getLogger('api')
@@ -56,6 +57,13 @@ class ChatRequest(BaseModel):
     location: dict[str, Any] | None = None
     shop_id: str | None = None
 
+    @field_validator('shop_id')
+    @classmethod
+    def _strip_placeholder_shop(cls, v: str | None) -> str | None:
+        # 前端从首页等非店铺入口进入会传 shop_id='default' 占位值，必须规范成 None，
+        # 否则会话会被锁进不存在的店铺，查商品/店铺/订单全部落空。
+        return normalize_shop_id(v)
+
 
 class ResetRequest(BaseModel):
     user_id: str
@@ -66,6 +74,11 @@ class CreateConvRequest(BaseModel):
     user_id: str
     title: str | None = None
     shop_id: str | None = None
+
+    @field_validator('shop_id')
+    @classmethod
+    def _strip_placeholder_shop(cls, v: str | None) -> str | None:
+        return normalize_shop_id(v)
 
 
 @router.post('/chat')

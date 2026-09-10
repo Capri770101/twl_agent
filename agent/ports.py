@@ -46,3 +46,24 @@ class KnowledgeBase(Protocol):
 
 
 ToolHandler = Callable[[dict[str, Any] | None, dict[str, Any] | None], Awaitable[tuple[str, str]]]
+
+
+# 前端「非店铺入口」传来的占位 shop_id：一律视为「未锁店」。
+# 曾出现首页进入时前端传 shop_id='default'，被当成真实店铺写进 sessions、
+# 拼进「店铺锁定模式」prompt、并用于 SQL 过滤 → 查什么都查不到。
+_PLACEHOLDER_SHOP_IDS = frozenset({'', 'default', 'none', 'null', 'undefined', 'nil', 'n/a', 'na', '0', '-'})
+
+
+def normalize_shop_id(shop_id: str | None) -> str | None:
+    """把占位 shop_id（default/none/undefined/0/空等）规范成 None（未锁店）。
+
+    Args:
+        shop_id: 前端 / 宿主平台传入的原始 shop_id，可为 None。
+
+    Returns:
+        规范化后的 shop_id；占位值或空值返回 None（表示未锁定店铺）。
+    """
+    raw = str(shop_id or '').strip()
+    if raw.lower() in _PLACEHOLDER_SHOP_IDS:
+        return None
+    return raw
