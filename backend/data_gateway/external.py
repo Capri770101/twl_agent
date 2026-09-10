@@ -456,7 +456,10 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
         id_col = columns.get('id')
         if row_id and id_col:
             # 按主键精确查单行：用户从商品详情页进入时，取他正在看的那件商品。
-            conditions.append(f'{_quote_ident(dialect, id_col)} = ?')
+            # 注意：外部连接是原生 psycopg / pymysql，占位符必须写 %s（? 是内部库适配层的写法）。
+            # PG 侧 CAST 成 text 再比，兼容整数型主键。
+            ident = _quote_ident(dialect, id_col)
+            conditions.append(f'CAST({ident} AS text) = %s' if dialect == 'postgresql' else f'{ident} = %s')
             params.append(str(row_id))
         if conditions:
             sql += ' WHERE ' + ' AND '.join(conditions)
