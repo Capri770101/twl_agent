@@ -27,7 +27,7 @@ from typing import Any
 from agent.engine.llm import call_llm
 from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
-from agent.ports import normalize_shop_id
+from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
 from agent.toolkit import execute_tool, generate_tool_manual, to_openai_tools
 from backend.config import settings, setup_logging
 from backend.storage import memory as mem_store
@@ -188,12 +188,12 @@ def is_affirmative(text: str) -> bool:
 class ReActAgent:
     """基于 ReAct + 状态机的导购智能体。"""
 
-    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None) -> ChatResponse:
+    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, shop_id=shop_id)))
+        return await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)))
 
-    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None):
+    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None):
         """流式异步入口：yield SSE 事件字典，供 /chat/stream 消费。
 
         事件类型：
@@ -212,7 +212,7 @@ class ReActAgent:
                 loop.call_soon_threadsafe(queue.put_nowait, evt)
 
             async def _run():
-                result = await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id)))
+                result = await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)))
                 await queue.put({'event': 'done', 'session_id': result.session_id})
                 await queue.put(None)
             task = loop.create_task(_run())
@@ -232,19 +232,25 @@ class ReActAgent:
             logger.exception('[agent] arun_stream 异常')
             yield {'event': 'error', 'message': f'智能体执行失败: {type(exc).__name__}'}
 
-    async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None) -> ChatResponse:
+    async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
         t0 = time.perf_counter()
         # 占位 shop_id（default/none/…）一律视为未锁店：前端从首页等非店铺入口进入时会
         # 传 shop_id='default'，若不规范化会被当成真实店铺锁死会话 → 查什么都查不到。
         shop_id = normalize_shop_id(shop_id)
-        sid = await mem_store.get_or_create_session(user_id, session_id, shop_id=shop_id)
-        # shop_id 绑定在会话上，以会话存储的为准（创建时写入，整个会话不变）；
+        product_id = normalize_product_id(product_id)
+        product_title = normalize_product_title(product_title)
+        entry = normalize_entry(entry, shop_id, product_id)
+        sid = await mem_store.get_or_create_session(user_id, session_id, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)
+        # 店铺/入口上下文绑定在会话上，以会话存储的为准（创建时写入，整个会话不变）；
         # 存量会话里可能已写入 'default' 等占位值，读取时同样规范化掉。
-        session_shop = normalize_shop_id(await mem_store.get_session_shop_id(sid))
-        shop_id = session_shop or shop_id
+        sess_ctx = await mem_store.get_session_context(sid)
+        shop_id = normalize_shop_id(sess_ctx.get('shop_id')) or shop_id
+        product_id = normalize_product_id(sess_ctx.get('product_id')) or product_id
+        product_title = normalize_product_title(sess_ctx.get('product_title')) or product_title
+        entry = normalize_entry(sess_ctx.get('entry'), shop_id, product_id)
         stage = SessionStage(await mem_store.get_stage(sid))
         if stage == SessionStage.DONE and (not _is_chitchat(message)):
-            sid = await mem_store.create_conversation(user_id, title=message[:20], shop_id=shop_id)
+            sid = await mem_store.create_conversation(user_id, title=message[:20], shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)
             stage = SessionStage.ANALYZE
         try:
             existing_req = await mem_store.get_requirement(sid)
@@ -259,7 +265,7 @@ class ReActAgent:
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
         long_term = await mem_store.get_long_term(user_id)
         history = await mem_store.load_history(sid, settings.history_limit)
-        system = self._build_system(stage, long_term, shop_id=shop_id)
+        system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)
         messages: list[dict[str, Any]] = [{'role': 'system', 'content': system}]
         messages += history
         messages.append({'role': 'user', 'content': message})
@@ -290,7 +296,7 @@ class ReActAgent:
                         messages.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
                         new_msgs.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
                         continue
-                    result, status = await execute_tool(tc['name'], tc['arguments'], {'user_id': user_id, 'session_id': sid, 'location': location, 'shop_id': shop_id})
+                    result, status = await execute_tool(tc['name'], tc['arguments'], {'user_id': user_id, 'session_id': sid, 'location': location, 'shop_id': shop_id, 'entry': entry, 'product_id': product_id, 'product_title': product_title})
                     record = ToolCallRecord(name=tc['name'], arguments=tc['arguments'], result=result, status=status)
                     tool_log.append(record)
                     if on_event:
@@ -560,8 +566,11 @@ class ReActAgent:
 
         return new_stage, ui, data, final_reply, llm_intent
 
-    def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None) -> str:
-        """构造 system prompt：身份 + 能力 + 工具，鼓励自主推理。"""
+    def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> str:
+        """构造 system prompt：身份 + 能力 + 工具，鼓励自主推理。
+
+        entry 决定会话模式：product/shop（已选定商品或店铺）→ 店铺锁定；home → 全平台。
+        """
         parts = [
             '你是「你的专属花艺小助手」——一个温暖灵动的花艺顾问，帮用户把心意变成花。',
             '你帮助用户设计花艺方案、生成效果图、挑花选店、配贺卡。用简洁中文回复，语气亲切自然，像懂花的朋友而不是客服。',
@@ -705,9 +714,11 @@ class ReActAgent:
         if long_term:
             mem = '；'.join((f'{k}={v}' for k, v in long_term.items()))
             parts.append('## 用户偏好记忆：' + mem)
+        entry = normalize_entry(entry, shop_id, product_id)
         if shop_id:
+            origin = '从商品详情页进入，该商品归属' if entry == 'product' else '从店铺详情页进入，'
             parts.extend([
-                f'## 店铺锁定模式（用户从店铺 {shop_id} 的页面进入，本节规则优先于上面场景1/场景2 里的「查店铺」步骤）',
+                f'## 店铺锁定模式（用户{origin}店铺 {shop_id}，本节规则优先于上面场景1/场景2 里的「查店铺」步骤）',
                 f'用户是在平台店铺「{shop_id}」内发起会话的，该店铺已锁定为本次会话的唯一商家：',
                 f'- 不要调用 platform_db_query_entity(entity="shop") 去“选店铺”（用户已经在这家店里了），也不要向用户推荐、引导或跳转到其他店铺；',
                 f'  但用户问本店营业时间 / 营业状态 / 配送时长 / 配送费 / 起送价时，可以且应当查 entity="shop" 读取本店信息（见场景6）。',
@@ -718,13 +729,28 @@ class ReActAgent:
             ])
         else:
             parts.extend([
-                '## 全平台模式（用户从首页等非店铺入口进入，本会话未绑定任何店铺）',
+                '## 全平台模式（用户尚未选定商品或店铺——从首页/搜索/分类等入口进入，本会话不绑定任何店铺）',
                 '- 你可以自由查询平台上**所有店铺**及其商品，不受任何店铺限制；',
                 '- 用户想选店 / 推荐花店（「哪家花店好」「推荐个店」「附近有什么花店」「现在哪些店还开门」）→',
                 '  调 platform_db_query_entity(source_id="<平台数据源>", entity="shop", keyword="区域/店名关键词" 或留空) 查店铺，',
                 '  按 rating 评分、open_status_text 营业状态、address 地址等挑出合适的几家（3-5 家为宜），用 ui="shop_card" data={shops:[...]} 推荐给用户；',
                 '- 推荐商品时可能来自不同店铺：注明每件商品来自哪家店（merchant/shop_id），并提示用户点击卡片进入对应店铺下单；',
                 '- 用户选中某家店后，前端会让用户在该店铺内发起新会话并自动进入店铺锁定模式，本会话内不需要你自行切换。',
+            ])
+        if entry == 'product' and (product_id or product_title):
+            # 用户从商品详情页进入：智能体必须知道「用户此刻在看哪件商品」，
+            # 否则用户问「这个多少钱 / 今天能送到吗」时模型会反问「你说的是哪个」。
+            shown = f'「{product_title}」' if product_title else '该商品'
+            id_hint = f'（商品 ID：{product_id}）' if product_id else ''
+            parts.extend([
+                f'## 用户正在查看的商品{id_hint}',
+                f'用户是从商品详情页进来的，此刻正在看 {shown}：',
+                f'- 用户说「这个」「这束」「它」「这个多少钱」「今天能送到吗」「能不加满天星吗」「有货吗」等，指的都是这件商品——**直接查它并回答，不要反问用户说的是哪个**。',
+                f'- 查这件商品：调 platform_db_query_entity(source_id="<平台数据源>", entity="plan", id="{product_id}") 按 id 精确查询；'
+                + (f'该 id 查不到时再退化用 keyword="{product_title}" 按名称查，并如实说明查不到详情。' if product_title else '查不到时如实说明，不要编造商品信息。'),
+                '- 「正在看」不等于「已决定买」：用户只是咨询时，正常介绍、答疑、给替代建议，不要急着催单或替用户下单。',
+                '- 用户想换款式 / 看别的花时，按上面的模式规则'
+                + (f'在本店（{shop_id}）范围内' if shop_id else '') + '正常推荐其它商品。',
             ])
         parts.append('## 工具说明书\n' + generate_tool_manual())
         return '\n\n'.join(parts)

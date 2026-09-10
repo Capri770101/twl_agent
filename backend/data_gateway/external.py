@@ -409,12 +409,15 @@ def _annotate_open_status(rows: list[dict[str, Any]]) -> None:
             row['open_status_text'] = '未知（营业时段原文无法解析，请按 business_hours 原文如实告知用户）'
 
 
-def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '', transform_fields=None) -> list[dict[str, Any]]:
+def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '', transform_fields=None, row_id: str | None = None) -> list[dict[str, Any]]:
     """只读查询标准业务实体。
 
     shop_id 非空时，若该实体的 active 映射含店铺列（canonical 名 shop_id），
     则按店铺过滤——用于「从某家店铺进入」的场景，把结果硬限定在该店铺内。
     映射没有店铺列时无法在 SQL 层过滤，此时返回未过滤结果（调用方需知晓）。
+
+    row_id 非空时按主键精确查单行——用于「从商品详情页进入」时取用户正在看的
+    那件商品；映射没有 id 列（canonical 名 id）时忽略该条件。
     """
     if not _IDENTIFIER.match(entity or ''):
         raise ValueError('invalid entity')
@@ -450,6 +453,11 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
         if shop_id and shop_col:
             conditions.append(_shop_eq_expr(dialect, _quote_ident(dialect, shop_col)))
             params.append(str(shop_id))
+        id_col = columns.get('id')
+        if row_id and id_col:
+            # 按主键精确查单行：用户从商品详情页进入时，取他正在看的那件商品。
+            conditions.append(f'{_quote_ident(dialect, id_col)} = ?')
+            params.append(str(row_id))
         if conditions:
             sql += ' WHERE ' + ' AND '.join(conditions)
         sql += ' LIMIT %s'

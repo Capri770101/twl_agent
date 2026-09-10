@@ -16,7 +16,16 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec='seconds')
 
 
-async def get_or_create_session(user_id: str, conversation_id: str | None = None, shop_id: str | None = None) -> str:
+_INSERT_SESSION = (
+    'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, entry, product_id, product_title, created_at, updated_at) '
+    'VALUES (?,?,?,?,?,?,?,?,?,?)'
+)
+
+
+async def get_or_create_session(user_id: str, conversation_id: str | None = None, shop_id: str | None = None,
+                                entry: str | None = None, product_id: str | None = None,
+                                product_title: str | None = None) -> str:
+    """获取或创建会话；首次创建时写入入口上下文（店铺锁定 / 商品上下文）。"""
     if conversation_id:
         with transaction() as conn:
             row = conn.execute('SELECT session_id, user_id FROM sessions WHERE session_id = ?', (conversation_id,)).fetchone()
@@ -25,27 +34,28 @@ async def get_or_create_session(user_id: str, conversation_id: str | None = None
             if row:
                 raise PermissionError('conversation does not belong to user')
             conn.execute(
-                'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?) '
-                'ON CONFLICT (session_id) DO NOTHING',
-                (conversation_id, user_id, 'analyze', '新对话', shop_id, _now(), _now())
+                _INSERT_SESSION + ' ON CONFLICT (session_id) DO NOTHING',
+                (conversation_id, user_id, 'analyze', '新对话', shop_id, entry, product_id, product_title, _now(), _now())
             )
             return conversation_id
     session_id = uuid.uuid4().hex
     with transaction() as conn:
         conn.execute(
-            'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-            (session_id, user_id, 'analyze', '新对话', shop_id, _now(), _now())
+            _INSERT_SESSION,
+            (session_id, user_id, 'analyze', '新对话', shop_id, entry, product_id, product_title, _now(), _now())
         )
     return session_id
 
 
-async def create_conversation(user_id: str, title: str = '新对话', shop_id: str | None = None) -> str:
+async def create_conversation(user_id: str, title: str = '新对话', shop_id: str | None = None,
+                              entry: str | None = None, product_id: str | None = None,
+                              product_title: str | None = None) -> str:
     """创建新会话，供 chat 路由直接调用。"""
     session_id = uuid.uuid4().hex
     with transaction() as conn:
         conn.execute(
-            'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
-            (session_id, user_id, 'analyze', title[:50] or '新对话', shop_id, _now(), _now())
+            _INSERT_SESSION,
+            (session_id, user_id, 'analyze', title[:50] or '新对话', shop_id, entry, product_id, product_title, _now(), _now())
         )
     return session_id
 
@@ -75,6 +85,27 @@ async def get_session_shop_id(session_id: str) -> str | None:
     with transaction() as conn:
         row = conn.execute('SELECT shop_id FROM sessions WHERE session_id = ?', (session_id,)).fetchone()
     return row['shop_id'] if row else None
+
+
+async def get_session_context(session_id: str) -> dict[str, Any]:
+    """读取会话的入口上下文：店铺锁定 + 用户正在查看的商品。
+
+    Returns:
+        {'shop_id': str|None, 'entry': 'product'|'shop'|'home', 'product_id': str|None, 'product_title': str|None}
+        会话不存在时返回全空上下文（entry='home'）。
+    """
+    with transaction() as conn:
+        row = conn.execute(
+            'SELECT shop_id, entry, product_id, product_title FROM sessions WHERE session_id = ?', (session_id,)
+        ).fetchone()
+    if not row:
+        return {'shop_id': None, 'entry': 'home', 'product_id': None, 'product_title': None}
+    return {
+        'shop_id': row.get('shop_id'),
+        'entry': row.get('entry') or 'home',
+        'product_id': row.get('product_id'),
+        'product_title': row.get('product_title'),
+    }
 
 
 async def update_stage(session_id: str, stage: str) -> None:

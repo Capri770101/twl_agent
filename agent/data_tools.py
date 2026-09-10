@@ -39,19 +39,30 @@ def platform_db_sample_table(source_id: str, schema: str='public', table: str=''
         return tool_result(False, error=str(exc))
 
 
-@register_tool(name='platform_db_query_entity', description='按指定 source_id 的 active 映射只读查询标准业务实体；没有 active 映射、字段白名单或实体映射时拒绝执行。entity 取值：plan(在售方案/商品)、shop(店铺)、order(订单)、user(用户)。entity="shop" 的返回行通常含 name/phone/address/rating/cover，以及 business_hours(营业时段原文，如 07:00-22:00)、status(平台侧的静态营业状态)、delivery_time(配送时长，如 30-60分钟)、delivery_fee(配送费，单位元)、min_order_price(起送价，单位元)，此外系统还会按当前北京时间实时推算出 is_open_now(true/false/null) 与 open_status_text(营业中/已打烊/未知)，可据此回答「几点关门」「现在开门吗」「多久送到」「起送价多少」「配送费多少」；判断此刻是否营业请**直接读 open_status_text / is_open_now**，不要自己拿当前时间比对 business_hours；is_open_now 为 null 表示营业时段原文无法解析，此时按 business_hours 原文如实转述，不要猜测。实际字段以该平台 active 映射为准，缺哪个字段就如实说明查不到。本会话未绑定店铺（用户从首页等非店铺入口进入）时：可以查询平台全部店铺，也允许把店铺结果罗列、推荐给用户（用于选店）；会话已绑定店铺（从某店铺进入）时：结果自动限定在该店铺内，不要向用户罗列或推荐其他店铺，但查询本店的营业与配送信息不受此限。单次最多返回 100 条，需要更多结果时让用户缩小关键词或换限定条件。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string'}, 'entity': {'type': 'string', 'description': 'plan/shop/order/user'}, 'keyword': {'type': 'string'}, 'limit': {'type': 'integer', 'description': '返回条数上限，默认 100，最大 100'}, 'shop_id': {'type': 'string', 'description': '可选：只看该店铺的数据。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['source_id', 'entity']}, inject_context=True, tags=['database', 'query', 'external'])
-def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit: int=100, shop_id: str='', _context: dict | None=None) -> str:
+@register_tool(name='platform_db_query_entity', description='按指定 source_id 的 active 映射只读查询标准业务实体；没有 active 映射、字段白名单或实体映射时拒绝执行。entity 取值：plan(在售方案/商品)、shop(店铺)、order(订单)、user(用户)。entity="shop" 的返回行通常含 name/phone/address/rating/cover，以及 business_hours(营业时段原文，如 07:00-22:00)、status(平台侧的静态营业状态)、delivery_time(配送时长，如 30-60分钟)、delivery_fee(配送费，单位元)、min_order_price(起送价，单位元)，此外系统还会按当前北京时间实时推算出 is_open_now(true/false/null) 与 open_status_text(营业中/已打烊/未知)，可据此回答「几点关门」「现在开门吗」「多久送到」「起送价多少」「配送费多少」；判断此刻是否营业请**直接读 open_status_text / is_open_now**，不要自己拿当前时间比对 business_hours；is_open_now 为 null 表示营业时段原文无法解析，此时按 business_hours 原文如实转述，不要猜测。实际字段以该平台 active 映射为准，缺哪个字段就如实说明查不到。本会话未绑定店铺（用户从首页等非店铺入口进入）时：可以查询平台全部店铺，也允许把店铺结果罗列、推荐给用户（用于选店）；会话已绑定店铺（从某店铺进入）时：结果自动限定在该店铺内，不要向用户罗列或推荐其他店铺，但查询本店的营业与配送信息不受此限。单次最多返回 100 条，需要更多结果时让用户缩小关键词或换限定条件。用户从商品详情页进入时，用 id 参数（该商品的 ID）按主键精确查这一件商品，比 keyword 模糊搜更准。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string'}, 'entity': {'type': 'string', 'description': 'plan/shop/order/user'}, 'keyword': {'type': 'string'}, 'id': {'type': 'string', 'description': '可选：按主键精确查单行（商品详情页进入时用商品 ID 查该商品）'}, 'limit': {'type': 'integer', 'description': '返回条数上限，默认 100，最大 100'}, 'shop_id': {'type': 'string', 'description': '可选：只看该店铺的数据。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['source_id', 'entity']}, inject_context=True, tags=['database', 'query', 'external'])
+def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit: int=100, shop_id: str='', id: str='', _context: dict | None=None) -> str:
     # 会话锁定店铺优先兜底：LLM 漏传 shop_id 时也不会漏出跨店数据。
     locked_shop = str((_context or {}).get('shop_id') or '').strip()
     effective_shop = str(shop_id or '').strip() or locked_shop
     # 锁定店铺下不允许越店查别的店（防止模型自作主张查别家商品）。
     if locked_shop and effective_shop != locked_shop:
         return tool_result(False, error=f'当前会话已锁定店铺 {locked_shop}，不允许查询其他店铺（{effective_shop}）的数据')
+    # 商品上下文兜底：从商品详情页进入时，模型若漏传 id 又没给关键词，
+    # 自动按会话里的商品 ID 精确查——否则「这个多少钱」会退化成拉一堆商品回来。
+    ctx_product = str((_context or {}).get('product_id') or '').strip()
+    effective_id = str(id or '').strip()
+    auto_scoped = False
+    if not effective_id and not keyword and ctx_product and entity == 'plan':
+        effective_id = ctx_product
+        auto_scoped = True
     try:
-        rows = query_external_entity(source_id, entity, keyword, limit, shop_id=effective_shop)
+        rows = query_external_entity(source_id, entity, keyword, limit, shop_id=effective_shop, row_id=effective_id)
     except Exception as exc:
         return tool_result(False, error=str(exc))
     meta: dict[str, Any] = {}
+    if auto_scoped:
+        meta['auto_scoped_by'] = 'session_product_id'
+        meta['product_id'] = effective_id
     if effective_shop:
         meta['shop_scoped'] = True
         meta['shop_id'] = effective_shop

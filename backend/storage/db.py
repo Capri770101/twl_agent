@@ -30,6 +30,10 @@ _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT, ref_type TEXT, ref_id TEXT, push_channel TEXT NOT NULL DEFAULT 'inbox', is_read INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS image_tasks (task_id TEXT PRIMARY KEY, user_id TEXT, status TEXT NOT NULL, prompt TEXT NOT NULL, result_url TEXT, error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
     """ALTER TABLE image_tasks ADD COLUMN IF NOT EXISTS user_id TEXT""",
+    # ── 会话入口上下文（2026-09-10）：entry=product/shop/home；product_id/product_title 为用户从商品详情页进入时正在看的商品 ──
+    """ALTER TABLE sessions ADD COLUMN IF NOT EXISTS entry TEXT""",
+    """ALTER TABLE sessions ADD COLUMN IF NOT EXISTS product_id TEXT""",
+    """ALTER TABLE sessions ADD COLUMN IF NOT EXISTS product_title TEXT""",
     """CREATE TABLE IF NOT EXISTS mapping_drafts (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, schema_name TEXT NOT NULL, schema_fingerprint TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'draft', draft_json JSONB NOT NULL, created_by TEXT NOT NULL DEFAULT 'agent', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), reviewed_by TEXT, reviewed_at TIMESTAMPTZ)""",
     """CREATE INDEX IF NOT EXISTS idx_mapping_drafts_source ON mapping_drafts(source_id, schema_fingerprint, version DESC)""",
     """CREATE TABLE IF NOT EXISTS mapping_audit (id BIGSERIAL PRIMARY KEY, source_id TEXT NOT NULL, mapping_id TEXT, action TEXT NOT NULL, actor TEXT NOT NULL, details JSONB, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",

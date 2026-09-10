@@ -16,7 +16,7 @@ from backend.storage import tasks as task_store
 from agent.engine.ui_protocol import UIType
 from agent.agent import ReActAgent
 from agent.memory_consolidator import maybe_consolidate
-from agent.ports import normalize_shop_id
+from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
 from backend.auth import current_user, current_user_info, require_user
 from backend.observability import record_call_start, record_call_end, record_tool_call
 
@@ -56,6 +56,11 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     location: dict[str, Any] | None = None
     shop_id: str | None = None
+    # 入口上下文：从商品详情页进入时传 product_id（+product_title），智能体据此锁定
+    # 该商品归属店铺，并知道用户此刻在看哪件商品；未选定商品/店铺（首页等）一律不传。
+    entry: str | None = None
+    product_id: str | None = None
+    product_title: str | None = None
 
     @field_validator('shop_id')
     @classmethod
@@ -63,6 +68,21 @@ class ChatRequest(BaseModel):
         # 前端从首页等非店铺入口进入会传 shop_id='default' 占位值，必须规范成 None，
         # 否则会话会被锁进不存在的店铺，查商品/店铺/订单全部落空。
         return normalize_shop_id(v)
+
+    @field_validator('product_id')
+    @classmethod
+    def _strip_placeholder_product(cls, v: str | None) -> str | None:
+        return normalize_product_id(v)
+
+    @field_validator('product_title')
+    @classmethod
+    def _strip_placeholder_title(cls, v: str | None) -> str | None:
+        return normalize_product_title(v)
+
+    @property
+    def entry_kind(self) -> str:
+        """规范化后的入口类型：product / shop / home。"""
+        return normalize_entry(self.entry, self.shop_id, self.product_id)
 
 
 class ResetRequest(BaseModel):
@@ -74,11 +94,28 @@ class CreateConvRequest(BaseModel):
     user_id: str
     title: str | None = None
     shop_id: str | None = None
+    entry: str | None = None
+    product_id: str | None = None
+    product_title: str | None = None
 
     @field_validator('shop_id')
     @classmethod
     def _strip_placeholder_shop(cls, v: str | None) -> str | None:
         return normalize_shop_id(v)
+
+    @field_validator('product_id')
+    @classmethod
+    def _strip_placeholder_product(cls, v: str | None) -> str | None:
+        return normalize_product_id(v)
+
+    @field_validator('product_title')
+    @classmethod
+    def _strip_placeholder_title(cls, v: str | None) -> str | None:
+        return normalize_product_title(v)
+
+    @property
+    def entry_kind(self) -> str:
+        return normalize_entry(self.entry, self.shop_id, self.product_id)
 
 
 @router.post('/chat')
@@ -102,11 +139,15 @@ async def chat(
         if not conv or conv.get('user_id') != req.user_id:
             sid = None
     if not sid:
-        sid = await mem_store.create_conversation(req.user_id, title=req.message[:20], shop_id=req.shop_id)
+        sid = await mem_store.create_conversation(
+            req.user_id, title=req.message[:20], shop_id=req.shop_id,
+            entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title,
+        )
 
     try:
         result = await asyncio.wait_for(
-            get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id),
+            get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
+                             entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title),
             timeout=settings.REQUEST_TIMEOUT
         )
     except asyncio.TimeoutError:
@@ -152,12 +193,16 @@ async def chat_stream(
         if not conv or conv.get('user_id') != req.user_id:
             sid = None
     if not sid:
-        sid = await mem_store.create_conversation(req.user_id, title=req.message[:20], shop_id=req.shop_id)
+        sid = await mem_store.create_conversation(
+            req.user_id, title=req.message[:20], shop_id=req.shop_id,
+            entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title,
+        )
 
     async def event_generator():
         _ok = True
         try:
-            async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id):
+            async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
+                                                     entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title):
                 event_type = evt.get('event', 'text')
                 data = {k: v for k, v in evt.items() if k != 'event'}
                 yield f'event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
@@ -207,7 +252,10 @@ async def get_messages(conversation_id: str, user_id: str, limit: int = 50, auth
 @router.post('/conversations')
 async def create_conversation(req: CreateConvRequest, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
     require_user(req.user_id, authenticated_user)
-    cid = await mem_store.create_conversation(req.user_id, req.title or '新对话', shop_id=req.shop_id)
+    cid = await mem_store.create_conversation(
+        req.user_id, req.title or '新对话', shop_id=req.shop_id,
+        entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title,
+    )
     return {'conversation_id': cid, 'id': cid}
 
 
