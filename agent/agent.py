@@ -98,6 +98,65 @@ def _strip_internal_leak(text: str) -> str:
     return out
 
 
+# 卡片类回复的「要点兜底」阈值：reply 短于此长度、且本轮带卡片时，才自动补充要点。
+#
+# 背景：实测模型在带卡片时强烈倾向只回「已推给你，点卡片看」而不给结论。已尝试 3 处
+# prompt 强化（回复格式 / 全平台模式 / 场景6），效果不稳定（生成有随机性）。prompt 是
+# 软约束，这里补一层**确定性**兜底：从卡片数据取可读字段拼成简短要点。
+# 只追加、不改写模型原话；只在 reply 明显过短时触发，避免重复啰嗦。
+_CARD_SUMMARY_MIN_REPLY = 30
+
+
+def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
+    """卡片类回复过短时，追加一句基于卡片数据的可读要点（不泄露内部标识）。
+
+    Args:
+        reply: 模型给出的文字回复。
+        ui: 本轮 UI 类型。
+        data: 卡片数据（plan_card 取 plans，shop_card 取 shops）。
+
+    Returns:
+        可能已追加要点的回复；非卡片类型、reply 足够长或无可用字段时原样返回。
+    """
+    if ui not in (UIType.PLAN_CARD, UIType.SHOP_CARD):
+        return reply
+    if len((reply or '').strip()) >= _CARD_SUMMARY_MIN_REPLY:
+        return reply
+    if not isinstance(data, dict):
+        return reply
+
+    lines: list[str] = []
+    if ui == UIType.PLAN_CARD:
+        for plan in (data.get('plans') or [])[:4]:
+            name = str((plan or {}).get('name') or '').strip()
+            if not name:
+                continue
+            price = (plan or {}).get('price')
+            lines.append(f'- {name}（{price:g} 元）' if isinstance(price, (int, float)) and price > 0 else f'- {name}')
+        head = '给你挑的是这几款：'
+    else:
+        for shop in (data.get('shops') or [])[:4]:
+            name = str((shop or {}).get('name') or '').strip()
+            if not name:
+                continue
+            bits: list[str] = []
+            rating = (shop or {}).get('rating')
+            if isinstance(rating, (int, float)) and rating > 0:
+                bits.append(f'{rating:g} 分')
+            price_range = str((shop or {}).get('price_range') or '').strip()
+            if price_range:
+                bits.append(price_range)
+            lines.append(f'- {name}' + (f'（{"、".join(bits)}）' if bits else ''))
+        head = '为你筛选了这几家：'
+
+    if not lines:
+        return reply
+    summary = head + '\n' + '\n'.join(lines)
+    base = (reply or '').strip()
+    logger.info('[agent] 卡片回复过短，已自动追加要点（%d 条）', len(lines))
+    return f'{base}\n\n{summary}' if base else summary
+
+
 # ── system prompt 模板 ──────────────────────────────────────────────────────
 # 文本统一放 agent/prompts/*.md（外置原因：prompt 是本项目改动最频繁的资产，
 # 内联在 _build_system 里时改一句话要动 Python、无法单独 diff 或做 A/B）。
@@ -414,6 +473,9 @@ class ReActAgent:
         # 隐私兜底：去掉回复里残留的工具名 / 内部字段 / 原始数据行，
         # 确保数据库查询结果与内部实现不出现在前端（prompt 约束 + 代码兜底双保险）。
         final_reply = _strip_internal_leak(final_reply)
+        # 要点兜底：带卡片但回复过短时，追加一句基于卡片数据的可读要点
+        # （模型有卡片时倾向只说「看卡片」，prompt 约束不稳定，此处确定性补齐）。
+        final_reply = _ensure_card_summary(final_reply, ui, data)
         _img_intent = any(w in message for w in ('效果图', '生图', '生成'))
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
         await mem_store.save_messages(sid, new_msgs)
