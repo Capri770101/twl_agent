@@ -680,7 +680,9 @@ class ReActAgent:
             '  3. 判断「现在是否营业」：**直接读 open_status_text / is_open_now**，不要自己拿「当前时间」去比对 business_hours。',
             '     - open_status_text 为「未知」= 营业时段原文无法解析，按 business_hours 原文如实转述，不要猜。',
             '     - status 是平台库的静态值，可能与实时推算不一致：一律以 open_status_text 为准，并可补一句「具体以店铺实际为准」。',
-            '  4. 用 respond_to_user 结束：给店铺卡 ui="shop_card" data={shops:[...]}，或纯文字简答 ui="text"',
+            '  4. 用 respond_to_user 结束：给店铺卡 ui="shop_card" data={shops:[...]}，或纯文字简答 ui="text"；',
+            '     **reply 里必须写出关键结论**（推荐哪几家店名、营业状态 / 营业到几点、评分或配送信息），',
+            '     卡片只用于补充地址、图片等明细——不要只回「看卡片」这类引导语。',
             '  注意：只有 open_status_text / is_open_now 是实时推算；其余（配送时长、配送费、起送价、status）均属平台库静态配置。查不到就如实说查不到，绝不编造营业时间或配送承诺。',
             '',
             '### 场景7：平台数据未接入 / 查询报错',
@@ -788,6 +790,7 @@ class ReActAgent:
                 '- 用户想选店 / 推荐花店（「哪家花店好」「推荐个店」「附近有什么花店」「现在哪些店还开门」）→',
                 '  调 platform_db_query_entity(source_id="<平台数据源>", entity="shop", keyword="区域/店名关键词" 或留空) 查店铺，',
                 '  按 rating 评分、open_status_text 营业状态、address 地址等挑出合适的几家（3-5 家为宜），用 ui="shop_card" data={shops:[...]} 推荐给用户；',
+                '  **reply 里要直接写出推荐结论**（哪几家店名 + 营业状态 / 营业到几点 + 评分），卡片用于补充地址与图片——不要只回「看卡片」「已推给你」；',
                 '- 推荐商品时可能来自不同店铺：注明每件商品来自哪家店（merchant/shop_id），并提示用户点击卡片进入对应店铺下单；',
                 '- 用户选中某家店后，前端会让用户在该店铺内发起新会话并自动进入店铺锁定模式，本会话内不需要你自行切换。',
             ])
