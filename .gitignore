@@ -7,3 +7,8 @@ data/
 *.db
 deploy/certs/
 .workbuddy/
+# 本地临时探针脚本与工作产物（不入库）
+scripts/_tmp_*.py
+dsh_computer_use/
+.dsh_computer_use/
+overview.md

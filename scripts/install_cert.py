@@ -1,11 +1,21 @@
 """一键把阿里云免费证书装到服务器并启用 HTTPS。
 
-用法：
+用法（部署信息通过环境变量提供，不在仓库中硬编码生产地址）：
+    # Windows cmd
+    set FLORA_SERVER=admin@<你的服务器公网IP>
+    set FLORA_DOMAIN=<你的域名>
     python scripts/install_cert.py <证书zip路径>
-    python scripts/install_cert.py --auto          # 自动在「下载」目录找最新的证书 zip
+
+    # bash
+    FLORA_SERVER=admin@<你的服务器公网IP> FLORA_DOMAIN=<你的域名> python scripts/install_cert.py --auto
+
+环境变量：
+    FLORA_SERVER  必填，SSH 目标，形如 user@host
+    FLORA_DOMAIN  必填，证书域名，形如 api.example.com
+    FLORA_REMOTE_BASE  可选，服务器上的项目目录，默认 /opt/flora_agent_package
 
 流程：解压 zip → 识别证书链(.pem)与私钥(.key) → 上传到服务器 deploy/certs/
-      → 启动 Nginx 容器 → 公网验证 https://api.tiaowulan.com/health
+      → 启动 Nginx 容器 → 公网验证 https://<FLORA_DOMAIN>/health
 """
 import glob
 import os
@@ -13,9 +23,9 @@ import subprocess
 import sys
 import zipfile
 
-SERVER = '<REDACTED_HOST>'
-REMOTE_BASE = '/opt/flora_agent_package'
-DOMAIN = 'api.tiaowulan.com'
+SERVER = os.environ.get('FLORA_SERVER', '')
+REMOTE_BASE = os.environ.get('FLORA_REMOTE_BASE', '/opt/flora_agent_package')
+DOMAIN = os.environ.get('FLORA_DOMAIN', '')
 DOWNLOADS = os.path.join(os.path.expanduser('~'), 'Downloads')
 
 
@@ -59,6 +69,12 @@ def extract(zip_path):
 
 
 def main():
+    if not (SERVER and DOMAIN):
+        sys.exit(
+            '[FAIL] 缺少部署信息：请先设置环境变量\n'
+            '  FLORA_SERVER  形如 admin@1.2.3.4\n'
+            '  FLORA_DOMAIN  形如 api.example.com'
+        )
     zip_path = find_zip(sys.argv[1] if len(sys.argv) > 1 else None)
     print(f'[1/5] 使用证书包: {zip_path}')
     pem, key = extract(zip_path)

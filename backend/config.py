@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     # 复杂推理场景可置 true 重新开启。
     LLM_ENABLE_THINKING: bool = False
 
+    # ── LLM token 成本护栏（供 agent/engine/budget.py 消费，防 token 计费失控）──
+    # 生效条件（三者需同时满足）：LLM_COST_ENABLED=true、REDIS_URL 已配置、对应日预算 > 0；
+    # 缺任一条件则**静默放行**（故障不影响主链路，仅失去预算约束）。
+    # 计量维度：全局（所有用户合计）+ 单用户，按自然日重置。
+    # 注意：开关默认开启（安全默认）；未配 Redis 或预算为 0 时不产生实际限制。
+    LLM_COST_ENABLED: bool = True
+    LLM_GLOBAL_DAILY_TOKEN_BUDGET: int = 0  # 0 = 不限制；建议按实际预算设正数（如 5_000_000）
+    LLM_USER_DAILY_TOKEN_BUDGET: int = 0    # 0 = 不限制
+
     # ── 记忆自动固化（L2 自我进化路径）──
     # 对话结束后异步提炼用户明确表达的偏好写入长期记忆。默认开启；
     # 按 MEMORY_CONSOLIDATE_EVERY 条新消息节流一次，关闭则退化为「靠 LLM 主动调 save_memory」。
@@ -130,6 +139,12 @@ class Settings(BaseSettings):
 
     # ── Redis（可选）──
     REDIS_URL: str = ""
+
+    # ── 请求限流（进程内固定窗口，防刷 / 防跑量；backend/rate_limit.py 消费）──
+    # 默认开启：单用户每分钟最多 RATE_LIMIT_PER_MINUTE 次 /chat 调用。
+    # 多实例部署时各实例独立计数（如需全局精确限流需换 Redis 后端）。
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_PER_MINUTE: int = 30
 
     # ── CORS ──
     ALLOWED_ORIGINS: str = "*"
@@ -228,15 +243,18 @@ class Settings(BaseSettings):
 
     @property
     def llm_cost_enabled(self) -> bool:
-        return False
+        """token 成本护栏总开关（env: LLM_COST_ENABLED，默认开启）。"""
+        return self.LLM_COST_ENABLED
 
     @property
     def llm_global_daily_token_budget(self) -> int:
-        return 0
+        """全局日 token 预算；0 = 不限制。"""
+        return self.LLM_GLOBAL_DAILY_TOKEN_BUDGET
 
     @property
     def llm_user_daily_token_budget(self) -> int:
-        return 0
+        """单用户日 token 预算；0 = 不限制。"""
+        return self.LLM_USER_DAILY_TOKEN_BUDGET
 
     @property
     def redis_url(self) -> str:

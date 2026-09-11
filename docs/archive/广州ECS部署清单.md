@@ -1,7 +1,7 @@
 # 广州 ECS 部署清单（跳舞兰花卉智能体）
 
-> 针对实例：`<REDACTED_INSTANCE_ID>`（OpenClaw-于琴）
-> 华南3（广州）· 2核2G · 40G 系统盘 · 公网 IP `<REDACTED_HOST>`
+> 针对实例：`<阿里云实例ID>`（OpenClaw-于琴）
+> 华南3（广州）· 2核2G · 40G 系统盘 · 公网 IP `<生产服务器IP>`
 > 镜像 OpenClaw 2026.4.14 · 到期 2026-10-24
 
 ---
@@ -45,7 +45,7 @@
 cd /c/Users/Capri/Desktop
 tar --exclude='__pycache__' --exclude='.workbuddy' --exclude='data' \
     -czf flora_agent_package.tar.gz flora_agent_package
-scp flora_agent_package.tar.gz <REDACTED_HOST>:/opt/
+scp flora_agent_package.tar.gz <ssh-user>@<生产服务器IP>:/opt/
 ```
 
 服务器上解压：
@@ -183,7 +183,7 @@ curl -s -X POST http://localhost:8000/auth/anonymous
 
 ## 9. HTTPS + 域名（小程序上线必经）
 
-前提：已备案域名，DNS A 记录指到 `<REDACTED_HOST>`。
+前提：已备案域名，DNS A 记录指到 `<生产服务器IP>`。
 
 ```bash
 # 证书放进来（阿里云免费证书下载 Nginx 版，或 certbot 签 Let's Encrypt）

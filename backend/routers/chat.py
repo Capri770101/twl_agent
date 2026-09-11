@@ -19,6 +19,7 @@ from agent.memory_consolidator import maybe_consolidate
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
 from backend.auth import current_user, current_user_info, require_user
 from backend.observability import record_call_start, record_call_end, record_tool_call
+from backend.rate_limit import check_rate_limit
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -32,6 +33,27 @@ _agent = ReActAgent()
 
 def get_agent() -> ReActAgent:
     return _agent
+
+
+def _enforce_rate_limit(user_id: str) -> None:
+    """按用户维度做请求限流（进程内固定窗口）。
+
+    超限抛 429，携带 Retry-After 供客户端退避。限流是**成本护栏**的一部分：
+    与 token 日预算（agent/engine/budget.py）互补，防止单用户高频刷接口烧钱。
+
+    Args:
+        user_id: 已通过鉴权的调用方用户标识。
+
+    Raises:
+        HTTPException: 当该用户在当前窗口内请求次数超限时抛出 429。
+    """
+    allowed, retry_after = check_rate_limit(f'chat:{user_id}')
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f'请求过于频繁，请 {retry_after} 秒后再试',
+            headers={'Retry-After': str(retry_after)},
+        )
 
 
 # 后台任务强引用：asyncio 只持有弱引用，不保存会被 GC 掉导致任务半途消失
@@ -126,6 +148,7 @@ async def chat(
 ) -> Any:
     """与智能体对话，返回结构化 UI 响应。"""
     require_user(req.user_id, authenticated_user)
+    _enforce_rate_limit(req.user_id)
     logger.info('chat user=%s msg=%s', req.user_id, req.message[:80])
 
     # ── 监控埋点：入口 ──
@@ -180,6 +203,7 @@ async def chat_stream(
 ) -> StreamingResponse:
     """SSE 流式对话端点。"""
     require_user(req.user_id, authenticated_user)
+    _enforce_rate_limit(req.user_id)
     logger.info('chat/stream user=%s msg=%s', req.user_id, req.message[:80])
 
     # ── 监控埋点：入口 ──

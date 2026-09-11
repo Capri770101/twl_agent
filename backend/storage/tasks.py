@@ -2,8 +2,10 @@
 from __future__ import annotations
 import asyncio
 import ipaddress
+import logging
 import socket
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urlparse
 
@@ -11,7 +13,40 @@ from backend.config import settings
 from backend.storage.db import transaction
 from backend.storage.object_store import save_generated
 
+logger = logging.getLogger('tasks')
+
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+# 生图专用后台执行器：每个任务在**独立线程**里用**自带的事件循环**跑完整个生命周期。
+#
+# 为什么不能用 asyncio.create_task：生图工具经 ReAct 工具链调用，而工具链跑在
+# agent/agent.py 的 arun() 里 `run_in_executor(None, lambda: asyncio.run(self.run(...)))`
+# 所创建的**临时事件循环**中。run() 一返回，asyncio.run 便会关闭该循环并取消其上所有
+# 挂起任务；而 CancelledError 继承自 BaseException，_generate_image_async 里的
+# `except Exception` 抓不到它 —— 任务于是永远停在 processing（mock 分支是同步实现，
+# 所以本地联调看不出来，只有真实 qwen/hy 生图才暴露）。
+#
+# 独立线程自带循环、与应用调用方生命周期解耦，从根本上规避该问题。
+# max_workers 限制并发生图数（保护上游生图配额），超出的任务在队列中排队。
+_IMAGE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='flora-image')
+
+
+def _run_image_task(task_id: str, prompt: str) -> None:
+    """在后台线程内以独立事件循环执行生图协程，并兜底一切异常。
+
+    Args:
+        task_id: 生图任务 ID（已写入 image_tasks，状态 processing）。
+        prompt: 生图提示词。
+    """
+    try:
+        asyncio.run(_generate_image_async(task_id, prompt))
+    except asyncio.CancelledError:
+        # 显式兜底：CancelledError 不是 Exception 子类，下面那支抓不到它。
+        logger.warning('[tasks] 生图任务被取消 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='任务被取消')
+    except Exception:
+        logger.exception('[tasks] 生图后台执行异常 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='生图后台执行异常')
 
 
 def _assert_public_image_url(image_url: str) -> None:
@@ -195,11 +230,11 @@ async def create_image_task(prompt: str, user_id: str | None = None) -> str:
     _save_task(task_id, 'processing', prompt, user_id=user_id)
 
     if settings.IMAGE_PROVIDER == 'qwen' and (settings.IMAGE_API_KEY or settings.llm_api_key):
-        # 阿里云百炼 Qwen-Image 异步生成
-        asyncio.create_task(_generate_image_async(task_id, prompt))
+        # 阿里云百炼 Qwen-Image 异步生成（提交到独立后台线程，避免被调用方临时循环销毁）
+        _IMAGE_EXECUTOR.submit(_run_image_task, task_id, prompt)
     elif settings.HY_API_KEY and settings.IMAGE_PROVIDER == 'hy':
         # 使用 hy 大模型异步生成图像
-        asyncio.create_task(_generate_image_async(task_id, prompt))
+        _IMAGE_EXECUTOR.submit(_run_image_task, task_id, prompt)
     else:
         # Mock 模式：生成占位图像
         png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'

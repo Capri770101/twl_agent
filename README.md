@@ -124,9 +124,10 @@
 | LLM SDK | `openai` Python SDK（兼容模式） | 同一套接口切 Qwen / hy |
 | Agent 框架 | 自研 ReAct（`agent/engine`） | 工具注册表 + 多轮记忆 + 流式回调 |
 | 后端框架 | FastAPI + Pydantic v2 | 异步路由 + 自动 OpenAPI 文档 |
-| ORM / DB | SQLAlchemy + psycopg + asyncpg | PostgreSQL，外部库按方言兼容（MySQL/PG） |
-| 缓存 | Redis | 限流 + 会话计数 |
-| 任务 | 内存 + asyncio | 生图走后台任务，结果落数据库 |
+| DB 驱动 | psycopg3（直连，无 ORM） | PostgreSQL；外部只读库按方言兼容（MySQL/PG） |
+| 限流 | 进程内固定窗口（`backend/rate_limit.py`） | 按用户 N 次/分钟（`RATE_LIMIT_PER_MINUTE`）；多实例需换 Redis 后端 |
+| 成本护栏 | token 日预算（`agent/engine/budget.py`） | `LLM_COST_ENABLED` + Redis + 预算阈值，三者齐备才生效 |
+| 后台任务 | 独立线程 + 独立事件循环 | 生图任务落 `image_tasks`，前端轮询 `/tasks/{id}` |
 | 部署 | Docker + Compose | 4 服务编排；nginx 配置 bind-mount，可热 reload |
 | 反代 / TLS | nginx + Let's Encrypt | `proxy_buffering off` 配合 SSE |
 | 鉴权 | JWT (HS256) + X-API-Key | `JWT_SECRET ≥ 32` 字符（生产强制） |
@@ -232,7 +233,7 @@ curl -sX POST http://localhost:8000/chat \
 
 ```bash
 # 服务器标准上线（先本地 commit + 推 GitHub 再来执行）
-ssh <REDACTED_HOST>
+ssh <ssh-user>@<生产服务器IP>
 cd /opt/flora_agent_package
 git fetch && git merge --ff-only origin/main
 docker compose --profile nginx up -d --build agent dashboard nginx
