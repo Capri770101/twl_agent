@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     # 匿名登录开关：开发联调用；生产环境默认关闭（未显式设置时强制 False）。
     ANONYMOUS_LOGIN_ENABLED: bool = True
 
+    # ── 运维 / 接入期工具开关（默认关闭，见 agent/toolkit.py）──
+    # 关闭时，8 个平台接入工具（platform_db_discover / _test_connection / _sample_table
+    # 与 platform_mapping_draft / _save_draft / _list_drafts / _set_status / _get_active）
+    # **不暴露给 C 端会话且不可被调用**；仅在部署接入期临时置 true，
+    # 供配置方通过对话完成结构与映射接入。日常运营保持 false。
+    ENABLE_OPS_TOOLS: bool = False
+
     # ── 监控面板（/api/metrics + 独立 dashboard 容器）──
     # 生产必填：未配置时 /api/metrics 一律 503，避免面板被裸奔暴露。
     # 建议用 `openssl rand -hex 32` 生成高强度随机串，与业务 JWT_SECRET 区分。

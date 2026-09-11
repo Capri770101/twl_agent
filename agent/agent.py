@@ -56,6 +56,47 @@ def _strip_separator_lines(text: str) -> str:
     return out.strip('\n')
 
 
+# 内部实现标识 → 中性说法（隐私约束的 deterministic 兜底）。
+# prompt 已硬约束「不暴露工具名 / 内部字段」，但 prompt 是软约束，此处再兜一层：
+# 模型偶尔仍会把工具名或内部字段写进回复。
+_INTERNAL_TERM_SUBS = (
+    (re.compile(r'platform_(?:db|mapping)_[a-z_]+', re.I), '平台查询'),
+    (re.compile(r'PLATFORM_DB_[A-Z0-9_]+'), '平台数据源'),
+    (re.compile(r'\bsource_id\b', re.I), '数据源'),
+)
+
+# 整行看起来就是工具的原始返回（JSON 对象 / 数组）：正常花艺回复不会出现。
+# 对应「不要把数据库查询结果输出到前端」的兜底——只删独立数据行，不碰正文。
+_RAW_PAYLOAD_LINE = re.compile(r'^\s*[\{\[].*[\}\]]\s*$')
+
+
+def _strip_internal_leak(text: str) -> str:
+    """移除回复里泄露内部实现 / 原始查询结果的内容（隐私约束兜底）。
+
+    Args:
+        text: LLM 生成的最终回复文本。
+
+    Returns:
+        清理后的文本；非字符串或空文本原样返回。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    kept: list[str] = []
+    dropped_payload = False
+    for ln in text.split('\n'):
+        if _RAW_PAYLOAD_LINE.match(ln):
+            dropped_payload = True
+            continue
+        kept.append(ln)
+    out = '\n'.join(kept)
+    for pat, repl in _INTERNAL_TERM_SUBS:
+        out = pat.sub(repl, out)
+    out = re.sub(r'\n{3,}', '\n\n', out).strip('\n')
+    if dropped_payload:
+        logger.warning('[agent] 回复中出现原始数据行，已移除（隐私兜底）')
+    return out
+
+
 def _now_context() -> str:
     """当前本地时间上下文，供 LLM 判断营业时段 / 配送时效。
 
@@ -321,6 +362,9 @@ class ReActAgent:
         # 排版兜底：删掉 LLM 回复里独立的分隔线行（--- / *** / ——），改为靠 prompt
         # 规则让其用数字编号分段；此处只做删除不做改写，不碰卡片数据。
         final_reply = _strip_separator_lines(final_reply)
+        # 隐私兜底：去掉回复里残留的工具名 / 内部字段 / 原始数据行，
+        # 确保数据库查询结果与内部实现不出现在前端（prompt 约束 + 代码兜底双保险）。
+        final_reply = _strip_internal_leak(final_reply)
         _img_intent = any(w in message for w in ('效果图', '生图', '生成'))
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
         await mem_store.save_messages(sid, new_msgs)
@@ -678,7 +722,6 @@ class ReActAgent:
             '- save_memory / save_user_profile：记住用户偏好',
             '- respond_to_user(reply, ui, data, stage, intent)：通用终结工具',
             '- show_plan_card(plans, reply, stage, intent)：标准方案卡片输出工具',
-            '- platform_db_discover / platform_db_sample_table / platform_mapping_*：部署接入期由配置方使用；日常对话不需要',
             '',
             '## respond_to_user 参数说明',
             '- reply：给用户的文字回复（1-2句话）',
@@ -693,6 +736,15 @@ class ReActAgent:
             '- **禁止用「---」「——」「***」等分隔线分段**，也不要用破折号开头的列表；',
             '  需要分点、分步骤或多套方案对比时，用数字编号「1. 2. 3.」逐条列出，每条一行，排版整洁；',
             '  小标题写成「一、养护要点」这类形式，紧跟内容，不单独拉分隔线。',
+            '',
+            '## 隐私与内部信息（硬规则，优先于其他所有表述要求）',
+            '- 查询类工具（商品 / 店铺 / 订单等）一律**在后台静默调用**：不要在回复里报备「我查了数据库 / 查了表 / 查了字段」，',
+            '  也不要出现 source_id、表名、列名、连接信息，以及 shop_id / product_id 这类原始主键。',
+            '- **不要把工具的原始返回（JSON、行数据、字段名）直接贴进回复**。必须先把结果**加工**成用户看得懂的内容',
+            '  或卡片（商品卡 / 店铺卡 / 方案卡）再呈现——用户要的是结论，不是数据本身。',
+            '- 涉及他人隐私的数据（其他用户的订单、联系方式、画像）不展示、不复述、不暗示。',
+            '- 用户追问「你怎么知道的 / 数据哪来的」：用「根据平台在售信息」这类中性说法，不要暴露数据来源与内部实现。',
+            '- 边界：本节约束的是**原始数据与内部细节**。推荐的商品、店铺、方案、贺卡等面向用户的结果，照常正常呈现。',
         ]
         sources = _platform_source_ids()
         if sources:
