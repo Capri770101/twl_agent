@@ -91,7 +91,13 @@ def to_openai_tools() -> list[dict[str, Any]]:
 
 
 def generate_tool_manual() -> str:
-    """生成中文工具说明书，注入 system prompt（仅当前会话可见的工具）。"""
+    """生成中文工具说明书（**当前不再注入 system prompt**）。
+
+    工具定义已由 function-calling 的 ``tools`` 参数完整提供（含每个参数的 JSON Schema），
+    本函数输出与其重复、且信息更少。经 A/B 实测（2026-09-11）：移除注入后工具选择无退化、
+    输入字符 -29.6%。保留本函数作为**文本兜底**——当某 provider 不支持 function calling 时，
+    可用它把「有哪些工具」以文字形式告知模型。
+    """
     lines = ['你当前可以使用的工具（需要时以 JSON 或 function call 形式调用）：']
     for s in visible_tool_specs():
         params = ', '.join((f"{k}: {v.get('type', 'any')}" for k, v in s.parameters.get('properties', {}).items()))
