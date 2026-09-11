@@ -92,3 +92,36 @@ def test_privacy_section_states_boundary() -> None:
 def test_prompt_size_budget() -> None:
     """体积护栏：prompt 明显膨胀时报警（当前约 7.0k，阈值留约 25% 余量）。"""
     assert len(_prompt()) < 9000
+
+
+# ── prompt 模板（agent/prompts/*.md）──
+# 文本已从 _build_system 外置到模板文件；缺任何一个都会让运行期抛 FileNotFoundError。
+
+PROMPT_TEMPLATES = [
+    'base',
+    'platform_sources',
+    'platform_none',
+    'stage_image_gen',
+    'shop_lock',
+    'full_platform',
+    'product_context',
+]
+
+
+@pytest.mark.parametrize('name', PROMPT_TEMPLATES)
+def test_prompt_template_file_exists(name: str) -> None:
+    import os
+
+    from agent import agent as agent_module
+
+    path = os.path.join(agent_module._PROMPT_DIR, f'{name}.md')
+    assert os.path.exists(path), f'缺少 prompt 模板文件：{name}.md'
+    assert os.path.getsize(path) > 0, f'prompt 模板为空：{name}.md'
+
+
+def test_prompt_templates_cover_all_dynamic_sections() -> None:
+    """锁店 / 商品页等动态分支渲染后必须真的带上对应内容。"""
+    assert '店铺锁定模式' in _prompt(shop_id='S001', entry='shop')
+    assert '全平台模式' in _prompt()
+    assert '用户正在查看的商品' in _prompt(shop_id='S1', entry='product', product_id='P1', product_title='红花')
+    assert 'PLATFORM_DB_<SOURCE_ID>_URL' in _prompt()
