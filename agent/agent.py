@@ -37,7 +37,7 @@ _BUY_INTENT = ('买', '送', '下单', '购买', '付款', '支付', '选一束'
 
 # 分隔线行（--- / *** / —— / ___ / === 及其带空格变体）：用户反馈这类分段排版难看，
 # 要求改为数字编号分点。prompt 已加规则，这里再兜一道 deterministic 清理。
-_SEPARATOR_LINE = re.compile(r'^[\s]*([-—*_=＝]{1}[\s]*){3,}$')
+_SEPARATOR_LINE = re.compile(r'^[\s]*([-—*_=＝]{1}[\s]*){2,}$')
 
 
 def _strip_separator_lines(text: str) -> str:
@@ -712,7 +712,7 @@ class ReActAgent:
             '- 下单由客户在微信小程序侧点击商品卡片进入现有结算页完成（微信支付、分账、配送范围、订单导入均复用平台现有逻辑）。',
             '- 智能体只负责推荐结构化商品（reply + products 数组），让客户自行在卡片上「立即购买」；绝不代替客户提交真实订单。',
             '',
-            '## 核心工具速览（完整工具说明书自动附在文末）',
+            '## 核心工具速览（常用工具与使用时机）',
             '- platform_db_query_entity(source_id, entity, keyword, limit)：只读查平台 plan/shop/order/user（实时数据，展示商品/店铺优先用它）',
             '- generate_diy_plan(requirements)：设计 DIY 花艺方案',
             '- revise_diy_plan(plan, feedback)：按反馈改方案',
