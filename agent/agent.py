@@ -480,6 +480,76 @@ def _wants_alternative(respond_args: dict | None, message: str) -> bool:
         return True
     return isinstance(respond_args, dict) and respond_args.get('wants_alternative') is True
 
+
+# ── L3 澄清式追问：缺关键信息时不硬编方案 ──────────────────────────────────
+# 目标：把「模型缺信息也硬出一条猜的方案卡」变成「先问清楚再设计」。
+# 判据用模型自报的 missing（它读得到完整上下文），agent 只做白名单过滤 + 确定性拦截；
+# 关键词仅用于「用户是否已授权自行决定」这一豁免判断。
+_CLARIFY_PRIORITY = ('recipient', 'occasion', 'budget')
+# 用户已把这几个槽位交给系统决定 → 不再打断（否则会变成没完没了的表单式追问）
+_CLARIFY_EXEMPT = (
+    '随便', '你决定', '你定', '你看着办', '看着办', '都行', '都可以', '不用问',
+    '别问', '直接来', '直接出', '推荐就行', '你推荐', '帮我挑', '帮我选',
+)
+_SLOT_ASK = {
+    'recipient': '送给谁（妈妈 / 女朋友 / 朋友 / 长辈 / 同事…）',
+    'occasion': '什么场合（生日 / 纪念日 / 求婚 / 探病 / 开业 / 感谢…）',
+    'budget': '预算大概多少（100 以内 / 200 左右 / 300-500 / 500 以上）',
+}
+
+
+def _clarify_slots(
+    message: str,
+    respond_args: dict | None,
+    ui: UIType,
+    diy_produced: bool,
+    asked_before: bool,
+) -> list[str]:
+    """本轮是否该「先追问、别硬出方案」；返回要追问的槽位（空列表 = 不追问）。
+
+    只在 **DIY 定制路径**（本轮真的产出了 DIY 方案）上生效——平台在售推荐是另一条路，
+    用户看的是现成商品，追问反而多事，故用 ``diy_produced`` 区分。
+    只问 recipient / occasion / budget 三项：style / colors 缺失时模型可以主动推荐，
+    不必为它们打断用户。
+
+    Args:
+        message: 用户本轮原始消息。
+        respond_args: respond_to_user / show_plan_card 入参（携带模型自报的 missing）。
+        ui: 本轮推导出的 UI 类型（只有 plan_card 才需要拦）。
+        diy_produced: 本轮是否有成功的 generate_diy_plan / revise_diy_plan。
+        asked_before: 本会话是否已追问过一次（同一需求内不重复唠叨）。
+
+    Returns:
+        需要追问的槽位列表（按 _CLARIFY_PRIORITY 顺序，最多 2 个）。
+    """
+    if ui != UIType.PLAN_CARD or not diy_produced or asked_before:
+        return []
+    if any(w in (message or '') for w in _CLARIFY_EXEMPT):
+        return []
+    raw = respond_args.get('missing') if isinstance(respond_args, dict) else None
+    if not isinstance(raw, list):
+        return []
+    reported = {str(x).strip().lower() for x in raw}
+    return [s for s in _CLARIFY_PRIORITY if s in reported][:2]
+
+
+def _append_clarify(reply: str, slots: list[str]) -> str:
+    """把追问句**追加**到模型回复之后（不替换——系统动作只追加的原则见 H-1 教训）。
+
+    Args:
+        reply: 模型本轮回复（可能为空）。
+        slots: 待追问的槽位列表。
+
+    Returns:
+        追加追问后的回复；无有效槽位时原样返回。
+    """
+    asks = '；'.join(_SLOT_ASK[s] for s in slots if s in _SLOT_ASK)
+    if not asks:
+        return reply
+    tail = f'在给你定方案之前，想先确认一下：{asks}？'
+    base = (reply or '').strip()
+    return f'{base}\n{tail}' if base else tail
+
 class ReActAgent:
     """基于 ReAct + 状态机的导购智能体。"""
 
@@ -839,12 +909,31 @@ class ReActAgent:
             data = {}
             logger.info('[agent] 知识问答轮次，丢弃 LLM 擅自推送的方案卡')
 
+        # ── 5.5 L3 澄清式追问：信息不足 → 先问清楚，不推猜出来的方案卡 ──
+        # 模型若自报 missing（缺关键信息）却仍产出了 DIY 方案卡，这里**确定性地**拦下：
+        # 卡片降级为文字 + 追加追问句；同一需求内只问一次；用户说「随便/你决定」则豁免。
+        _diy_produced = any(tc.name in ('generate_diy_plan', 'revise_diy_plan') and tc.status == 'ok' for tc in tool_log)
+        _clarify = _clarify_slots(
+            message, respond_args, ui, _diy_produced,
+            asked_before=await mem_store.get_session_flag(user_id, sid, 'clarify_asked') == '1',
+        )
+        _clarified = bool(_clarify)
+        if _clarified:
+            await mem_store.set_session_flag(user_id, sid, 'clarify_asked', '1')
+            ui = UIType.TEXT
+            data = {}
+            final_reply = _append_clarify(final_reply, _clarify)
+            logger.info('[agent] L3 澄清追问 slots=%s（本轮不推方案卡）', _clarify)
+
         # ── 6. 方案即生图 ──
-        diy_done = any(tc.name in ('generate_diy_plan', 'revise_diy_plan') and tc.status == 'ok' for tc in tool_log)
+        diy_done = _diy_produced
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
         # 产出新方案 → 清掉上一张图的补调标记，让新方案能重新触发一次生图
         if diy_done:
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+            # 本轮没有追问 = 需求已完整成立，允许将来（新需求）再追问一次
+            if not _clarified:
+                await mem_store.clear_session_flags(user_id, sid, prefix='clarify_')
         if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and (not _img_optout) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
             try:
                 from agent.tools import generate_effect_image as _gei
@@ -875,6 +964,8 @@ class ReActAgent:
             logger.info('[agent] 用户拒绝生图，记录 img_optout 并停止补调')
         elif (eff_confirmed and (not eff_done) and (not eff_forced) and (not _img_optout)
               and (ui != UIType.PLAN_CARD)
+              # L3：本轮若在追问（还没有可信方案），就不要拿上一轮的旧方案去生图
+              and (not _clarified)
               and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM))):
             eff: dict[str, Any] = {}
             # 去重：会话里已有正在生成的任务就复用，绝不重复烧生图 API

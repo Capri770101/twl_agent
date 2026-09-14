@@ -1039,15 +1039,42 @@ _IMAGE_VALUES = ('want', 'decline', 'none')
 _CONFIRMATION_PROP = {'type': 'string', 'enum': ['confirm', 'reject', 'none'], 'description': '用户本轮是否在回应你上一轮的**提议/方案**：confirm=认可并接受（如「好」「就这个」「可以」）；reject=不接受（如「不行」「换一个」「不要这个」）；none=本轮不涉及确认（新提问、新需求、闲聊）。注意「这个方案不行」「不是这个」「不好看」都是 reject，不要被其中「行/是/好」这些字骗到。'}
 _IMAGE_PROP = {'type': 'string', 'enum': ['want', 'decline', 'none'], 'description': '用户本轮对**效果图/生图**的态度：want=想要图（如「出个效果图」「看看长什么样」「好，生成吧」）；decline=明确不要图（如「不用效果图」「别生成图」「算了不出图」）；none=没提图片的事。'}
 _ALTERNATIVE_PROP = {'type': 'boolean', 'description': '用户是否想**换一批 / 再看别的**（如「还有别的吗」「换一个风格」「再看看其他方案」「太贵了，有便宜点的吗」）。没有这个意思就填 false。'}
+# L3 澄清式追问：把「还缺哪些关键信息」交给模型判断（它读得到完整上下文），
+# agent 侧据此确定性地先追问、而不是让模型硬编一个猜出来的方案。
+MISSING_SLOT_VALUES = ('recipient', 'occasion', 'budget', 'style', 'colors')
+_MISSING_PROP = {'type': 'array', 'items': {'type': 'string', 'enum': list(MISSING_SLOT_VALUES)}, 'description': '**本轮你若打算直接给出花束方案，请列出用户尚未提供的关键信息**（可多项；信息已足够就填空数组 []）：recipient=送给谁、occasion=什么场合、budget=预算、style=风格偏好、colors=颜色偏好。注意：只有「送花对象 / 场合 / 预算」真的不知道时才列出前三个——用户说「随便 / 你决定 / 直接来一束」时视为已授权你决定，不要列。'}
 
 
-@register_tool(name='respond_to_user', description='当你准备好向用户输出本轮最终回复时，必须调用该工具结束本轮对话。携带：reply（自然语言回复）、ui（UI 动作类型）、data（按 ui 类型填充）、stage（协商后的下一业务阶段）、intent（你判断的用户本轮真实意图）。另需给出本轮的结构化理解：confirmation / image / wants_alternative —— 系统用它们决定是否确认方案、是否生成效果图、是否换一批，务必按用户真实语义填写，不确定就填 none/false。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言回复'}, 'ui': {'type': 'string', 'enum': [e.value for e in UIType], 'description': '小程序渲染的 UI 动作类型'}, 'data': {'type': 'object', 'description': '按 ui 类型约定的结构化数据'}, 'stage': {'type': 'string', 'description': '下一业务阶段，如 analyze/select_mode/view_plan/diy_design/image_gen/shop_recommend/done'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图：buying=有购买/挑选花束的明确意图；qa=问花卉/花艺知识或咨询（花期/养护/寓意/送什么花好）；chitchat=纯闲聊寒暄；design=要 DIY 定制专属花束；other=其他。判定依据是用户『想干什么』，不是本轮是否调了工具。'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP}, 'required': ['reply', 'ui', 'data', 'stage']}, tags=['meta'])
-def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage: str='analyze', intent: str='other', confirmation: str='none', image: str='none', wants_alternative: bool=False) -> dict[str, Any]:
+def normalize_missing_slots(raw: Any) -> list[str]:
+    """把 missing 归一为白名单槽位列表（去重、保序、最多 3 个）。
+
+    模型偶发会写出中文字段名（「预算」）或编造槽位，这里一律过滤掉——
+    agent 侧只认标准枚举，避免误触发追问。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        val = item.strip().lower() if isinstance(item, str) else ''
+        if val in MISSING_SLOT_VALUES and val not in out:
+            out.append(val)
+    return out[:3]
+
+
+@register_tool(name='respond_to_user', description='当你准备好向用户输出本轮最终回复时，必须调用该工具结束本轮对话。携带：reply（自然语言回复）、ui（UI 动作类型）、data（按 ui 类型填充）、stage（协商后的下一业务阶段）、intent（你判断的用户本轮真实意图）。另需给出本轮的结构化理解：confirmation / image / wants_alternative —— 系统用它们决定是否确认方案、是否生成效果图、是否换一批，务必按用户真实语义填写，不确定就填 none/false。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言回复'}, 'ui': {'type': 'string', 'enum': [e.value for e in UIType], 'description': '小程序渲染的 UI 动作类型'}, 'data': {'type': 'object', 'description': '按 ui 类型约定的结构化数据'}, 'stage': {'type': 'string', 'description': '下一业务阶段，如 analyze/select_mode/view_plan/diy_design/image_gen/shop_recommend/done'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图：buying=有购买/挑选花束的明确意图；qa=问花卉/花艺知识或咨询（花期/养护/寓意/送什么花好）；chitchat=纯闲聊寒暄；design=要 DIY 定制专属花束；other=其他。判定依据是用户『想干什么』，不是本轮是否调了工具。'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['reply', 'ui', 'data', 'stage']}, tags=['meta'])
+def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage: str='analyze', intent: str='other', confirmation: str='none', image: str='none', wants_alternative: bool=False, missing: list[str] | None=None) -> dict[str, Any]:
     """终结工具：模型以此结束本轮，参数由 agent 提取并校验后返回前端。
 
-    confirmation / image / wants_alternative 是 L1「对话理解」的结构化信号：
+    confirmation / image / wants_alternative / missing 是「对话理解」的结构化信号：
     由 LLM 判定、agent 侧消费（LLM 理解为主，关键词仅在其缺失/非法时兜底）。
-    这里做一次白名单归一，非法值降级为 none/false，保证下游拿到的一定是合法枚举。
+    这里做一次白名单归一，非法值降级为 none/false/[]，保证下游拿到的一定是合法枚举。
+
+    Args:
+        missing: L3 用——本轮若打算直接出方案，用户还缺哪些关键信息
+            （recipient / occasion / budget / style / colors 的白名单子集）。
+
+    Returns:
+        供 agent 直接消费的参数字典（含归一后的结构化信号）。
     """
     if intent not in ('buying', 'qa', 'chitchat', 'design', 'other'):
         intent = 'other'
@@ -1055,15 +1082,15 @@ def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage
         confirmation = 'none'
     if image not in _IMAGE_VALUES:
         image = 'none'
-    return {'reply': reply, 'ui': ui, 'data': data or {}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative)}
+    return {'reply': reply, 'ui': ui, 'data': data or {}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative), 'missing': normalize_missing_slots(missing)}
 
 
-@register_tool(name='show_plan_card', description='标准方案卡片输出工具。用于展示现成方案或 DIY 方案，调用时只需传 plans 列表，工具会自动包装为 plan_card 并结束本轮对话。', parameters={'type': 'object', 'properties': {'plans': {'type': 'array', 'description': '方案卡片列表，每项应符合 plan_card 约定'}, 'reply': {'type': 'string', 'description': '给用户的自然语言说明'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 view_plan 或 diy_design'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP}, 'required': ['plans']}, tags=['meta'])
-def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='view_plan', intent: str='design', confirmation: str='none', image: str='none', wants_alternative: bool=False) -> dict[str, Any]:
+@register_tool(name='show_plan_card', description='标准方案卡片输出工具。用于展示现成方案或 DIY 方案，调用时只需传 plans 列表，工具会自动包装为 plan_card 并结束本轮对话。', parameters={'type': 'object', 'properties': {'plans': {'type': 'array', 'description': '方案卡片列表，每项应符合 plan_card 约定'}, 'reply': {'type': 'string', 'description': '给用户的自然语言说明'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 view_plan 或 diy_design'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['plans']}, tags=['meta'])
+def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='view_plan', intent: str='design', confirmation: str='none', image: str='none', wants_alternative: bool=False, missing: list[str] | None=None) -> dict[str, Any]:
     """方案卡片终结工具：统一输出 plan_card。
 
     与 respond_to_user 保持同一套结构化信号契约（confirmation / image /
-    wants_alternative），便于 agent 侧统一消费，不必按工具分支处理。
+    wants_alternative / missing），便于 agent 侧统一消费，不必按工具分支处理。
     """
     if intent not in ('buying', 'qa', 'chitchat', 'design', 'other'):
         intent = 'design'
@@ -1073,4 +1100,4 @@ def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='v
         confirmation = 'none'
     if image not in _IMAGE_VALUES:
         image = 'none'
-    return {'reply': reply, 'ui': UIType.PLAN_CARD.value, 'data': {'plans': plans or []}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative)}
+    return {'reply': reply, 'ui': UIType.PLAN_CARD.value, 'data': {'plans': plans or []}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative), 'missing': normalize_missing_slots(missing)}
