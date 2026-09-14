@@ -35,7 +35,6 @@ from backend.config import settings, setup_logging
 from backend.storage import memory as mem_store
 
 _CHITCHAT_WORDS = ('你好', '您好', '在吗', '在么', '嗨', '哈喽', '谢谢', '感谢', '再见', '拜拜', '哈哈', '辛苦了', '赞', '呵呵')
-_BUY_INTENT = ('买', '送', '下单', '购买', '付款', '支付', '选一束', '挑一束', '想要', '需要', '来一束', '订一束')
 
 # 单轮时间预算（P0 防「线程裸跑」）：
 # 调用方（/chat、/chat/stream）在 REQUEST_TIMEOUT 处等待，但 asyncio 超时**只能取消 await**，
@@ -360,13 +359,126 @@ def is_allowed(role: str, action: str) -> bool:
     return True
 
 def is_affirmative(text: str) -> bool:
-    """判断用户消息是否为明确肯定意图（用于生图确认等关卡）。"""
+    """判断用户消息是否为明确肯定意图（关键词兜底版；主判据见 _resolve_affirmative）。"""
     t = (text or '').strip()
     if not t:
         return False
     if any(k in t for k in _NEGATIVE):
         return False
     return any(k in t for k in _AFFIRMATIVE)
+
+
+# ── L1「对话理解」：结构化信号消费 ──────────────────────────────────────────
+# 背景：此前「用户是否确认 / 要不要生图 / 是否换一批」全靠单字关键词猜，已两次踩坑——
+# 「这个方案不行」含「行」被判成肯定 → 误确认方案；用户拒绝生图后被新方案冲掉重新生图。
+# 现在改由 respond_to_user 携带的结构化信号（confirmation / image / wants_alternative）
+# 主导判断，关键词只在信号缺失或非法时兜底。原则：**理解归 LLM，护栏归规则**。
+_CONFIRM_SIGNALS = ('confirm', 'reject', 'none')
+_IMAGE_SIGNALS = ('want', 'decline', 'none')
+# 「换一批」关键词兜底（模型漏填 wants_alternative 时仍能识别）
+_ALTERNATIVE_WORDS = ('再', '换', '别的', '预算', '有没有', '其他', '看看')
+# 方案确认的显式短语。注：历史版本用过裸「这个方案」做子串匹配，导致
+# 「这个方案不行」也被判成确认 → 故此处不再收录裸短语，并配合否定词护栏。
+_PLAN_CONFIRM_PHRASES = (
+    '确认方案', '确认这个方案', '就这个方案', '这个方案可以', '方案可以',
+    '就这个', '定这个', '就它', '要这个', '选这个',
+)
+
+
+def _signal_arg(respond_args: dict | None, key: str, allowed: tuple[str, ...]) -> str | None:
+    """读取 respond_to_user 的结构化信号；缺失 / 非法 / 显式 'none' 一律返回 None。
+
+    返回 None 的语义是「本轮没有可靠信号」→ 调用方回退关键词判定。
+    绝不抛异常：模型偶发幻觉或旧客户端不带该字段时，行为必须与改造前一致。
+
+    Args:
+        respond_args: respond_to_user / show_plan_card 的入参（可能为 None 或非 dict）。
+        key: 字段名，如 'confirmation' / 'image'。
+        allowed: 合法枚举值（含 'none'）。
+
+    Returns:
+        归一化后的小写枚举值；不合法或为 'none' 时返回 None。
+    """
+    if not isinstance(respond_args, dict):
+        return None
+    raw = respond_args.get(key)
+    if not isinstance(raw, str):
+        return None
+    val = raw.strip().lower()
+    if val not in allowed or val == 'none':
+        return None
+    return val
+
+
+def _resolve_affirmative(message: str, signal: str | None) -> bool:
+    """本轮用户是否「肯定」。LLM 信号优先，关键词兜底，规则保留否决权。
+
+    - 消息命中否定词 → 恒 False（规则一票否决，先于任何信号）
+    - signal == 'confirm' → True；'reject' → False
+    - signal 缺失（None）→ 回退 is_affirmative(message)，与 L1 改造前逐字一致
+
+    Args:
+        message: 用户本轮原始消息。
+        signal: _signal_arg 解析出的 confirmation 信号（可为 None）。
+
+    Returns:
+        是否视为肯定。
+    """
+    text = message or ''
+    if any(k in text for k in _NEGATIVE):
+        return False
+    if signal == 'confirm':
+        return True
+    if signal == 'reject':
+        return False
+    return is_affirmative(text)
+
+
+def _img_mentioned(text: str) -> bool:
+    """消息是否提到效果图/生图（仅用于「想要图」的关键词兜底）。"""
+    t = text or ''
+    return any(w in t for w in _IMAGE_TOPIC_WORDS) or '生成' in t
+
+
+def _resolve_image(message: str, signal: str | None) -> tuple[bool, bool]:
+    """解析用户对效果图的态度，返回 (want, decline)。
+
+    保守策略（生图要花钱，且「拒了又硬塞」是最伤体验的失败形态）：
+    - decline 取**并集**：模型说 decline，或关键词命中「不要效果图」 → 拒绝
+    - want 取值保守：模型说 want，或（关键词提到图相关 且 肯定）→ 想要；判定 decline 后恒 False
+    - signal 缺失 → 与改造前关键词判定完全等价（零回归）
+
+    Args:
+        message: 用户本轮原始消息。
+        signal: _signal_arg 解析出的 image 信号（可为 None）。
+
+    Returns:
+        (want, decline) 二元组，二者不会同时为 True。
+    """
+    text = message or ''
+    if signal == 'decline' or _decline_image(text):
+        return False, True
+    want = signal == 'want' or (_img_mentioned(text) and is_affirmative(text))
+    return want, False
+
+
+def _wants_alternative(respond_args: dict | None, message: str) -> bool:
+    """用户是否想「换一批 / 再看别的」。
+
+    取并集而非严格主从：关键词命中即 True，模型布尔信号可额外补充。
+    理由：清理 plan_ 标志是幂等无副作用的操作，多清一次不会出错；
+    若让模型的 False 覆盖关键词命中，反而可能漏清、导致旧方案顽固复用。
+
+    Args:
+        respond_args: respond_to_user 入参。
+        message: 用户本轮原始消息。
+
+    Returns:
+        是否需要清理「已推方案」标志。
+    """
+    if any(w in (message or '') for w in _ALTERNATIVE_WORDS):
+        return True
+    return isinstance(respond_args, dict) and respond_args.get('wants_alternative') is True
 
 class ReActAgent:
     """基于 ReAct + 状态机的导购智能体。"""
@@ -459,6 +571,9 @@ class ReActAgent:
             pass
         stage = SessionStage(await mem_store.get_stage(sid))
         incoming = stage
+        # 此处早于 LLM 调用，拿不到本轮结构化信号，故仍用关键词做「上一轮已进入生图阶段
+        # 且用户肯定」的快速标记（保守方向：只多标一次 image_confirmed，不触发生图）。
+        # 主判据在 _post_process 段 2（_resolve_image：模型信号优先 + 关键词兜底）。
         if stage == SessionStage.IMAGE_GEN and is_affirmative(message):
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
         long_term = await mem_store.get_long_term(user_id)
@@ -531,7 +646,8 @@ class ReActAgent:
         # 要点兜底：带卡片但回复过短时，追加一句基于卡片数据的可读要点
         # （模型有卡片时倾向只说「看卡片」，prompt 约束不稳定，此处确定性补齐）。
         final_reply = _ensure_card_summary(final_reply, ui, data)
-        _img_intent = any(w in message for w in ('效果图', '生图', '生成'))
+        # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
+        #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
         await mem_store.save_messages(sid, new_msgs)
         await mem_store.update_stage(sid, new_stage.value)
@@ -645,17 +761,22 @@ class ReActAgent:
             ui, data = self._derive_ui(tool_log, new_stage, final_reply)
 
         llm_intent = str(respond_args.get('intent', '') or '') if respond_args else ''
-        _img_intent = any(w in message for w in ('效果图', '生图', '生成'))
+        # 本轮「对话理解」结构化信号：LLM 主导判断，关键词仅在其缺失/非法时兜底。
+        # 注意解析必须早于下面各处消费，且 _affirmed 已内含「否定词一票否决」护栏。
+        _confirm_signal = _signal_arg(respond_args, 'confirmation', _CONFIRM_SIGNALS)
+        _img_signal = _signal_arg(respond_args, 'image', _IMAGE_SIGNALS)
+        _affirmed = _resolve_affirmative(message, _confirm_signal)
+        _img_want, _img_declined = _resolve_image(message, _img_signal)
 
         # ── 2. 图片确认标记 + 「拒绝生图」的会话级粘性标记 ──
         # img_optout 用 `img_` 前缀，**不会被 clear_session_flags(prefix='image_') 清掉**：
         # 用户说「不要效果图」后，即使之后产出新方案也不再自动生图，除非用户又明确要。
         # 修「拒了又硬塞」——此前新方案会无条件重新触发生图，把用户的拒绝冲掉。
-        _img_topic = any(w in message for w in _IMAGE_TOPIC_WORDS)
-        if _decline_image(message):
+        # L1 起：拒绝/想要由「模型信号 ∪ 关键词」判定（decline 取并集，最保守）。
+        if _img_declined:
             await mem_store.set_session_flag(user_id, sid, 'img_optout', '1')
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
-        elif _img_topic and is_affirmative(message):
+        elif _img_want:
             # 用户又明确要图了 → 撤销退出标记
             await mem_store.clear_session_flags(user_id, sid, prefix='img_optout')
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
@@ -663,11 +784,14 @@ class ReActAgent:
         if new_stage == SessionStage.IMAGE_GEN and new_stage != incoming:
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
-        elif (not _img_optout) and _img_intent and incoming in (SessionStage.DIY_DESIGN, SessionStage.IMAGE_GEN) and (await mem_store.get_session_flag(user_id, sid, 'image_confirmed') != '1'):
+        elif (not _img_optout) and _img_want and incoming in (SessionStage.DIY_DESIGN, SessionStage.IMAGE_GEN) and (await mem_store.get_session_flag(user_id, sid, 'image_confirmed') != '1'):
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
 
         # ── 3. 方案确认入库 ──
-        if any(w in message for w in ('确认方案', '确认这个方案', '就这个', '定这个', '就它', '这个方案', '方案可以')) or (is_affirmative(message) and '方案' in message):
+        # L1：以模型 confirmation 信号为主判据（能理解「好的，就这样吧」这类无「方案」字样的确认），
+        # 显式短语与「方案」关键词兜底；_affirmed 已含「否定词一票否决」护栏——
+        # 修既有缺陷：裸「这个方案」子串匹配会让「这个方案不行」也触发入库。
+        if _affirmed and (any(w in message for w in _PLAN_CONFIRM_PHRASES) or _confirm_signal == 'confirm' or '方案' in message):
             try:
                 from backend.storage.diy import save_diy_plan
                 _diy = await mem_store.get_session_json(user_id, sid, 'latest_diy_plan')
@@ -701,7 +825,7 @@ class ReActAgent:
         # ── 4. 用户想「换一批」时清掉方案推送标志 ──
         # 注：曾有一版「兜底推方案」的硬编码逻辑，现已移除；这里只保留标志清理。
         # （原先残留的 _had_card / _plan_pushed 两个变量计算后从未被使用，已删除。）
-        if any(w in message for w in ('再', '换', '别的', '预算', '有没有', '其他', '看看')):
+        if _wants_alternative(respond_args, message):
             await mem_store.clear_session_flags(user_id, sid, prefix='plan_')
 
         # ── 5. QA 意图过滤 ──
@@ -743,9 +867,9 @@ class ReActAgent:
         eff_forced = await mem_store.get_session_flag(user_id, sid, 'image_forced') == '1'
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
 
-        if _decline_image(message):
-            # 意图豁免：用户明确不要生图 → 记**粘性**退出标记 img_optout + 清 image_ 标志，
-            # 本轮及以后都不再补调（除非用户又明确要图，见第 2 段）。
+        if _img_declined:
+            # 意图豁免：用户明确不要生图（模型信号 ∪ 关键词）→ 记**粘性**退出标记 img_optout
+            # + 清 image_ 标志，本轮及以后都不再补调（除非用户又明确要图，见第 2 段）。
             await mem_store.set_session_flag(user_id, sid, 'img_optout', '1')
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
             logger.info('[agent] 用户拒绝生图，记录 img_optout 并停止补调')
