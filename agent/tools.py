@@ -339,8 +339,39 @@ def _extract_budget(text: str) -> tuple[str | None, float | None, float | None, 
     num = float(m.group(1))
     return (anchor, num, round(num * 0.8), round(num * 1.2))
 
+_CN_DIGIT = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+
+
+def _cn_to_int(raw: str) -> int | None:
+    """中文数字 → 整数（支持 1–99 的常见写法：两 / 九 / 十 / 十一 / 二十 / 二十五）。
+
+    Args:
+        raw: 中文数字串。
+
+    Returns:
+        对应整数；无法解析返回 None。
+    """
+    s = (raw or '').strip()
+    if not s:
+        return None
+    if '十' not in s:
+        return _CN_DIGIT.get(s)
+    left, _, right = s.partition('十')
+    tens = 1 if left == '' else _CN_DIGIT.get(left)
+    ones = 0 if right == '' else _CN_DIGIT.get(right)
+    if tens is None or ones is None:
+        return None
+    return tens * 10 + ones
+
+
 def _extract_stem_count(text: str) -> int | None:
-    """抽取花材支数：『11 朵』『9支』『一束』→ 主花支数。仅当数字紧跟 朵/支/枝/束/根/头。"""
+    """抽取花材支数：『11 朵』『9支』『十一朵』『一束』『一打』→ 主花支数。
+
+    仅当数量紧跟 朵/支/枝/束/根/头 才认定（避免把年份、金额误当支数）。
+    中文数字支持个位与十位（两朵 / 九支 / 十朵 / 十一朵 / 二十五支）；
+    注意「一束 = 11 支」「一打 = 12 支」是既有语义，由上方分支**先于**中文数字解析捕获，
+    所以「一束」不会被当成 1（顺序即语义，勿调整）。
+    """
     m = re.search(r'(\d{1,3})\s*(?:朵|支|枝|束|根|头)', text)
     if m:
         return max(1, min(int(m.group(1)), 999))
@@ -348,6 +379,11 @@ def _extract_stem_count(text: str) -> int | None:
         return 12
     if re.search(r'一\s*束', text):
         return 11
+    cm = re.search(r'([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九])\s*(?:朵|支|枝|束|根|头)', text)
+    if cm:
+        val = _cn_to_int(cm.group(1))
+        if val:
+            return max(1, min(val, 999))
     return None
 
 _ALL_FLOWER_TERMS: list[str] | None = None
@@ -380,14 +416,20 @@ def _detect_single_flower(text: str) -> str | None:
     由于必须匹配到已知花名，『纯色系』『同色系』等纯配色表述（不含花名）不会被误判。
     """
     # 规则 1 & 2：限定词 / 收束词
+    # 限定词与花名之间允许夹一个颜色字（「纯白百合」「只要粉玫瑰」）——中文里这种夹色写法
+    # 极常见，而花名表用的是通用名（百合 / 玫瑰），不放行就会漏判。
+    _color_gap = r'(?:[红粉白香槟紫蓝黄橙绿]{1,3}色?)?'
     for name in _all_flower_terms():
-        if re.search(r'(纯|只要|仅[要用]|单[\s一]*一?\s*花材?|only)\s*' + re.escape(name), text, re.I) or \
+        if re.search(r'(纯|只要|仅[要用]|单[\s一]*一?\s*花材?|only)\s*' + _color_gap + re.escape(name), text, re.I) or \
            re.search(re.escape(name) + r'\s*(纯|一束|就好|即可|就行|单色)', text):
             return name
     # 规则 3：花名 + 数量 + 单位（长词优先，先命中「红玫瑰」再考虑「玫瑰」）
+    # 数量支持阿拉伯数字与**十位中文数字**（「十一朵粉玫瑰」）；只放行含「十」的写法，
+    # 单个「一」不放行——否则「一束玫瑰」会从"普通需求"变成"纯单花束"约束，属行为变更。
+    _cn_ten = r'(?:[一二两三四五六七八九]?十[一二三四五六七八九]?)'
     for name in _all_flower_terms():
-        if re.search(re.escape(name) + r'\s*\d+\s*[朵支枝束]', text) or \
-           re.search(r'\d+\s*[朵支枝束]\s*' + re.escape(name), text) or \
+        if re.search(re.escape(name) + r'\s*(?:\d+|' + _cn_ten + r')\s*[朵支枝束]', text) or \
+           re.search(r'(?:\d+|' + _cn_ten + r')\s*[朵支枝束]\s*' + re.escape(name), text) or \
            re.search(r'一\s*[朵支枝束]\s*' + re.escape(name), text):
             # 出现其它不同花材或连接词 → 明确是多花材，整句不判为单花
             other_flower = any(
@@ -436,6 +478,92 @@ def extract_requirement(text: str) -> FlowerRequirement:
 def _extract(text: str) -> dict[str, str]:
     """从自然语言需求中抽取维度（兼容旧形态，供 DIY 设计管线 / _extract_dims 测试）。"""
     return extract_requirement(text).to_legacy_dict()
+
+
+def _safe_float(value: Any) -> float | None:
+    """宽松转 float（bool 视为无效，避免 True→1 这种荒唐值）。"""
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_int(value: Any) -> int | None:
+    """宽松转 int（接受 '11' / 11.0；bool 视为无效）。"""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def merge_requirement(req: FlowerRequirement, llm_req: dict | None) -> FlowerRequirement:
+    """把 LLM 的结构化抽取**补**进规则抽取结果（fill-the-gap：只补空，绝不覆盖）。
+
+    为什么只补不覆盖：规则的确定性优势必须保住——正则一旦抽到「11 朵」，就不该被模型的
+    推测改写；模型的价值在于读懂口语（「手头不宽裕」「就要那种很仙的」）里正则漏掉的字段。
+    所有补入的值都过一遍**值域白名单**（复用规则表的值集 / 已知花名表），杜绝幻觉字段污染下游。
+
+    Args:
+        req: 规则引擎抽出的结构化需求（权威基线，不会被修改）。
+        llm_req: 模型输出的 requirements 对象；非 dict（模型没给 / 给了坏值）时原样返回基线。
+
+    Returns:
+        补全后的新 FlowerRequirement。
+    """
+    if not isinstance(llm_req, dict):
+        return req
+    out = FlowerRequirement(**req.to_dict())
+
+    def _fill_text(attr: str, allowed: set[str]) -> None:
+        if getattr(out, attr):
+            return
+        val = llm_req.get(attr)
+        if isinstance(val, str) and val.strip() in allowed:
+            setattr(out, attr, val.strip())
+
+    _fill_text('recipient', set(_RECIPIENT_KW.values()))
+    _fill_text('occasion', set(_OCCASION_KW.values()))
+    _fill_text('style', set(_STYLE_KW.values()))
+    _fill_text('mood', set(_MOOD_KW.values()))
+    if not out.colors:
+        raw = llm_req.get('colors')
+        candidates = [c.strip() for c in raw if isinstance(c, str)] if isinstance(raw, list) else []
+        picked = [c for c in candidates if c in set(_COLOR_KW.values())]
+        if picked:
+            out.colors = list(dict.fromkeys(picked))[:3]
+    if not out.scene:
+        val = llm_req.get('scene')
+        if isinstance(val, str) and val.strip() in set(_get_scene_map().values()):
+            out.scene = val.strip()
+    if out.budget_num is None:
+        raw_budget = llm_req.get('budget')
+        num = _safe_float(raw_budget)
+        if num is None:
+            # 模型常写成「约200元」「200 左右」→ 从字符串里取第一个数字
+            m = re.search(r'(\d{2,5})', str(raw_budget or ''))
+            num = float(m.group(1)) if m else None
+        if num is not None and 20 <= num <= 10000:
+            out.budget_num = num
+            out.budget_min = round(num * 0.8)
+            out.budget_max = round(num * 1.2)
+    if out.stem_count is None:
+        raw_stems = llm_req.get('stem_count')
+        sc = _safe_int(raw_stems)
+        if sc is None and isinstance(raw_stems, str):
+            sc = _cn_to_int(raw_stems.strip())   # 模型可能回「十一」这种中文数字
+        if sc is not None and 1 <= sc <= 999:
+            out.stem_count = sc
+    if not out.single_flower:
+        val = llm_req.get('single_flower')
+        if isinstance(val, str) and val.strip() in set(_all_flower_terms()):
+            out.single_flower = val.strip()
+    if out.recipient and not out.relationship:
+        out.relationship = _RELATIONSHIP_MAP.get(out.recipient)
+    return out
 
 def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefer_flowers: list[str] | None=None, exclude_flowers: set[str] | None=None, single_flower: str | None=None) -> tuple[list[dict], list[dict], list[dict]]:
     """根据维度 + 风格 + 预算，从知识库挑主花/配材/叶材。
@@ -933,6 +1061,22 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
     plan = _enrich_plan_fees(plan)
     return plan
 
+# L2：在设计调用里**顺带**要求模型输出它读到的结构化需求（零额外 LLM 调用）。
+# 关键约束「没说的字段一律 null，不要猜」——否则"补召回"就退化成"猜值注入"。
+_LLM_REQUIREMENT_HINT = (
+    '\n【同时输出结构化需求】另请输出 "requirements" 对象，把用户原话里**明确读到**的送花需求结构化：'
+    '{"recipient":"收花人（母亲/恋人/朋友/自己/长辈/宝宝 之一，未明确则 null）",'
+    '"occasion":"场合（生日/母亲/父亲/节日/告白/婚礼/探病/道歉/毕业/乔迁/开业/升职/入职 之一，未明确则 null）",'
+    '"budget":"预算数字（如 200；用户没提金额或大概价位就 null）",'
+    '"style":"风格（S_KOREAN/S_NORDIC/S_VINTAGE/S_NATURAL/S_INS/S_JAPANESE 之一，未明确则 null）",'
+    '"colors":["颜色（红/粉/白/香槟/紫/蓝/黄/橙/绿/多彩混合/亮），未明确则 []"],'
+    '"mood":"情绪（温柔/温馨/浪漫/清新/热烈/活泼/高级/素雅/优雅/治愈/甜美 之一，未明确则 null）",'
+    '"stem_count":"用户明确说的支数（「11 朵」「十一朵」→ 11，没提则 null）",'
+    '"single_flower":"用户要求只用一种花时填花名（「纯红玫瑰」→ 红玫瑰），否则 null"}。'
+    '严格按原话判断：**没有说的字段一律 null / []，绝不根据常识推测**——该对象会被系统用于校验，填错反而有害。'
+)
+
+
 def design_with_llm(requirements: str, shop_id: str = '') -> dict:
     """语义化设计：RAG 检索知识库 + DeepSeek 生成方案，规则引擎作兜底与结构补全。
 
@@ -957,10 +1101,28 @@ def design_with_llm(requirements: str, shop_id: str = '') -> dict:
             hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
         system = '你是资深花艺设计师。依据用户需求与下方【知识库召回】设计一份花艺方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述（含花材与支数，如「玫瑰×10 配满天星×3」）,"effect_prompt":"生图 prompt（描述花材/色彩/形态/包装，与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语],"qty":支数}],"fillers":[{"name":花名,"role":"填充","qty":支数}],"foliage":[{"name":叶材名,"role":"叶材","qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤(数组，需具体到每种花材的修剪方式与数量，如「玫瑰×10 斜剪45°去刺去叶」),"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：花材必须从【候选花材】中选取真实名称；配色与风格须与知识库一致；每种花材务必给出具体支数 qty（按预算合理分配，主花 6-16 支、配材/叶材 1-4 支）；diy_steps 要具体到每种花材怎么修剪（斜剪/去刺/去叶/摘雄蕊）、怎么装饰；若用户未指定某维度，按花语与场景合理默认，不要留空。' + constraint_block
+        # L2：让模型在同一次调用里顺带给出结构化需求（补规则漏抽的槽位）
+        system = system + _LLM_REQUIREMENT_HINT
         user = f'用户需求：{requirements}\n\n{knowledge}'
         resp = call_llm([{'role': 'system', 'content': system}, {'role': 'user', 'content': user}], response_format={'type': 'json_object'})
         content = resp.choices[0].message.content
         llm_plan = json.loads(content)
+        # L2 补召回：模型的 requirements 只补规则漏抽的槽位（fill-the-gap，不覆盖），
+        # 补到的「硬约束」（单一花材 / 支数 / 预算档）落到 baseline 上，
+        # 由 _merge_plan 据此校正模型输出——与 revise_with_llm 里
+        # 「从原方案继承 _single_flower / stem_count」是同一套做法。
+        from backend.config import settings
+        if settings.DIY_LLM_REQUIREMENT_ENABLED:
+            req_merged = merge_requirement(req, llm_plan.get('requirements') if isinstance(llm_plan, dict) else None)
+            if req_merged.single_flower and not baseline.get('_single_flower'):
+                baseline['_single_flower'] = req_merged.single_flower
+            if req_merged.stem_count is not None and baseline.get('stem_count') is None:
+                baseline['stem_count'] = req_merged.stem_count
+            if req_merged.budget_num is not None and not baseline.get('budget_num'):
+                baseline['budget_num'] = req_merged.budget_num
+            if req_merged is not req:
+                logger.info('[requirement] LLM 补召回 stem_count=%s single_flower=%s budget_num=%s colors=%s',
+                            req_merged.stem_count, req_merged.single_flower, req_merged.budget_num, req_merged.colors)
         plan = _merge_plan(baseline, llm_plan)
         plan['plan_id'] = baseline['plan_id']
         plan['version'] = baseline.get('version', 1)

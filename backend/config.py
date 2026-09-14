@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-v3"
     EMBEDDING_DIM: int = 1024
 
+    # ── DIY 需求抽取（L2：LLM 结构化 + 正则兜底）──
+    # 在同一次设计调用里让模型顺带输出结构化需求，用于补正则漏抽的槽位（口语预算、
+    # 中文数字支数、模糊风格等）。**只补空、不覆盖**规则已抽到的值，失败自动回退纯规则，
+    # 故默认开启；置 false 可一键回到纯正则。
+    DIY_LLM_REQUIREMENT_ENABLED: bool = True
+
     # ── 并发护栏（P2：防"一个慢请求拖垮全服务"）──
     # AGENT_MAX_CONCURRENCY：同时在跑的智能体轮次上限；超出**快速失败(503)**而非无限排队。
     # IMAGE_TASK_MAX_WORKERS：并发生图线程数；IMAGE_TASK_QUEUE_MAX：排队上限，超出直接判失败。
