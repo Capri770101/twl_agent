@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import socket
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -47,7 +48,24 @@ def _age_seconds(ts: Any) -> float:
 #
 # 独立线程自带循环、与应用调用方生命周期解耦，从根本上规避该问题。
 # max_workers 限制并发生图数（保护上游生图配额），超出的任务在队列中排队。
-_IMAGE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix='flora-image')
+_IMAGE_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, settings.IMAGE_TASK_MAX_WORKERS), thread_name_prefix='flora-image')
+
+# 排队上限（P2）：用信号量同时约束「在跑 + 排队」总数，满则**快速失败**而不是无界排队。
+# 上界 = 并发数 + 排队上限；acquire 为非阻塞，拿不到即拒。
+_IMAGE_SLOTS = threading.BoundedSemaphore(max(1, settings.IMAGE_TASK_MAX_WORKERS + settings.IMAGE_TASK_QUEUE_MAX))
+
+
+def _try_reserve_image_slot() -> bool:
+    """非阻塞占一个生图槽位；已满返回 False（调用方据此快速失败）。"""
+    return _IMAGE_SLOTS.acquire(blocking=False)
+
+
+def _release_image_slot() -> None:
+    """归还槽位；重复归还不抛异常。"""
+    try:
+        _IMAGE_SLOTS.release()
+    except ValueError:
+        pass
 
 
 def _run_image_task(task_id: str, prompt: str) -> None:
@@ -66,6 +84,28 @@ def _run_image_task(task_id: str, prompt: str) -> None:
     except Exception:
         logger.exception('[tasks] 生图后台执行异常 task_id=%s', task_id)
         _update_task(task_id, 'failed', error='生图后台执行异常')
+
+
+def _run_image_task_guarded(task_id: str, prompt: str) -> None:
+    """包一层：任务跑完（无论成败）归还槽位。"""
+    try:
+        _run_image_task(task_id, prompt)
+    finally:
+        _release_image_slot()
+
+
+def _submit_image_task(task_id: str, prompt: str) -> None:
+    """占槽位并提交生图任务；**队列满则立即判失败**（不无界排队拖垮服务）。"""
+    if not _try_reserve_image_slot():
+        logger.warning('[tasks] 生图队列已满，拒绝新任务 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='生图排队已满，请稍后重试')
+        return
+    try:
+        _IMAGE_EXECUTOR.submit(_run_image_task_guarded, task_id, prompt)
+    except Exception:  # noqa: BLE001
+        _release_image_slot()
+        logger.exception('[tasks] 提交生图任务失败 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='生图任务提交失败')
 
 
 def _assert_public_image_url(image_url: str) -> None:
@@ -250,10 +290,10 @@ async def create_image_task(prompt: str, user_id: str | None = None) -> str:
 
     if settings.IMAGE_PROVIDER == 'qwen' and (settings.IMAGE_API_KEY or settings.llm_api_key):
         # 阿里云百炼 Qwen-Image 异步生成（提交到独立后台线程，避免被调用方临时循环销毁）
-        _IMAGE_EXECUTOR.submit(_run_image_task, task_id, prompt)
+        _submit_image_task(task_id, prompt)
     elif settings.HY_API_KEY and settings.IMAGE_PROVIDER == 'hy':
         # 使用 hy 大模型异步生成图像
-        _IMAGE_EXECUTOR.submit(_run_image_task, task_id, prompt)
+        _submit_image_task(task_id, prompt)
     else:
         # Mock 模式：生成占位图像
         png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'

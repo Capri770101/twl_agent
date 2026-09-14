@@ -41,12 +41,20 @@ def test_image_task_survives_temp_loop(monkeypatch) -> None:
 
 
 def test_create_image_task_no_longer_uses_create_task() -> None:
-    """静态断言：源码中不应再出现 asyncio.create_task 调度生图。"""
+    """静态断言：生图不得用 asyncio.create_task 调度，且必须经 `_IMAGE_EXECUTOR` 提交。
+
+    现经 `_submit_image_task` 间接提交（该函数内部走 `_IMAGE_EXECUTOR.submit`，
+    并带 P2 的槽位/快速失败）——两层语义都锁住。
+    """
     import inspect
 
-    source = inspect.getsource(task_store.create_image_task)
-    assert 'asyncio.create_task' not in source
-    assert '_IMAGE_EXECUTOR.submit' in source
+    src_create = inspect.getsource(task_store.create_image_task)
+    assert 'asyncio.create_task' not in src_create
+    assert '_submit_image_task' in src_create or '_IMAGE_EXECUTOR.submit' in src_create
+
+    src_submit = inspect.getsource(task_store._submit_image_task)
+    assert 'asyncio.create_task' not in src_submit
+    assert '_IMAGE_EXECUTOR.submit' in src_submit
 
 
 def test_run_image_task_catches_cancelled_error() -> None:

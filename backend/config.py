@@ -172,6 +172,13 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-v3"
     EMBEDDING_DIM: int = 1024
 
+    # ── 并发护栏（P2：防"一个慢请求拖垮全服务"）──
+    # AGENT_MAX_CONCURRENCY：同时在跑的智能体轮次上限；超出**快速失败(503)**而非无限排队。
+    # IMAGE_TASK_MAX_WORKERS：并发生图线程数；IMAGE_TASK_QUEUE_MAX：排队上限，超出直接判失败。
+    AGENT_MAX_CONCURRENCY: int = 8
+    IMAGE_TASK_MAX_WORKERS: int = 2
+    IMAGE_TASK_QUEUE_MAX: int = 50
+
     # ── CORS ──
     ALLOWED_ORIGINS: str = "*"
 

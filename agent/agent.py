@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from string import Template
 from collections.abc import Callable
 from typing import Any
@@ -42,6 +43,10 @@ _BUY_INTENT = ('买', '送', '下单', '购买', '付款', '支付', '选一束'
 # 而不是让线程「慢 LLM × 多轮 × 重试」一路裸跑到十几分钟（并继续写状态 / 烧 token）。
 _DEADLINE_MARGIN = 5.0   # 给后处理 / 落库留的余量（秒）
 _MIN_ITER_BUDGET = 8.0   # 剩余预算低于此值就不再开新一轮 LLM 调用
+
+# 智能体专用线程池（P2）：与 asyncio 默认线程池隔离，避免「慢轮次占满全局默认池」而拖垮
+# 其它请求（默认池还被记忆固化等其它 to_thread 任务共用）。并发上限与 /chat 的并发护栏同源。
+_AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, settings.AGENT_MAX_CONCURRENCY), thread_name_prefix='flora-agent')
 
 # 分隔线行（--- / *** / —— / ___ / === 及其带空格变体）：用户反馈这类分段排版难看，
 # 要求改为数字编号分点。prompt 已加规则，这里再兜一道 deterministic 清理。
@@ -361,7 +366,7 @@ class ReActAgent:
     async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)))
+        return await loop.run_in_executor(_AGENT_EXECUTOR, lambda: asyncio.run(self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)))
 
     async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None):
         """流式异步入口：yield SSE 事件字典，供 /chat/stream 消费。
@@ -386,7 +391,7 @@ class ReActAgent:
                 # 否则消费端 `await queue.get()` 会永久阻塞 —— SSE 挂死、用户转圈不停。
                 try:
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title))),
+                        loop.run_in_executor(_AGENT_EXECUTOR, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title))),
                         timeout=settings.request_timeout,
                     )
                     await queue.put({'event': 'done', 'session_id': result.session_id})

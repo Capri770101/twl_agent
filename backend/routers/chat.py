@@ -35,6 +35,21 @@ def get_agent() -> ReActAgent:
     return _agent
 
 
+# 智能体并发护栏（P2）：同时最多 AGENT_MAX_CONCURRENCY 轮次在跑；超出**快速失败（503）**而非
+# 无限排队，避免「慢请求堆积 → 线程池占满 → 全体卡住」。与 agent._AGENT_EXECUTOR 上限同源。
+_AGENT_SEM = asyncio.Semaphore(max(1, settings.AGENT_MAX_CONCURRENCY))
+_BUSY_WAIT = 0.3  # 秒：拿不到槽位就快速拒绝，绝不长时间干等
+
+
+async def _acquire_agent_slot() -> bool:
+    """短超时（非阻塞语义）拿一个智能体并发槽位；拿不到返回 False。"""
+    try:
+        await asyncio.wait_for(_AGENT_SEM.acquire(), timeout=_BUSY_WAIT)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
 def _enforce_rate_limit(user_id: str) -> None:
     """按用户维度做请求限流（进程内固定窗口）。
 
@@ -167,19 +182,25 @@ async def chat(
             entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title,
         )
 
+    if not await _acquire_agent_slot():
+        record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='busy', cid=_call_id)
+        raise HTTPException(status_code=503, detail='当前咨询较多，请稍后再试', headers={'Retry-After': '3'})
     try:
-        result = await asyncio.wait_for(
-            get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
-                             entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title),
-            timeout=settings.REQUEST_TIMEOUT
-        )
-    except asyncio.TimeoutError:
-        record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='timeout', cid=_call_id)
-        raise HTTPException(status_code=504, detail='处理超时，请简化问题后重试')
-    except Exception as exc:
-        record_call_end('error', int((time.perf_counter() - _t0) * 1000), error=str(exc)[:500], cid=_call_id)
-        logger.exception('智能体执行失败')
-        raise HTTPException(status_code=500, detail='智能体执行失败，请稍后重试')
+        try:
+            result = await asyncio.wait_for(
+                get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
+                                 entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title),
+                timeout=settings.REQUEST_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='timeout', cid=_call_id)
+            raise HTTPException(status_code=504, detail='处理超时，请简化问题后重试')
+        except Exception as exc:
+            record_call_end('error', int((time.perf_counter() - _t0) * 1000), error=str(exc)[:500], cid=_call_id)
+            logger.exception('智能体执行失败')
+            raise HTTPException(status_code=500, detail='智能体执行失败，请稍后重试')
+    finally:
+        _AGENT_SEM.release()
 
     # ── 监控埋点：出口（成功）──
     _latency = int((time.perf_counter() - _t0) * 1000)
@@ -224,6 +245,10 @@ async def chat_stream(
 
     async def event_generator():
         _ok = True
+        if not await _acquire_agent_slot():
+            record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='busy', cid=_call_id)
+            yield f"event: error\ndata: {json.dumps({'message': '当前咨询较多，请稍后再试'}, ensure_ascii=False)}\n\n"
+            return
         try:
             async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
                                                      entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title):
@@ -235,6 +260,7 @@ async def chat_stream(
             logger.exception('SSE 流异常')
             yield f"event: error\ndata: {json.dumps({'message': '处理过程中出现错误，请稍后重试'}, ensure_ascii=False)}\n\n"
         finally:
+            _AGENT_SEM.release()
             # 埋点出口：流式场景不细分工具级埋点（无结构化 tool_calls 回传），仅记录状态与耗时
             record_call_end('success' if _ok else 'error', int((time.perf_counter() - _t0) * 1000), cid=_call_id)
             _spawn_consolidate(req.user_id, sid)
