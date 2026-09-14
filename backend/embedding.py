@@ -66,6 +66,14 @@ def _embed_dashscope(texts: list[str], text_type: str) -> list[list[float]] | No
     if not key or not base:
         logger.warning('[embedding] 缺 api_key / base_url，回退')
         return None
+    # 护栏：疑似占位符/非法地址直接跳过，避免误配时刷一屏无意义的连接异常
+    if not base.startswith(('http://', 'https://')):
+        logger.warning('[embedding] base_url 非 http(s)，跳过：%s', base[:32])
+        return None
+    probe = (base + ' ' + key).lower()
+    if any(t in probe for t in ('replace-me', 'your-', 'change-me', 'xxx', 'todo')):
+        logger.warning('[embedding] 疑似占位符凭据，跳过 embedding（回退 TF-IDF）')
+        return None
     import httpx
 
     url = base.rstrip('/') + '/embeddings'

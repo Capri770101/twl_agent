@@ -72,8 +72,13 @@ def _domain_texts(domain: str) -> list[str]:
 
 
 def _content_key(domain: str, texts: list[str]) -> str:
+    """缓存键 = provider + 模型 + 域名 + 内容哈希。
+
+    必须含 provider：否则 mock 与真实 embedding 共用同一键（模型名相同），
+    会出现「用 mock 向量冒充真机向量」的脏读。
+    """
     h = hashlib.sha256('|'.join(texts).encode('utf-8')).hexdigest()[:16]
-    return f"{settings.EMBEDDING_MODEL}:{domain}:{h}"
+    return f"{settings.EMBEDDING_PROVIDER}:{settings.EMBEDDING_MODEL}:{domain}:{h}"
 
 
 def domain_similarities(domain: str, query: str) -> list[float] | None:
