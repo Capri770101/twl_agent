@@ -267,7 +267,15 @@ def _is_chitchat(text: str) -> bool:
     return any(w in t for w in _CHITCHAT_WORDS)
 logger = logging.getLogger('agent')
 _AFFIRMATIVE = ('好', '可以', '确认', '同意', '生成', '要', '行', '是', '看看')
-_NEGATIVE = ('不用', '不要', '不需要', '不必', '算了', '跳过', '无需', '别', '放弃')
+# 否定词优先于肯定词判断（is_affirmative 先查 _NEGATIVE）。
+# ⚠️ 第二组是「会命中 _AFFIRMATIVE 子串」的否定式，必须显式拦截——否则
+# 「这个方案不行」(含「行」)、「不是这个」(含「是」)、「不好看 / 不想要」(含「好 / 要」)
+# 会被判成**肯定**，进而误确认方案 / 误触发生图，表现为「答非所问」。
+_NEGATIVE = (
+    '不用', '不要', '不需要', '不必', '算了', '跳过', '无需', '别', '放弃',
+    '不行', '不是', '不好', '不同意', '不确认', '不想要', '不合适', '不喜欢',
+    '不满意', '不考虑', '换一个', '换一批',
+)
 
 
 def _platform_source_ids() -> list[str]:
@@ -639,11 +647,23 @@ class ReActAgent:
         llm_intent = str(respond_args.get('intent', '') or '') if respond_args else ''
         _img_intent = any(w in message for w in ('效果图', '生图', '生成'))
 
-        # ── 2. 图片确认标记 ──
+        # ── 2. 图片确认标记 + 「拒绝生图」的会话级粘性标记 ──
+        # img_optout 用 `img_` 前缀，**不会被 clear_session_flags(prefix='image_') 清掉**：
+        # 用户说「不要效果图」后，即使之后产出新方案也不再自动生图，除非用户又明确要。
+        # 修「拒了又硬塞」——此前新方案会无条件重新触发生图，把用户的拒绝冲掉。
+        _img_topic = any(w in message for w in _IMAGE_TOPIC_WORDS)
+        if _decline_image(message):
+            await mem_store.set_session_flag(user_id, sid, 'img_optout', '1')
+            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+        elif _img_topic and is_affirmative(message):
+            # 用户又明确要图了 → 撤销退出标记
+            await mem_store.clear_session_flags(user_id, sid, prefix='img_optout')
+            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+        _img_optout = await mem_store.get_session_flag(user_id, sid, 'img_optout') == '1'
         if new_stage == SessionStage.IMAGE_GEN and new_stage != incoming:
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
-        elif _img_intent and incoming in (SessionStage.DIY_DESIGN, SessionStage.IMAGE_GEN) and (await mem_store.get_session_flag(user_id, sid, 'image_confirmed') != '1'):
+        elif (not _img_optout) and _img_intent and incoming in (SessionStage.DIY_DESIGN, SessionStage.IMAGE_GEN) and (await mem_store.get_session_flag(user_id, sid, 'image_confirmed') != '1'):
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
 
         # ── 3. 方案确认入库 ──
@@ -678,12 +698,11 @@ class ReActAgent:
             except Exception:
                 logger.exception('[agent] DIY 方案入库失败')
 
-        # ── 4. 兜底推方案 ──
-        _had_card = ui in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD, UIType.PAY_JUMP) or (ui == UIType.TEXT and bool(data.get('task_id')))
-        _plan_pushed = await mem_store.get_session_flag(user_id, sid, 'plan_pushed') == '1'
+        # ── 4. 用户想「换一批」时清掉方案推送标志 ──
+        # 注：曾有一版「兜底推方案」的硬编码逻辑，现已移除；这里只保留标志清理。
+        # （原先残留的 _had_card / _plan_pushed 两个变量计算后从未被使用，已删除。）
         if any(w in message for w in ('再', '换', '别的', '预算', '有没有', '其他', '看看')):
             await mem_store.clear_session_flags(user_id, sid, prefix='plan_')
-            _plan_pushed = False
 
         # ── 5. QA 意图过滤 ──
         if llm_intent:
@@ -702,7 +721,7 @@ class ReActAgent:
         # 产出新方案 → 清掉上一张图的补调标记，让新方案能重新触发一次生图
         if diy_done:
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
-        if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
+        if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and (not _img_optout) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
             try:
                 from agent.tools import generate_effect_image as _gei
                 await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
@@ -725,10 +744,12 @@ class ReActAgent:
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
 
         if _decline_image(message):
-            # 意图豁免：用户明确不要生图 → 清标志，本轮及以后都不再补调
+            # 意图豁免：用户明确不要生图 → 记**粘性**退出标记 img_optout + 清 image_ 标志，
+            # 本轮及以后都不再补调（除非用户又明确要图，见第 2 段）。
+            await mem_store.set_session_flag(user_id, sid, 'img_optout', '1')
             await mem_store.clear_session_flags(user_id, sid, prefix='image_')
-            logger.info('[agent] 用户拒绝生图，清除 image_ 标志并停止补调')
-        elif (eff_confirmed and (not eff_done) and (not eff_forced)
+            logger.info('[agent] 用户拒绝生图，记录 img_optout 并停止补调')
+        elif (eff_confirmed and (not eff_done) and (not eff_forced) and (not _img_optout)
               and (ui != UIType.PLAN_CARD)
               and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM))):
             eff: dict[str, Any] = {}
