@@ -33,6 +33,7 @@ _BASE_DIR = Path(__file__).resolve().parent
 _cache: dict[str, list[dict[str, Any]]] = {}
 _index_cache: dict[str, _VectorSpace] = {}
 _manifest_cache: dict[str, Any] | None = None
+_SYNONYMS: dict[str, list[str]] = {}
 _CJK = re.compile('[\\u4e00-\\u9fff]+')
 _WORD = re.compile('[a-zA-Z0-9]+')
 _SEMANTIC_MIN_LEN = 4
@@ -254,6 +255,53 @@ def _retrieve_domain(domain: str, tokens: list[str], allow_vector: bool) -> list
         out = out[:settings.rag_top_k]
     return out
 
+def _load_synonyms() -> None:
+    """惰性加载同义词表（synonyms.json）到 _SYNONYMS：term -> 同组其它词列表。"""
+    global _SYNONYMS
+    if _SYNONYMS:
+        return
+    path = _BASE_DIR / 'synonyms.json'
+    if not path.exists():
+        return
+    try:
+        groups = json.load(path.open(encoding='utf-8')).get('groups', [])
+    except Exception:
+        logger.warning('[knowledge] 同义词表解析失败: %s', path, exc_info=True)
+        return
+    m: dict[str, list[str]] = {}
+    for g in groups:
+        for i, t in enumerate(g):
+            others = g[:i] + g[i + 1:]
+            m.setdefault(t, [])
+            for o in others:
+                if o not in m[t]:
+                    m[t].append(o)
+    _SYNONYMS = m
+
+def _expand_query(query: str) -> str:
+    """查询扩展：命中任一同义词即把同组其它词追加进 query，提升中文 NL 词汇对齐。
+
+    为什么在 tokenize 前扩展：扩展后的词随 _match（子串保底）与向量相似度（字符 n-gram）
+    两条路径一并参与，零侵入复用既有打分逻辑；不改变返回结构，上层零改动。
+    不收录具体花名，避免污染内部精确查找（如 query_knowledge('flower','玫瑰')）。
+    """
+    if not query:
+        return query
+    _load_synonyms()
+    if not _SYNONYMS:
+        return query
+    extra: list[str] = []
+    seen: set[str] = set()
+    for term, syns in _SYNONYMS.items():
+        if term in query:
+            for s in syns:
+                if s not in query and s not in seen:
+                    seen.add(s)
+                    extra.append(s)
+    if not extra:
+        return query
+    return query + ' ' + ' '.join(extra)
+
 def query_knowledge(domain: str='all', query: str='') -> dict[str, Any]:
     """知识库检索（向量混合检索，接口向后兼容）。
 
@@ -268,7 +316,8 @@ def query_knowledge(domain: str='all', query: str='') -> dict[str, Any]:
         { "domain": str, "query": str, "count": int, "results": [ {_domain, _score, ...entry} ] }
         新增 _score 字段（相似度/相关性，仅用于排序与可解释性，不影响既有字段读取）。
     """
-    tokens = [t for t in query.replace(',', ' ').split() if t]
+    expanded = _expand_query(query) if settings.rag_enabled else query
+    tokens = [t for t in expanded.replace(',', ' ').split() if t]
     domains = list(_DOMAINS) if domain == 'all' else [domain]
     if not tokens:
         results = []
@@ -278,7 +327,7 @@ def query_knowledge(domain: str='all', query: str='') -> dict[str, Any]:
             for entry in _load(dom):
                 results.append({'_domain': dom, '_score': 1.0, **entry})
         return {'domain': domain, 'query': query, 'count': len(results), 'results': results}
-    allow_vector = _allow_vector(query, tokens)
+    allow_vector = _allow_vector(expanded, tokens)
     results = []
     for dom in domains:
         if dom not in _DOMAINS:

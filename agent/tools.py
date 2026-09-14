@@ -228,6 +228,18 @@ def _infer_substyle(style_id: str, dims: dict[str, str]) -> str | None:
         return 'S_INS_POP' if mood in ('撞色', '活泼', '年轻', '打卡') else 'S_INS_CREAM'
     if style_id == 'S_JAPANESE':
         return 'S_JAPANESE_SEASON' if mood in ('季节', '情绪') else 'S_JAPANESE_MINIMAL'
+    if style_id == 'S_FRENCH':
+        return 'S_FRENCH_ELEGANT' if mood in ('高级', '克制', '优雅') else 'S_FRENCH_GARDEN'
+    if style_id == 'S_AMERICAN':
+        return 'S_AMERICAN_RETRO' if mood in ('复古', '浓烈', '撞色') else 'S_AMERICAN_COUNTRY'
+    if style_id == 'S_BOHO':
+        return 'S_BOHO_COLOR' if mood in ('撞色', '活泼', '奔放') else 'S_BOHO_WILD'
+    if style_id == 'S_LUXE':
+        return 'S_LUXE_WHITE' if mood in ('白', '干净', '冷静') else 'S_LUXE_CHAMPAGNE'
+    if style_id == 'S_MORANDI':
+        return 'S_MORANDI_BLUE' if mood in ('蓝', '冷静', '文艺') else 'S_MORANDI_PINK'
+    if style_id == 'S_COLOR':
+        return 'S_COLOR_GRADIENT' if mood in ('渐变', '梦幻', '多彩') else 'S_COLOR_ENERGY'
     return None
 
 def _parse_plan(plan: str) -> dict:
@@ -494,9 +506,9 @@ def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefe
     foliage = [f for f in candidates if f.get('category') == '叶材' and f['name'] not in exclude_flowers][:1] or [all_flowers.get('尤加利')]
     return ([f for f in main if f], [f for f in fillers if f], [f for f in foliage if f])
 _PRICE_UNIT = {'低': 12, '中': 28, '高': 60}
-_TIER_MAIN_STEMS = {'T1': 6, 'T2': 10, 'T3': 16}
-_LABOR_FEE = {'T1': 15, 'T2': 25, 'T3': 40}
-_DECOR_FEE = {'T1': 10, 'T2': 18, 'T3': 30}
+_TIER_MAIN_STEMS = {'T1': 6, 'T2': 8, 'T3': 10, 'T4': 14, 'T5': 18, 'T6': 24}
+_LABOR_FEE = {'T1': 15, 'T2': 20, 'T3': 25, 'T4': 35, 'T5': 45, 'T6': 60}
+_DECOR_FEE = {'T1': 10, 'T2': 14, 'T3': 18, 'T4': 24, 'T5': 32, 'T6': 45}
 
 def _known_flower(name: str) -> dict:
     """按花名查知识库花卉（含别名匹配），查不到返回空 dict。"""
