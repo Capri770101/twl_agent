@@ -336,6 +336,15 @@ def query_knowledge(domain: str='all', query: str='') -> dict[str, Any]:
             results.append({'_domain': dom, '_score': round(score, 4), **entry})
     if domain == 'all':
         results.sort(key=lambda r: r['_score'], reverse=True)
+    # 缺口观测（Tier 1.3）：零结果或最高分低于阈值 → 记一笔，供补库分析；默认关闭、失败不影响检索
+    if query and settings.RAG_GAP_LOG_ENABLED:
+        try:
+            best = max((r['_score'] for r in results), default=0.0)
+            if not results or best < settings.rag_min_score:
+                from agent.knowledge.gap_log import record_gap
+                record_gap(query, domain, len(results), best)
+        except Exception:  # noqa: BLE001
+            logger.warning('[knowledge] 缺口日志记录失败', exc_info=True)
     return {'domain': domain, 'query': query, 'count': len(results), 'results': results}
 
 def get_by_id(domain: str, item_id: str) -> dict[str, Any] | None:

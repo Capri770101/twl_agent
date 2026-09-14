@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 30
 
+    # ── 检索缺口日志（Tier 1.3 观测：记录零结果/低分查询以发现知识库盲区）──
+    # 默认关闭，避免每次检索都写盘 + 隐私面；运营观测盲区时再打开。
+    RAG_GAP_LOG_ENABLED: bool = False
+    RAG_GAP_LOG_PATH: str = ""  # 留空 → 仓库内 data/eval/retrieval_gaps.jsonl
+
     # ── CORS ──
     ALLOWED_ORIGINS: str = "*"
 
