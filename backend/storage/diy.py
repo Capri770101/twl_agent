@@ -1,6 +1,7 @@
 """独立封装版 diy.py。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -89,8 +90,24 @@ async def save_diy_plan(plan: dict, user_id: str) -> dict[str, Any]:
 
 
 async def mark_diy_plan_ordered(plan_id: str) -> None:
+    """订单成交 / 用户确认下单后调用：把该方案计入 proven 域（order_count+1，刷新 confirmed_at）。
+
+    这是 proven 学习闭环的**写入侧**——diy_plans 按 order_count 降序进入 proven 域，
+    被 query_knowledge('all') 召回，让高成交方案在相似需求下优先出现。
+    此前此函数为空桩（proven 永远拿不到增量），现补上真实 upsert。
+    空 plan_id 安全跳过；整行不存在也静默跳过（不报错影响主流程）。
+    """
     if not plan_id:
         return
+    now = _now()
+    try:
+        with transaction() as c:
+            c.execute(
+                'UPDATE diy_plans SET order_count = order_count + 1, confirmed_at = ? WHERE id = ?',
+                (now, plan_id),
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning('[storage.diy] mark_diy_plan_ordered 失败 plan_id=%s', plan_id, exc_info=True)
 
 
 async def save_as_template(plan_id: str) -> None:
@@ -119,3 +136,77 @@ def list_proven_plans(limit: int = 20) -> list[dict[str, Any]]:
         p = _row_to_plan(r)
         out.append({'id': p['plan_id'], 'name': p['name'], 'style': p['style'], 'recipient': p['recipient'], 'occasion': p['occasion'], 'budget': p['budget_num'], 'flowers': [f['name'] for f in p['design']['main_flowers']], 'color_scheme': p['design']['color_scheme'], 'packaging': p['design']['packaging'], 'meaning': p['design']['meaning'], 'status': r['status'], 'order_count': r['order_count'], 'confirmed_at': r['confirmed_at']})
     return out
+
+
+def _proven_id(rec: dict[str, Any]) -> str:
+    """由核心字段确定性哈希生成 plan_id，使同一条历史记录重跑得到同一 id（幂等）。"""
+    core = '|'.join([
+        str(rec.get('occasion') or ''),
+        str(rec.get('style') or ''),
+        str(rec.get('recipient') or ''),
+        str(rec.get('budget') or ''),
+        '|'.join(str(f) for f in (rec.get('flowers') or [])),
+        '|'.join(str(c) for c in (rec.get('color_scheme') or [])),
+    ])
+    return 'HIST_' + hashlib.md5(core.encode('utf-8')).hexdigest()[:10]
+
+
+def import_proven_plan(rec: dict[str, Any]) -> str:
+    """把一条历史成交记录灌入 diy_plans（proven 域）。
+
+    用于离线历史学习 ETL：把导出的历史订单/对话成交数据转成 proven 方案，
+    使 proven 域在相似需求下召回高成交组合。安全边界：纯 curated ETL，
+    不调 LLM、不改代码/工具/提示词（L4 自改代码为红线）。
+
+    - 幂等：plan_id 由核心字段哈希生成，重跑同一条记录不会重复插入。
+    - order_count 取记录的 success_count（绝对值语义）：重跑同一导出结果幂等，不累加。
+    - source_user_id='HISTORY' 标记来源，区别于真实用户实时方案。
+
+    Args:
+        rec: 历史记录字典，至少含 occasion/style/flowers 之一，可选 budget/color_scheme/
+             packaging/meaning/success_count。
+    Returns:
+        生成的 plan_id。
+    Raises:
+        ValueError: rec 非字典或缺少必要字段。
+    """
+    if not isinstance(rec, dict):
+        raise ValueError('record must be a dict')
+    if not (rec.get('occasion') or rec.get('style') or rec.get('flowers')):
+        raise ValueError('record needs at least one of occasion/style/flowers')
+    plan_id = rec.get('plan_id') or _proven_id(rec)
+    now = _now()
+    oc = int(rec.get('success_count') or rec.get('order_count') or 1)
+    d = rec.get('design') or {}
+    flower_input = []
+    for f in (rec.get('flowers') or d.get('main_flowers') or []):
+        if isinstance(f, dict):
+            flower_input.append({'name': f.get('name'), 'ratio': f.get('ratio')})
+        else:
+            flower_input.append({'name': f, 'ratio': None})
+    name = str(rec.get('name') or f"{rec.get('occasion') or '通用'}{rec.get('style') or ''}方案")
+    with transaction() as c:
+        c.execute(
+            '''INSERT INTO diy_plans
+               (id, user_id, fingerprint, name, requirement, recipient, occasion, style, budget,
+                color_scheme, flowers, packaging, meaning, status, order_count, source_user_id,
+                created_at, confirmed_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 order_count = excluded.order_count,
+                 confirmed_at = excluded.confirmed_at,
+                 occasion = excluded.occasion,
+                 style = excluded.style,
+                 flowers = excluded.flowers,
+                 meaning = excluded.meaning''',
+            (
+                plan_id, 'HISTORY', plan_id, name, str(rec.get('requirement') or ''),
+                str(rec.get('recipient') or ''), str(rec.get('occasion') or ''),
+                str(rec.get('style') or ''), rec.get('budget'),
+                json.dumps(rec.get('color_scheme') or d.get('color_scheme') or [], ensure_ascii=False),
+                json.dumps([{'bucket': '主花', 'name': f['name'], 'ratio': f.get('ratio')} for f in flower_input if f['name']], ensure_ascii=False),
+                str(rec.get('packaging') or ''), str(rec.get('meaning') or ''),
+                'confirmed', oc, 'HISTORY', now, now,
+            ),
+        )
+    return plan_id

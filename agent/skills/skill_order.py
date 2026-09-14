@@ -245,6 +245,12 @@ async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: st
             res = await save_diy_plan(plan, user_id)
             if res.get('plan_id') and not plan.get('plan_id'):
                 plan['plan_id'] = res['plan_id']
+            # proven 学习闭环：用户确认下单 → 该方案 order_count+1，进入 proven 域召回
+            try:
+                from backend.storage.diy import mark_diy_plan_ordered
+                await mark_diy_plan_ordered(str(res.get('plan_id') or plan.get('plan_id') or ''))
+            except Exception:  # noqa: BLE001
+                logger.warning('[skill_order] 标记方案成交失败（不影响提交平台）', exc_info=True)
         except Exception:  # noqa: BLE001
             logger.warning('[skill_order] DIY 方案落库失败（不影响提交平台）', exc_info=True)
 
