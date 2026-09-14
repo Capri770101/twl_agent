@@ -2,11 +2,23 @@
   {
     "id": "SC_VALENTINE",
     "name": "情人节",
-    "keywords": ["情人节", "214", "2.14"],
+    "keywords": [
+      "情人节",
+      "214",
+      "2.14"
+    ],
     "recommended_style": "S_KOREAN",
     "recommended_substyle": "S_KOREAN_SWEET",
-    "color_tone": ["红", "粉", "香槟"],
-    "main_flower_preference": ["红玫瑰", "粉玫瑰", "洋桔梗"],
+    "color_tone": [
+      "红",
+      "粉",
+      "香槟"
+    ],
+    "main_flower_preference": [
+      "红玫瑰",
+      "粉玫瑰",
+      "洋桔梗"
+    ],
     "meaning_tone": "热恋告白、浪漫唯一",
     "budget_anchor": "T2",
     "notes": "红/粉玫瑰为主，可加洋桔梗提升精致；香槟显高级，正红显热烈。"
@@ -14,11 +26,21 @@
   {
     "id": "SC_MOTHER",
     "name": "母亲节",
-    "keywords": ["母亲节"],
+    "keywords": [
+      "母亲节"
+    ],
     "recommended_style": "S_KOREAN",
     "recommended_substyle": "S_KOREAN_LUXE",
-    "color_tone": ["粉白", "香槟", "浅紫"],
-    "main_flower_preference": ["康乃馨", "玫瑰", "百合"],
+    "color_tone": [
+      "粉白",
+      "香槟",
+      "浅紫"
+    ],
+    "main_flower_preference": [
+      "康乃馨",
+      "玫瑰",
+      "百合"
+    ],
     "meaning_tone": "感恩母爱、温柔祝福",
     "budget_anchor": "T2",
     "notes": "康乃馨首选（花语母爱），配粉玫瑰与百合，色调温馨不艳。"
@@ -26,11 +48,23 @@
   {
     "id": "SC_BIRTHDAY",
     "name": "生日",
-    "keywords": ["生日", "庆祝", "过生日"],
+    "keywords": [
+      "生日",
+      "庆祝",
+      "过生日"
+    ],
     "recommended_style": "S_INS",
     "recommended_substyle": "S_INS_POP",
-    "color_tone": ["亮黄", "珊瑚粉", "天蓝"],
-    "main_flower_preference": ["非洲菊", "向日葵", "郁金香"],
+    "color_tone": [
+      "亮黄",
+      "珊瑚粉",
+      "天蓝"
+    ],
+    "main_flower_preference": [
+      "非洲菊",
+      "向日葵",
+      "郁金香"
+    ],
     "meaning_tone": "快乐能量、庆祝当下",
     "budget_anchor": "T2",
     "notes": "明亮活泼色系，传递快乐；可撞色显得年轻有活力。"
@@ -38,11 +72,23 @@
   {
     "id": "SC_ANNIVERSARY",
     "name": "纪念日",
-    "keywords": ["纪念日", "周年", "结婚纪念"],
+    "keywords": [
+      "纪念日",
+      "周年",
+      "结婚纪念"
+    ],
     "recommended_style": "S_VINTAGE",
     "recommended_substyle": "S_VINTAGE_OIL",
-    "color_tone": ["酒红", "墨绿", "焦糖"],
-    "main_flower_preference": ["红玫瑰", "山茶花", "绣球"],
+    "color_tone": [
+      "酒红",
+      "墨绿",
+      "焦糖"
+    ],
+    "main_flower_preference": [
+      "红玫瑰",
+      "山茶花",
+      "绣球"
+    ],
     "meaning_tone": "深厚沉淀、历久弥新",
     "budget_anchor": "T3",
     "notes": "浓郁暗调显厚重感情，高档主花（绣球/山茶）更显郑重。"
@@ -50,11 +96,24 @@
   {
     "id": "SC_CONFESS",
     "name": "表白 / 告白",
-    "keywords": ["表白", "告白", "喜欢你", "做我"],
+    "keywords": [
+      "表白",
+      "告白",
+      "喜欢你",
+      "做我"
+    ],
     "recommended_style": "S_KOREAN",
     "recommended_substyle": "S_KOREAN_SWEET",
-    "color_tone": ["粉", "香槟", "浅紫"],
-    "main_flower_preference": ["粉玫瑰", "红玫瑰", "洋桔梗"],
+    "color_tone": [
+      "粉",
+      "香槟",
+      "浅紫"
+    ],
+    "main_flower_preference": [
+      "粉玫瑰",
+      "红玫瑰",
+      "洋桔梗"
+    ],
     "meaning_tone": "心动试探、真诚告白",
     "budget_anchor": "T2",
     "notes": "粉玫瑰试探、红玫瑰直球；洋桔梗提升精致度，香槟显高级。"
@@ -62,11 +121,26 @@
   {
     "id": "SC_GETWELL",
     "name": "探病 / 祝福康复",
-    "keywords": ["探病", "生病", "康复", "住院", "早日康复"],
+    "keywords": [
+      "探病",
+      "生病",
+      "康复",
+      "住院",
+      "早日康复"
+    ],
     "recommended_style": "S_NATURAL",
     "recommended_substyle": "S_NATURAL_FOREST",
-    "color_tone": ["白", "绿", "浅黄"],
-    "main_flower_preference": ["百合", "小雏菊", "洋甘菊", "尤加利"],
+    "color_tone": [
+      "白",
+      "绿",
+      "浅黄"
+    ],
+    "main_flower_preference": [
+      "百合",
+      "小雏菊",
+      "洋甘菊",
+      "尤加利"
+    ],
     "meaning_tone": "平安健康、清净祝福",
     "budget_anchor": "T1",
     "notes": "清淡色系、避浓香与易过敏花粉；百合寓意百事合意，尤加利清新生机。"
@@ -74,11 +148,24 @@
   {
     "id": "SC_APOLOGY",
     "name": "道歉 / 和解",
-    "keywords": ["道歉", "对不起", "抱歉", "和好"],
+    "keywords": [
+      "道歉",
+      "对不起",
+      "抱歉",
+      "和好"
+    ],
     "recommended_style": "S_KOREAN",
     "recommended_substyle": "S_KOREAN_LUXE",
-    "color_tone": ["粉紫", "香槟", "浅紫"],
-    "main_flower_preference": ["洋桔梗", "勿忘我", "粉玫瑰"],
+    "color_tone": [
+      "粉紫",
+      "香槟",
+      "浅紫"
+    ],
+    "main_flower_preference": [
+      "洋桔梗",
+      "勿忘我",
+      "粉玫瑰"
+    ],
     "meaning_tone": "真诚歉意、珍惜关系",
     "budget_anchor": "T2",
     "notes": "柔和粉紫调传递歉意与温柔，勿忘我寓意别把我忘记。"
@@ -86,11 +173,26 @@
   {
     "id": "SC_HOUSEWARMING",
     "name": "乔迁 / 新居",
-    "keywords": ["乔迁", "搬家", "新居", "暖房"],
+    "keywords": [
+      "乔迁",
+      "搬家",
+      "新居",
+      "暖房"
+    ],
     "recommended_style": "S_NORDIC",
     "recommended_substyle": "S_NORDIC_PASTORAL",
-    "color_tone": ["黄", "白", "绿", "燕麦色"],
-    "main_flower_preference": ["小雏菊", "向日葵", "洋甘菊", "尤加利"],
+    "color_tone": [
+      "黄",
+      "白",
+      "绿",
+      "燕麦色"
+    ],
+    "main_flower_preference": [
+      "小雏菊",
+      "向日葵",
+      "洋甘菊",
+      "尤加利"
+    ],
     "meaning_tone": "生机新始、温暖入驻",
     "budget_anchor": "T1",
     "notes": "明亮自然风适配新家氛围；瓶插/花束皆宜，绿意添生机。"
@@ -98,11 +200,24 @@
   {
     "id": "SC_GRADUATION",
     "name": "毕业",
-    "keywords": ["毕业", "毕业季", "答辩"],
+    "keywords": [
+      "毕业",
+      "毕业季",
+      "答辩"
+    ],
     "recommended_style": "S_INS",
     "recommended_substyle": "S_INS_CREAM",
-    "color_tone": ["奶白", "浅粉", "香槟", "天蓝"],
-    "main_flower_preference": ["郁金香", "洋桔梗", "多头玫瑰"],
+    "color_tone": [
+      "奶白",
+      "浅粉",
+      "香槟",
+      "天蓝"
+    ],
+    "main_flower_preference": [
+      "郁金香",
+      "洋桔梗",
+      "多头玫瑰"
+    ],
     "meaning_tone": "前程似锦、青春纪念",
     "budget_anchor": "T2",
     "notes": "清新柔和色系留作青春纪念；郁金香寓意博爱前程。"
@@ -110,11 +225,24 @@
   {
     "id": "SC_CHRISTMAS",
     "name": "圣诞",
-    "keywords": ["圣诞", "圣诞节", "平安夜"],
+    "keywords": [
+      "圣诞",
+      "圣诞节",
+      "平安夜"
+    ],
     "recommended_style": "S_VINTAGE",
     "recommended_substyle": "S_VINTAGE_HK",
-    "color_tone": ["正红", "绿", "金", "白"],
-    "main_flower_preference": ["红玫瑰", "蝴蝶兰", "尤加利"],
+    "color_tone": [
+      "正红",
+      "绿",
+      "金",
+      "白"
+    ],
+    "main_flower_preference": [
+      "红玫瑰",
+      "蝴蝶兰",
+      "尤加利"
+    ],
     "meaning_tone": "节日欢庆、红火平安",
     "budget_anchor": "T2",
     "notes": "红绿金经典圣诞色；尤加利银绿添节日气氛，可配松枝。"
@@ -122,11 +250,24 @@
   {
     "id": "SC_NEWYEAR",
     "name": "新年",
-    "keywords": ["新年", "春节", "过年", "元旦"],
+    "keywords": [
+      "新年",
+      "春节",
+      "过年",
+      "元旦"
+    ],
     "recommended_style": "S_VINTAGE",
     "recommended_substyle": "S_VINTAGE_HK",
-    "color_tone": ["正红", "金", "酒红"],
-    "main_flower_preference": ["红玫瑰", "蝴蝶兰", "山茶花"],
+    "color_tone": [
+      "正红",
+      "金",
+      "酒红"
+    ],
+    "main_flower_preference": [
+      "红玫瑰",
+      "蝴蝶兰",
+      "山茶花"
+    ],
     "meaning_tone": "红火喜庆、辞旧迎新",
     "budget_anchor": "T3",
     "notes": "红金主调最应景；蝴蝶兰/山茶显档次，寓意新年红火。"
@@ -134,11 +275,25 @@
   {
     "id": "SC_WEDDING",
     "name": "婚礼 / 婚庆",
-    "keywords": ["婚礼", "结婚", "婚庆", "新娘"],
+    "keywords": [
+      "婚礼",
+      "结婚",
+      "婚庆",
+      "新娘"
+    ],
     "recommended_style": "S_KOREAN",
     "recommended_substyle": "S_KOREAN_LUXE",
-    "color_tone": ["白", "香槟", "浅粉"],
-    "main_flower_preference": ["白玫瑰", "香槟玫瑰", "蝴蝶兰", "洋桔梗"],
+    "color_tone": [
+      "白",
+      "香槟",
+      "浅粉"
+    ],
+    "main_flower_preference": [
+      "白玫瑰",
+      "香槟玫瑰",
+      "蝴蝶兰",
+      "洋桔梗"
+    ],
     "meaning_tone": "纯洁永恒、郑重承诺",
     "budget_anchor": "T3",
     "notes": "白/香槟为主显圣洁高级；蝴蝶兰提档次，适合手捧/桌花。"
@@ -146,11 +301,23 @@
   {
     "id": "SC_TEACHER",
     "name": "教师节",
-    "keywords": ["教师节", "老师"],
+    "keywords": [
+      "教师节",
+      "老师"
+    ],
     "recommended_style": "S_NATURAL",
     "recommended_substyle": "S_NATURAL_FOREST",
-    "color_tone": ["香槟", "浅紫", "白", "绿"],
-    "main_flower_preference": ["康乃馨", "百合", "洋桔梗"],
+    "color_tone": [
+      "香槟",
+      "浅紫",
+      "白",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "康乃馨",
+      "百合",
+      "洋桔梗"
+    ],
     "meaning_tone": "敬意感念、桃李芬芳",
     "budget_anchor": "T1",
     "notes": "康乃馨/百合表敬意，色调清雅不艳俗，符合尊师氛围。"
@@ -158,13 +325,322 @@
   {
     "id": "SC_SELF",
     "name": "日常悦己",
-    "keywords": ["自己", "悦己", "我", "讨好自己", "治愈"],
+    "keywords": [
+      "自己",
+      "悦己",
+      "我",
+      "讨好自己",
+      "治愈"
+    ],
     "recommended_style": "S_NATURAL",
     "recommended_substyle": "S_NATURAL_WILD",
-    "color_tone": ["多彩混合", "黄", "白", "绿"],
-    "main_flower_preference": ["小雏菊", "洋甘菊", "向日葵", "玫瑰"],
+    "color_tone": [
+      "多彩混合",
+      "黄",
+      "白",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "小雏菊",
+      "洋甘菊",
+      "向日葵",
+      "玫瑰"
+    ],
     "meaning_tone": "取悦自己、当下即好",
     "budget_anchor": "T1",
     "notes": "随性自然/ins 风皆可，选自己喜欢的色，不必拘泥寓意。"
+  },
+  {
+    "id": "SC_PROPOSE",
+    "name": "求婚",
+    "keywords": [
+      "求婚",
+      "嫁给我",
+      "求婚花束",
+      "propose",
+      "求婚仪式"
+    ],
+    "recommended_style": "S_KOREAN",
+    "recommended_substyle": "S_KOREAN_LUXE",
+    "color_tone": [
+      "香槟",
+      "白",
+      "粉"
+    ],
+    "main_flower_preference": [
+      "玫瑰",
+      "蝴蝶兰",
+      "洋桔梗"
+    ],
+    "meaning_tone": "一生承诺、浪漫笃定",
+    "budget_anchor": "T3",
+    "notes": "以香槟/白玫瑰为主，蝴蝶兰提档次；低调克制显郑重，可加灯串或手写卡片。"
+  },
+  {
+    "id": "SC_ENGAGEMENT",
+    "name": "订婚",
+    "keywords": [
+      "订婚",
+      "定亲",
+      "engagement",
+      "订婚宴",
+      "定亲宴"
+    ],
+    "recommended_style": "S_FRENCH",
+    "recommended_substyle": "S_FRENCH_ELEGANT",
+    "color_tone": [
+      "粉白",
+      "香槟",
+      "浅紫"
+    ],
+    "main_flower_preference": [
+      "玫瑰",
+      "绣球",
+      "洋桔梗"
+    ],
+    "meaning_tone": "两姓之好、温柔约定",
+    "budget_anchor": "T3",
+    "notes": "粉白玫瑰配绣球显饱满，法式优雅适合订婚宴桌面布置或手捧。"
+  },
+  {
+    "id": "SC_NEWBABY",
+    "name": "新生儿 / 满月 / 百日",
+    "keywords": [
+      "宝宝",
+      "满月",
+      "新生儿",
+      "百日",
+      "出生",
+      "添丁",
+      "满月酒",
+      "百天",
+      "新生儿礼",
+      "出生礼"
+    ],
+    "recommended_style": "S_NATURAL",
+    "recommended_substyle": "S_NATURAL_FOREST",
+    "color_tone": [
+      "白",
+      "浅粉",
+      "浅蓝",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "百合",
+      "小雏菊",
+      "洋甘菊"
+    ],
+    "meaning_tone": "新生喜悦、平安茁壮",
+    "budget_anchor": "T1",
+    "notes": "清淡柔色系，避浓香与易过敏花粉；浅粉/浅蓝按性别偏好，百合寓意百事合意。"
+  },
+  {
+    "id": "SC_OPENING",
+    "name": "开业 / 商务庆典",
+    "keywords": [
+      "开业",
+      "开张",
+      "商务",
+      "花篮",
+      "庆典",
+      "乔迁商务",
+      "新店开业",
+      "商务花篮",
+      "开业花篮",
+      "开工"
+    ],
+    "recommended_style": "S_AMERICAN",
+    "recommended_substyle": "S_AMERICAN_RETRO",
+    "color_tone": [
+      "红",
+      "金",
+      "橙",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "红掌",
+      "向日葵",
+      "非洲菊"
+    ],
+    "meaning_tone": "红火兴旺、生意兴隆",
+    "budget_anchor": "T3",
+    "notes": "红掌/向日葵显朝气，红金配色最应开业；可配花篮或竖幅贺词。"
+  },
+  {
+    "id": "SC_EXAM",
+    "name": "升学 / 考试 / 金榜题名",
+    "keywords": [
+      "考试",
+      "升学",
+      "高考",
+      "金榜题名",
+      "上岸",
+      "录取",
+      "考研",
+      "升学宴",
+      "谢师",
+      "上岸花"
+    ],
+    "recommended_style": "S_INS",
+    "recommended_substyle": "S_INS_POP",
+    "color_tone": [
+      "亮黄",
+      "天蓝",
+      "白"
+    ],
+    "main_flower_preference": [
+      "向日葵",
+      "郁金香",
+      "非洲菊"
+    ],
+    "meaning_tone": "鹏程万里、一举夺魁",
+    "budget_anchor": "T2",
+    "notes": "向日葵=阳光前程，明亮色系鼓劲；可附「金榜题名」贺卡。"
+  },
+  {
+    "id": "SC_CONDOLENCE",
+    "name": "清明 / 祭奠 / 哀悼",
+    "keywords": [
+      "清明",
+      "祭奠",
+      "哀悼",
+      "追思",
+      "悼念",
+      "慰问",
+      "白事",
+      "追悼"
+    ],
+    "recommended_style": "S_JAPANESE",
+    "recommended_substyle": "S_JAPANESE_MINIMAL",
+    "color_tone": [
+      "白",
+      "黄",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "百合",
+      "小雏菊",
+      "洋甘菊"
+    ],
+    "meaning_tone": "肃穆追思、慎终追远",
+    "budget_anchor": "T1",
+    "notes": "以白百合、素雅小菊为主，庄重素净；忌红艳与浓香，表达哀思即可。"
+  },
+  {
+    "id": "SC_MIDAUTUMN",
+    "name": "中秋 / 团圆",
+    "keywords": [
+      "中秋",
+      "团圆",
+      "月饼",
+      "赏月",
+      "仲秋",
+      "中秋节"
+    ],
+    "recommended_style": "S_VINTAGE",
+    "recommended_substyle": "S_VINTAGE_HK",
+    "color_tone": [
+      "金",
+      "酒红",
+      "暖橙"
+    ],
+    "main_flower_preference": [
+      "玫瑰",
+      "蝴蝶兰",
+      "向日葵"
+    ],
+    "meaning_tone": "花好月圆、阖家团圆",
+    "budget_anchor": "T2",
+    "notes": "金桂暖色系呼应团圆，暖橙/酒红显秋意；可配果篮或月饼。"
+  },
+  {
+    "id": "SC_MILESTONE",
+    "name": "银婚 / 金婚 / 周年纪念",
+    "keywords": [
+      "银婚",
+      "金婚",
+      "锡婚",
+      "钻石婚",
+      "多年纪念",
+      "结婚周年",
+      "结婚纪念",
+      "周年庆",
+      "多年夫妻"
+    ],
+    "recommended_style": "S_LUXE",
+    "recommended_substyle": "S_LUXE_CHAMPAGNE",
+    "color_tone": [
+      "金",
+      "香槟",
+      "白"
+    ],
+    "main_flower_preference": [
+      "蝴蝶兰",
+      "玫瑰",
+      "绣球"
+    ],
+    "meaning_tone": "岁月沉淀、情比金坚",
+    "budget_anchor": "T4",
+    "notes": "香槟金显尊贵，蝴蝶兰提档次；可呼应结婚周年材质（银/金）选色。"
+  },
+  {
+    "id": "SC_MISS",
+    "name": "思念 / 异地 / 想你",
+    "keywords": [
+      "思念",
+      "想你",
+      "异地",
+      "miss",
+      "牵挂",
+      "念",
+      "想念",
+      "牵挂你"
+    ],
+    "recommended_style": "S_NATURAL",
+    "recommended_substyle": "S_NATURAL_WILD",
+    "color_tone": [
+      "紫",
+      "粉",
+      "白",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "勿忘我",
+      "洋桔梗",
+      "玫瑰"
+    ],
+    "meaning_tone": "念念不忘、遥寄相思",
+    "budget_anchor": "T1",
+    "notes": "勿忘我寓意别把我忘记，紫粉柔色寄相思；小巧不张扬。"
+  },
+  {
+    "id": "SC_THANKS",
+    "name": "感谢 / 致谢",
+    "keywords": [
+      "感谢",
+      "谢谢",
+      "辛苦了",
+      "致谢",
+      "感激",
+      "谢意",
+      "辛苦啦",
+      "感谢信",
+      "感恩"
+    ],
+    "recommended_style": "S_KOREAN",
+    "recommended_substyle": "S_KOREAN_SWEET",
+    "color_tone": [
+      "粉白",
+      "香槟",
+      "浅黄"
+    ],
+    "main_flower_preference": [
+      "康乃馨",
+      "玫瑰",
+      "向日葵"
+    ],
+    "meaning_tone": "真挚谢意、温暖回馈",
+    "budget_anchor": "T2",
+    "notes": "康乃馨表敬意与感恩，配向日葵添暖意；色调温馨不艳。"
   }
 ]

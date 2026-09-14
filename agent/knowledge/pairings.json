@@ -70,5 +70,77 @@
     "type": "recipient",
     "condition": "送朋友 / 闺蜜",
     "recommendation": "明亮活泼（非洲菊/向日葵/小雏菊），轻松不沉重。"
+  },
+  {
+    "id": "P_COLOR_TRIADIC",
+    "type": "color",
+    "condition": "三角/三色搭配",
+    "recommendation": "色环等距三色（如红黄蓝、粉紫绿），最活泼跳跃，适合年轻/节日/生日场景，注意主花统一不杂乱。"
+  },
+  {
+    "id": "P_COLOR_CHAMPAGNE",
+    "type": "color",
+    "condition": "香槟高级感",
+    "recommendation": "香槟+白+燕麦低饱和雾面配色，显贵不艳，适合高级/婚礼/求婚场景。"
+  },
+  {
+    "id": "P_SHAPE_ROUND",
+    "type": "shape",
+    "condition": "圆形/半球饱满",
+    "recommendation": "主花聚拢成半球，紧凑饱满，正式感强，适合手捧/桌花/商务花篮。"
+  },
+  {
+    "id": "P_SHAPE_CASCADE",
+    "type": "shape",
+    "condition": "瀑布/下垂线条",
+    "recommendation": "高低错落向下垂坠的线条，优雅流动，适合新娘手捧、高瓶或胸花。"
+  },
+  {
+    "id": "P_OCC_PROPOSE",
+    "type": "occasion",
+    "condition": "求婚",
+    "recommendation": "香槟玫瑰为主、配蝴蝶兰提档次，低调克制显郑重；可加灯串或手写卡片。"
+  },
+  {
+    "id": "P_OCC_NEWBABY",
+    "type": "occasion",
+    "condition": "新生儿 / 满月",
+    "recommendation": "清淡柔色（白百合/小雏菊），避浓香与易过敏花粉，浅粉浅蓝按性别偏好。"
+  },
+  {
+    "id": "P_OCC_OPENING",
+    "type": "occasion",
+    "condition": "开业 / 商务庆典",
+    "recommendation": "红掌/向日葵配红金色调，显红火兴旺；可配花篮或竖幅贺词。"
+  },
+  {
+    "id": "P_OCC_EXAM",
+    "type": "occasion",
+    "condition": "升学 / 考试",
+    "recommendation": "向日葵+郁金香明亮色系鼓劲，附「金榜题名」贺卡，传递鹏程万里。"
+  },
+  {
+    "id": "P_OCC_CONDOLENCE",
+    "type": "occasion",
+    "condition": "祭奠 / 哀悼",
+    "recommendation": "白百合/素雅小菊为主，庄重素净；忌红艳与浓香，表达哀思即可。"
+  },
+  {
+    "id": "P_RECIP_ELDER",
+    "type": "recipient",
+    "condition": "长辈 / 父母",
+    "recommendation": "康乃馨/百合温润不艳，色调柔和（粉白/香槟），显尊重与体贴。"
+  },
+  {
+    "id": "P_RECIP_COLLEAGUE",
+    "type": "recipient",
+    "condition": "同事 / 领导 / 客户",
+    "recommendation": "蝴蝶兰/香槟玫瑰低调得体，商务不轻浮；包装选雾面或礼盒显档次。"
+  },
+  {
+    "id": "P_MAT_FOLIAGE",
+    "type": "material",
+    "condition": "叶材搭配",
+    "recommendation": "尤加利+银叶菊打底，银绿提气质；叶材约占整体三成，避免盖过主花。"
   }
 ]
