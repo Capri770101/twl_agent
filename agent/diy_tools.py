@@ -44,7 +44,12 @@ async def generate_diy_plan(requirements: str, shop_id: str='', _context: dict |
     from agent.tools import design_diy_plan
 
     # 会话锁定店铺优先：漏传参数也不会设计出该店没有的原料。
-    plan = design_diy_plan(requirements, shop_id=str(shop_id or (_context or {}).get('shop_id') or '').strip())
+    # 会话累积需求（跨轮补充）一并传入：用户分几轮才说清需求时，方案不会只看最后一句。
+    plan = design_diy_plan(
+        requirements,
+        shop_id=str(shop_id or (_context or {}).get('shop_id') or '').strip(),
+        session_requirement=(_context or {}).get('requirement'),
+    )
     await _store_diy_plan(plan, _context)
     return json.dumps(plan, ensure_ascii=False)
 

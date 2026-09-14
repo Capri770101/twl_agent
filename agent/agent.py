@@ -498,12 +498,22 @@ _SLOT_ASK = {
 }
 
 
+def _has_any_requirement(req: Any) -> bool:
+    """会话累积需求里是否至少有一项有效信号（与 tools._req_clear 同语义）。
+
+    仅用于 L3 追问的「模型漏报兜底」：一项都没有，说明用户其实什么都没说清。
+    """
+    return bool(req and (req.recipient or req.occasion or req.budget_num is not None
+                         or req.budget_anchor or req.scene or req.style or req.colors))
+
+
 def _clarify_slots(
     message: str,
     respond_args: dict | None,
     ui: UIType,
     diy_produced: bool,
     asked_before: bool,
+    session_req: Any = None,
 ) -> list[str]:
     """本轮是否该「先追问、别硬出方案」；返回要追问的槽位（空列表 = 不追问）。
 
@@ -518,6 +528,7 @@ def _clarify_slots(
         ui: 本轮推导出的 UI 类型（只有 plan_card 才需要拦）。
         diy_produced: 本轮是否有成功的 generate_diy_plan / revise_diy_plan。
         asked_before: 本会话是否已追问过一次（同一需求内不重复唠叨）。
+        session_req: 本会话累积的结构化需求；用于「模型漏报 missing」时的兜底判据。
 
     Returns:
         需要追问的槽位列表（按 _CLARIFY_PRIORITY 顺序，最多 2 个）。
@@ -527,10 +538,13 @@ def _clarify_slots(
     if any(w in (message or '') for w in _CLARIFY_EXEMPT):
         return []
     raw = respond_args.get('missing') if isinstance(respond_args, dict) else None
-    if not isinstance(raw, list):
-        return []
-    reported = {str(x).strip().lower() for x in raw}
-    return [s for s in _CLARIFY_PRIORITY if s in reported][:2]
+    reported = {str(x).strip().lower() for x in raw} if isinstance(raw, list) else set()
+    slots = [s for s in _CLARIFY_PRIORITY if s in reported][:2]
+    if not slots and session_req is not None and not _has_any_requirement(session_req):
+        # 模型漏报兜底：会话累积需求里**一项有效信号都没有**（用户确实什么都没说清）→
+        # 只问最关键的两项。仅在「完全无信号」时触发，避免对已说清需求的用户唠叨。
+        slots = ['recipient', 'occasion']
+    return slots
 
 
 def _append_clarify(reply: str, slots: list[str]) -> str:
@@ -632,13 +646,21 @@ class ReActAgent:
         if stage == SessionStage.DONE and (not _is_chitchat(message)):
             sid = await mem_store.create_conversation(user_id, title=message[:20], shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)
             stage = SessionStage.ANALYZE
+        # ── 会话级需求记忆（跨轮槽位累积）──
+        # 历史缺陷：需求每轮只从**当前这条消息**抽取。用户分多轮补充（「送妈妈」→「生日」→
+        # 「预算200」）时，前面说过的信息进不了结构化需求——LLM 靠对话历史还记得，但规则引擎
+        # 拿不到，于是「LLM 失败回退 baseline」时方案明显缺信息。这里把本轮抽取合并进会话累积
+        # 需求，并注入工具上下文（DIY 设计、澄清追问判据都用它）。
+        req_acc: Any = None
         try:
-            existing_req = await mem_store.get_requirement(sid)
-            if existing_req and location and not existing_req.location:
-                existing_req.location = location
-                await mem_store.set_requirement(sid, existing_req)
+            from domain.requirements import accumulate
+            from agent.tools import extract_requirement
+            req_acc = accumulate(await mem_store.get_requirement(sid), extract_requirement(message))
+            if location and not req_acc.location:
+                req_acc.location = location
+            await mem_store.set_requirement(sid, req_acc)
         except Exception:
-            pass
+            logger.exception('[agent] 会话需求累积失败')
         stage = SessionStage(await mem_store.get_stage(sid))
         incoming = stage
         # 此处早于 LLM 调用，拿不到本轮结构化信号，故仍用关键词做「上一轮已进入生图阶段
@@ -685,7 +707,9 @@ class ReActAgent:
                         messages.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
                         new_msgs.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
                         continue
-                    result, status = await execute_tool(tc['name'], tc['arguments'], {'user_id': user_id, 'session_id': sid, 'location': location, 'shop_id': shop_id, 'entry': entry, 'product_id': product_id, 'product_title': product_title})
+                    # 注入会话累积需求：工具侧可用它补全跨轮信息（如 DIY 设计只传了「11朵粉玫瑰」，
+                    # 前几轮说过的「送妈妈、预算200」仍生效）。
+                    result, status = await execute_tool(tc['name'], tc['arguments'], {'user_id': user_id, 'session_id': sid, 'location': location, 'shop_id': shop_id, 'entry': entry, 'product_id': product_id, 'product_title': product_title, 'requirement': req_acc})
                     record = ToolCallRecord(name=tc['name'], arguments=tc['arguments'], result=result, status=status)
                     tool_log.append(record)
                     if on_event:
@@ -706,6 +730,7 @@ class ReActAgent:
                 final_reply = final_reply or '抱歉，我思考得太久啦，请简化需求或分步骤再问我～'
         new_stage, ui, data, final_reply, llm_intent = await self._post_process(
             respond_args, tool_log, incoming, message, final_reply, user_id, sid, location, new_msgs,
+            session_req=req_acc,
         )
         # 排版兜底：删掉 LLM 回复里独立的分隔线行（--- / *** / ——），改为靠 prompt
         # 规则让其用数字编号分段；此处只做删除不做改写，不碰卡片数据。
@@ -763,9 +788,13 @@ class ReActAgent:
 
     async def _post_process(
         self, respond_args, tool_log, incoming, message, final_reply,
-        user_id, sid, location, new_msgs,
+        user_id, sid, location, new_msgs, session_req=None,
     ):
-        """run() 的后处理：UI 推导、业务补调（生图/推方案/QA 过滤）、回复清理。"""
+        """run() 的后处理：UI 推导、业务补调（生图/推方案/QA 过滤）、回复清理。
+
+        Args:
+            session_req: 本会话累积的结构化需求（跨轮合并结果），供 L3 追问兜底判据使用。
+        """
         # ── 1. 推导 new_stage / ui / data ──
         if respond_args is not None:
             new_stage = self._derive_focus(tool_log, incoming, message)
@@ -916,6 +945,7 @@ class ReActAgent:
         _clarify = _clarify_slots(
             message, respond_args, ui, _diy_produced,
             asked_before=await mem_store.get_session_flag(user_id, sid, 'clarify_asked') == '1',
+            session_req=session_req,
         )
         _clarified = bool(_clarify)
         if _clarified:

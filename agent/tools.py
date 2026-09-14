@@ -18,7 +18,7 @@ from typing import Any
 from agent.engine.llm import call_llm
 from agent.engine.ui_protocol import UIType
 from agent.knowledge import get_by_id, query_knowledge
-from domain.requirements import FlowerRequirement
+from domain.requirements import FlowerRequirement, accumulate
 from backend.storage import memory, tasks
 from agent.toolkit import register_tool
 
@@ -1077,7 +1077,7 @@ _LLM_REQUIREMENT_HINT = (
 )
 
 
-def design_with_llm(requirements: str, shop_id: str = '') -> dict:
+def design_with_llm(requirements: str, shop_id: str = '', session_requirement: FlowerRequirement | None = None) -> dict:
     """语义化设计：RAG 检索知识库 + DeepSeek 生成方案，规则引擎作兜底与结构补全。
 
     相对纯规则引擎，LLM 能理解「治愈系」「有故事感」「不按常理」等模糊/语义化需求，
@@ -1085,13 +1085,16 @@ def design_with_llm(requirements: str, shop_id: str = '') -> dict:
 
     shop_id 非空（用户从某家店铺进入）时，方案的原料范围被硬限定在该店铺在售清单内。
     """
-    baseline = _build_plan(_extract(requirements))
+    # 会话累积需求 + 本轮抽取：把「前面几轮说过的」送谁 / 场合 / 预算也带进规则基线。
+    # 此前只按当前这条消息抽取，一旦 LLM 失败回退 baseline，方案就会缺跨轮补充的信息。
+    req = accumulate(session_requirement, extract_requirement(requirements))
+    baseline = _build_plan(req.to_legacy_dict())
     if shop_id:
         baseline['shop_id'] = shop_id
     try:
         knowledge = _retrieve_for_design(requirements)
         # 用户显式约束（单一花材 / 支数）注入到设计 prompt，引导 LLM 不跑偏。
-        req = extract_requirement(requirements)
+        # 注：req 已在函数开头按「会话累积 + 本轮」合并，此处不再重新抽取。
         hard_constraints: list[str] = []
         if req.single_flower:
             hard_constraints.append(f"用户明确要求『纯{req.single_flower}』单一花材：禁止混入任何其他花材、配材或叶材（不得出现康乃馨、非洲菊、满天星、尤加利等），design.fillers 与 design.foliage 必须为空数组，main_flowers 只能含「{req.single_flower}」。")
@@ -1140,14 +1143,14 @@ def _shop_scope_rule(shop_id: str) -> str:
             f'platform_db_query_entity(entity="plan", shop_id="{shop_id}") 查询该店在售花材/商品，再据此设计。')
 
 
-def design_diy_plan(requirements: str, shop_id: str = '') -> dict:
+def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: FlowerRequirement | None = None) -> dict:
     """设计一份结构化 DIY 花艺方案（RAG + LLM 语义生成，规则引擎兜底）。
 
     链路：RAG 检索知识库 → DeepSeek 生成语义化方案 → 规则引擎 _build_plan 补全结构/兜底。
     返回可供 UI 渲染、生图与下单承接的结构化 dict。
     shop_id 非空时方案原料限定在该店铺在售范围内。
     """
-    return design_with_llm(requirements, shop_id=shop_id)
+    return design_with_llm(requirements, shop_id=shop_id, session_requirement=session_requirement)
 
 def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     """语义化改版：RAG 检索 + DeepSeek 基于已有方案与反馈调整，规则引擎兜底。

@@ -98,3 +98,25 @@ class FlowerRequirement:
         if other.location:
             merged.location = other.location
         return merged
+
+
+def accumulate(prev: FlowerRequirement | None, curr: FlowerRequirement | None) -> FlowerRequirement:
+    """把「本轮抽取」合并进「会话累积需求」——跨轮补充不丢，改口即时生效。
+
+    与 :meth:`FlowerRequirement.merge` 的唯一语义差异在 colors：
+    merge 取并集（同一轮里出现多种颜色是对的），但**跨轮**取并集会让「换成粉色」
+    之后旧的红still残留，所以这里以本轮为准。
+
+    Args:
+        prev: 会话已累积的需求（None = 首轮）。
+        curr: 本轮从当前消息抽取的需求（None = 本轮没抽到）。
+
+    Returns:
+        新的合并结果（不修改入参）。
+    """
+    base = prev if prev is not None else FlowerRequirement()
+    cur = curr if curr is not None else FlowerRequirement()
+    merged = base.merge(cur)
+    if cur.colors:
+        merged.colors = list(dict.fromkeys(cur.colors))
+    return merged
