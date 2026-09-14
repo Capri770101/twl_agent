@@ -103,7 +103,7 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
         logger.debug('[tools] 生图任务即时查询失败 task_id=%s', task_id)
     return json.dumps(result, ensure_ascii=False)
 
-@register_tool(name='retrieve_knowledge', description='检索花卉 DIY 知识库：花材(花语/色系/季节/价格档/搭配性)、风格体系、搭配规则、预算映射、包装器型、商家智库（店铺的风格/擅长场景/价位/服务/卖点）。在设计方案前调用以获取可靠的领域知识，避免凭空编造；找店铺时用 shop 域。', parameters={'type': 'object', 'properties': {'domain': {'type': 'string', 'description': '检索域：flower(花材) | style(风格) | pairing(搭配规则) | budget(预算) | packaging(包装) | shop(商家智库) | scene(场景) | proven(用户验证过的实战方案) | all(全部)'}, 'query': {'type': 'string', 'description': '关键词或自然语言，如 母亲/生日/北欧/200元/能做婚礼布置的店'}}, 'required': ['domain', 'query']}, tags=['knowledge'])
+@register_tool(name='retrieve_knowledge', description='检索花卉 DIY 知识库：花材(花语/色系/季节/价格档/搭配性)、风格体系、搭配规则、预算映射、包装器型、鲜切花养护(醒花/剪根/换水/保鲜/延长花期)、商家智库（店铺的风格/擅长场景/价位/服务/卖点）。设计花艺方案前、或用户询问鲜花怎么保养时调用，以获取可靠的领域知识避免凭空编造；找店铺用 shop 域，问养护/保鲜用 care 域。', parameters={'type': 'object', 'properties': {'domain': {'type': 'string', 'description': '检索域：flower(花材) | style(风格) | pairing(搭配规则) | budget(预算) | packaging(包装) | care(鲜切花养护/保鲜) | shop(商家智库) | scene(场景) | proven(用户验证过的实战方案) | all(全部)'}, 'query': {'type': 'string', 'description': '关键词或自然语言，如 母亲/生日/北欧/200元/怎么养得久/能做婚礼布置的店'}}, 'required': ['domain', 'query']}, tags=['knowledge'])
 def retrieve_knowledge(domain: str, query: str) -> str:
     """检索知识库，返回相关条目 JSON。"""
     return json.dumps(query_knowledge(domain, query), ensure_ascii=False)

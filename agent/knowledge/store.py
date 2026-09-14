@@ -28,14 +28,14 @@ from typing import Any
 from backend.config import settings
 
 logger = logging.getLogger('knowledge')
-_DOMAINS: dict[str, str] = {'flower': 'flowers.json', 'style': 'styles.json', 'pairing': 'pairings.json', 'budget': 'budget.json', 'packaging': 'packaging.json', 'scene': 'scenes.json', 'shop': '', 'proven': ''}
+_DOMAINS: dict[str, str] = {'flower': 'flowers.json', 'style': 'styles.json', 'pairing': 'pairings.json', 'budget': 'budget.json', 'packaging': 'packaging.json', 'scene': 'scenes.json', 'care': 'care.json', 'shop': '', 'proven': ''}
 _BASE_DIR = Path(__file__).resolve().parent
 _cache: dict[str, list[dict[str, Any]]] = {}
 _index_cache: dict[str, _VectorSpace] = {}
 _manifest_cache: dict[str, Any] | None = None
 _CJK = re.compile('[\\u4e00-\\u9fff]+')
 _WORD = re.compile('[a-zA-Z0-9]+')
-_SEMANTIC_MIN_LEN = 6
+_SEMANTIC_MIN_LEN = 4
 
 def _tokenize(text: str) -> list[str]:
     """把文本切成检索特征：中文走字符 unigram+bigram，拉丁/数字作为整词小写。

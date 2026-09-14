@@ -188,7 +188,10 @@ class Settings(BaseSettings):
 
     @property
     def rag_min_score(self) -> float:
-        return 0.18
+        # 中文自然语言问句经字符 n-gram 向量化后相似度普遍偏低（实测相关条目多在
+        # 0.07-0.19 区间），原阈值 0.18 会把相关条目挡在外面（如「怎么让花开久一点」
+        # 与「深水醒花」仅 0.15）。下调至 0.10，兼顾召回与噪声。
+        return 0.10
 
     @property
     def rag_top_k(self) -> int:
