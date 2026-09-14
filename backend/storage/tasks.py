@@ -17,6 +17,25 @@ logger = logging.getLogger('tasks')
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
+# 运行期兜底：processing 超过该秒数仍未完成 → 判定失败，避免客户端永久轮询「生成中」。
+# （recover_incomplete_tasks 只在进程启动时兜底，运行期卡住的任务它管不到。）
+_STALE_PROCESSING_SECONDS = 300
+
+
+def _age_seconds(ts: Any) -> float:
+    """把 DB 时间戳（datetime / ISO 字符串）换算成距今秒数；无法解析返回 0（不判陈旧）。"""
+    if ts is None:
+        return 0.0
+    try:
+        import datetime as _dt
+        if isinstance(ts, str):
+            ts = _dt.datetime.fromisoformat(ts)
+        tz = getattr(ts, 'tzinfo', None)
+        now = _dt.datetime.now(tz) if tz else _dt.datetime.now()
+        return (now - ts).total_seconds()
+    except Exception:  # noqa: BLE001
+        return 0.0
+
 # 生图专用后台执行器：每个任务在**独立线程**里用**自带的事件循环**跑完整个生命周期。
 #
 # 为什么不能用 asyncio.create_task：生图工具经 ReAct 工具链调用，而工具链跑在
@@ -245,7 +264,11 @@ async def create_image_task(prompt: str, user_id: str | None = None) -> str:
 
 
 async def get_image_task(task_id: str, user_id: str | None = None) -> dict[str, Any]:
-    """获取任务状态；提供 user_id 时严格按归属过滤，否则仅内部调用。"""
+    """获取任务状态；提供 user_id 时严格按归属过滤，否则仅内部调用。
+
+    运行期兜底：`processing` 超过 `_STALE_PROCESSING_SECONDS` 仍未完成 → 就地判失败，
+    保证客户端轮询**一定**能拿到终态（否则会一直卡在「生成中」）。
+    """
     with transaction() as conn:
         if user_id:
             row = conn.execute(
@@ -257,6 +280,17 @@ async def get_image_task(task_id: str, user_id: str | None = None) -> dict[str, 
                 'SELECT task_id, user_id, status, prompt, result_url, error, created_at, updated_at FROM image_tasks WHERE task_id=?',
                 (task_id,),
             ).fetchone()
-    if not row:
-        return {'task_id': task_id, 'status': 'not_found'}
-    return dict(row)
+        if not row:
+            return {'task_id': task_id, 'status': 'not_found'}
+        result = dict(row)
+        if result.get('status') == 'processing':
+            age = _age_seconds(result.get('updated_at') or result.get('created_at'))
+            if age > _STALE_PROCESSING_SECONDS:
+                logger.warning('[tasks] 生图任务 processing 超时（%.0fs），判失败 task_id=%s', age, task_id)
+                conn.execute(
+                    'UPDATE image_tasks SET status=?, error=?, updated_at=NOW() WHERE task_id=?',
+                    ('failed', '生图超时，请重新生成', task_id),
+                )
+                result['status'] = 'failed'
+                result['error'] = '生图超时，请重新生成'
+    return result

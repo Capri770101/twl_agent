@@ -125,10 +125,24 @@ def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
     Returns:
         可能已追加要点的回复；非卡片类型、reply 足够长或无可用字段时原样返回。
     """
-    if ui not in (UIType.PLAN_CARD, UIType.SHOP_CARD):
+    if ui not in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD, UIType.PAY_JUMP, UIType.IMAGE_TASK, UIType.GREETING_CARD):
         return reply
     if len((reply or '').strip()) >= _CARD_SUMMARY_MIN_REPLY:
         return reply
+    base = (reply or '').strip()
+
+    # 需求 / 结果类卡片：正文在卡片里，短回复只需一句通用引导（不必读 data）。
+    # 修「卡片有、文字空」——此前只兜 plan/shop，order/pay/image/greeting 会留下空回复。
+    _simple = {
+        UIType.ORDER_CARD: '订单信息已生成，确认无误就可以去支付啦～',
+        UIType.PAY_JUMP: '订单信息已生成，确认无误就可以去支付啦～',
+        UIType.IMAGE_TASK: '效果图正在生成中，稍等一下就好～',
+        UIType.GREETING_CARD: '贺卡已经做好啦，看看喜欢吗？',
+    }
+    if ui in _simple:
+        logger.info('[agent] 卡片回复过短，已自动追加要点（%s）', ui.value)
+        return f'{base}\n\n{_simple[ui]}' if base else _simple[ui]
+
     if not isinstance(data, dict):
         return reply
 
@@ -807,16 +821,29 @@ class ReActAgent:
 
     @staticmethod
     def _parse_tool_calls(msg: Any) -> list[dict[str, Any]]:
-        """兼容 OpenAI（msg.tool_calls[i].function）与 Mock（_MockToolCall）。"""
+        """兼容 OpenAI（msg.tool_calls[i].function）与 Mock（_MockToolCall）。
+
+        模型的工具参数 JSON 可能被截断 / 写坏——**必须兜住**：坏掉的那一条直接跳过
+        （等价于模型没调用该工具），并告警。否则 `json.loads` 抛异常会**整轮崩掉**。
+        """
         raw = getattr(msg, 'tool_calls', None)
         if not raw:
             return []
         calls: list[dict[str, Any]] = []
         for tc in raw:
-            name = tc.function.name
-            args = json.loads(tc.function.arguments or '{}')
-            tid = getattr(tc, 'id', '')
-            calls.append({'id': tid, 'name': name, 'arguments': args})
+            fn = getattr(tc, 'function', None)
+            name = getattr(fn, 'name', '') if fn is not None else ''
+            if not name:
+                continue
+            raw_args = getattr(fn, 'arguments', '') or '{}'
+            try:
+                args = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning('[agent] 工具调用参数非法 JSON，已跳过：name=%s args=%.200s', name, raw_args)
+                continue
+            if not isinstance(args, dict):
+                args = {}
+            calls.append({'id': getattr(tc, 'id', ''), 'name': name, 'arguments': args})
         return calls
 
     @staticmethod
