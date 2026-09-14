@@ -243,13 +243,28 @@ def _retrieve_domain(domain: str, tokens: list[str], allow_vector: bool) -> list
     if not allow_vector:
         return [(e, 1.0) for e, hit in zip(entries, kw_hits, strict=True) if hit]
     sims = _get_index(domain).similarity(' '.join(tokens))
+    # 真实 embedding 语义通道（Tier 1）：默认关；开启且可用时与 TF-IDF 取并集召回、分数取较大者，
+    # 任一环节失败 emb=None → 行为与纯 TF-IDF 完全一致（零回归）。
+    emb: list[float] | None = None
+    if settings.embedding_enabled:
+        try:
+            from agent.knowledge.semantic import domain_similarities
+            emb = domain_similarities(domain, ' '.join(tokens))
+        except Exception:  # noqa: BLE001
+            logger.warning('[knowledge] embedding 通道失败，回退 TF-IDF', exc_info=True)
+            emb = None
     out: list[tuple[dict[str, Any], float]] = []
-    for e, hit, sim in zip(entries, kw_hits, sims, strict=True):
-        score = float(sim)
+    for i, (e, hit, sim) in enumerate(zip(entries, kw_hits, sims, strict=True)):
+        s = float(sim)
+        emb_sim = emb[i] if (emb is not None and i < len(emb)) else None
+        # embedding 纳入须过它自己的阈值（0.35），绝不用 TF-IDF 的 0.10 —— 否则低质向量会灌满整个域
+        emb_hit = emb_sim is not None and emb_sim >= settings.embedding_min_score
+        if not (hit or s >= settings.rag_min_score or emb_hit):
+            continue
+        score = max(s, float(emb_sim) * settings.embedding_weight) if emb_sim is not None else s
         if hit:
             score += settings.rag_keyword_boost
-        if hit or score >= settings.rag_min_score:
-            out.append((e, score))
+        out.append((e, score))
     out.sort(key=lambda x: x[1], reverse=True)
     if settings.rag_top_k and len(out) > settings.rag_top_k:
         out = out[:settings.rag_top_k]

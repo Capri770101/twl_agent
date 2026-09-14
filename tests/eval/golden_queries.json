@@ -40,6 +40,21 @@
     {"id": "care-vase", "query": "花瓶怎么选", "domain": "care", "expect_any": ["容器", "花瓶"]},
     {"id": "budget-200", "query": "预算200左右", "domain": "budget", "expect_any": ["T2"]},
     {"id": "budget-1000", "query": "预算1000", "domain": "budget", "expect_any": ["T5"]},
-    {"id": "budget-50", "query": "预算50元", "domain": "budget", "expect_any": ["T1"]}
+    {"id": "budget-50", "query": "预算50元", "domain": "budget", "expect_any": ["T1"]},
+
+    {"id": "hard-getwell", "query": "想给住院的朋友送一束", "domain": "scene", "expect_any": ["探病", "康复"], "hard": true},
+    {"id": "hard-newbaby", "query": "朋友刚生了宝宝送什么花", "domain": "scene", "expect_any": ["新生儿", "满月", "百日"], "hard": true},
+    {"id": "hard-longevity", "query": "怎么让花多活几天", "domain": "care", "expect_any": ["醒花", "换水", "环境", "保鲜", "修剪"], "hard": true},
+    {"id": "hard-confess", "query": "喜欢一个人想表白送什么", "domain": "scene", "expect_any": ["表白", "告白"], "hard": true},
+    {"id": "hard-housewarming", "query": "朋友搬新家送什么花", "domain": "scene", "expect_any": ["乔迁", "新居"], "hard": true},
+    {"id": "hard-teacher", "query": "教师节给老师送什么花", "domain": "scene", "expect_any": ["教师节"], "hard": true},
+    {"id": "hard-apology", "query": "惹女朋友生气了送什么花道歉", "domain": "scene", "expect_any": ["道歉", "和解"], "hard": true},
+    {"id": "hard-cheap", "query": "预算不多想买束花", "domain": "budget", "expect_any": ["T1"], "hard": true},
+    {"id": "hard-foliage", "query": "花束里配的绿叶有什么", "domain": "flower", "expect_any": ["尤加利", "银叶菊"], "hard": true},
+    {"id": "hard-vase-deco", "query": "想买束花放家里装饰", "domain": "packaging", "expect_any": ["瓶插", "花篮"], "hard": true},
+
+    {"id": "hard-en-fresh", "query": "how to keep cut flowers fresh longer", "domain": "care", "expect_any": ["醒花", "换水", "环境", "保鲜", "修剪", "容器", "误区", "特殊", "水质"], "hard": true},
+    {"id": "hard-vocab-budget", "query": "手头不宽裕", "domain": "budget", "expect_any": ["T1"], "hard": true},
+    {"id": "hard-vase-deco2", "query": "桌面摆什么花好看", "domain": "packaging", "expect_any": ["瓶插", "花篮", "PK_VASE"], "hard": true}
   ]
 }

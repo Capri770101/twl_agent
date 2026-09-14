@@ -163,6 +163,15 @@ class Settings(BaseSettings):
     RAG_GAP_LOG_ENABLED: bool = False
     RAG_GAP_LOG_PATH: str = ""  # 留空 → 仓库内 data/eval/retrieval_gaps.jsonl
 
+    # ── 向量检索（Tier 1 · 真实 embedding 升级；默认关，回退纯 TF-IDF）──
+    # provider: ""=关（纯 TF-IDF）| dashscope（百炼 OpenAI 兼容 /embeddings）| mock（仅测试）
+    # 开启前请先用评测集标定（scripts/eval_retrieval.py）；开启后任何失败自动回退 TF-IDF。
+    EMBEDDING_PROVIDER: str = ""
+    EMBEDDING_API_KEY: str = ""   # 留空回退 LLM_API_KEY（同厂商复用）
+    EMBEDDING_BASE_URL: str = ""  # 留空回退 LLM_BASE_URL（compatible-mode）
+    EMBEDDING_MODEL: str = "text-embedding-v3"
+    EMBEDDING_DIM: int = 1024
+
     # ── CORS ──
     ALLOWED_ORIGINS: str = "*"
 
@@ -206,6 +215,31 @@ class Settings(BaseSettings):
     @property
     def rag_top_k(self) -> int:
         return 8
+
+    @property
+    def embedding_enabled(self) -> bool:
+        """是否启用真实 embedding 语义通道（provider 非空且非 off/none/false）。"""
+        return (self.EMBEDDING_PROVIDER or '').strip().lower() not in ('', 'off', 'none', 'false', '0')
+
+    @property
+    def embedding_base_url(self) -> str:
+        # 未单配则复用 LLM 的 compatible-mode base（同厂商）
+        return (self.EMBEDDING_BASE_URL or self.LLM_BASE_URL or '').strip()
+
+    @property
+    def embedding_api_key(self) -> str:
+        # 未单配则复用 LLM_API_KEY（百炼 key 通用）
+        return (self.EMBEDDING_API_KEY or self.LLM_API_KEY or '').strip()
+
+    @property
+    def embedding_min_score(self) -> float:
+        # embedding 余弦量纲 ≠ TF-IDF：相关中文短句多在 0.35-0.75，无关常 <0.3
+        return 0.35
+
+    @property
+    def embedding_weight(self) -> float:
+        # 与 TF-IDF 分数融合时的权重（1.0 = 取二者较大者）
+        return 1.0
 
     @property
     def llm_base_url(self) -> str:
