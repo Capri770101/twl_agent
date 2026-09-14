@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     PLATFORM_ORDER_API_URL: str = ""  # 例 https://api.flower-platform.com/v1/orders
     PLATFORM_ORDER_API_KEY: str = ""  # 可选，下单 API 鉴权凭据（如 Bearer token）
 
+    # ── 学习回调鉴权（平台真实订单 → 智能体 proven 域；L2 成交即学）──
+    # 平台在真实订单落定时回调 POST /api/learning/order，带此密钥（X-Learning-Key 头）。
+    # 留空则该端点返回 503（fail-closed，禁止裸奔写入 proven 域）。
+    LEARNING_WEBHOOK_SECRET: str = ""
+
     # ── 腾讯地图（可选）──
     TENCENT_MAP_KEY: str = ""
 

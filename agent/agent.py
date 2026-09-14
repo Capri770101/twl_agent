@@ -620,6 +620,14 @@ class ReActAgent:
                     _diy['requirement'] = message
                     _res = await save_diy_plan(_diy, user_id)
                     logger.info('[agent] DIY 方案入库 saved=%s duplicate=%s id=%s', _res['saved'], _res['duplicate'], _res['plan_id'])
+                    # L2 成交即学：用户确认的方案立即计入 proven 信号（confirm_count+1），
+                    # 无需再手动跑 learn_from_history.py；不影响主流程，失败仅告警。
+                    try:
+                        from backend.storage.diy import record_plan_confirmed
+                        if _res.get('plan_id'):
+                            record_plan_confirmed(_res['plan_id'])
+                    except Exception:  # noqa: BLE001
+                        logger.warning('[agent] 方案确认学习信号记录失败', exc_info=True)
             except Exception:
                 logger.exception('[agent] DIY 方案入库失败')
 

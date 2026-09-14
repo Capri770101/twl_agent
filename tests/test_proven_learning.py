@@ -38,7 +38,7 @@ _DDL = """CREATE TABLE IF NOT EXISTS diy_plans (
     care_tips TEXT, card_message TEXT, card_image_url TEXT, budget_breakdown TEXT,
     effect_image_url TEXT, difficulty TEXT, est_time INTEGER, shelf_life TEXT,
     suitable_for TEXT, caution TEXT, mood_tags TEXT, status TEXT NOT NULL DEFAULT 'confirmed',
-    order_count INTEGER NOT NULL DEFAULT 0, source_user_id TEXT, created_at TEXT, confirmed_at TEXT)"""
+    order_count INTEGER NOT NULL DEFAULT 0, confirm_count INTEGER NOT NULL DEFAULT 0, source_user_id TEXT, created_at TEXT, confirmed_at TEXT)"""
 
 
 class _FakeAdapter:
@@ -163,3 +163,54 @@ def test_etl_load_records_jsonl(tmp_path):
     p.write_text('{"occasion": "生日"}\n{"occasion": "探病"}\n', encoding="utf-8")
     mod = _load_script()
     assert len(mod._load_records(p)) == 2
+
+
+def test_record_plan_confirmed_noop_on_empty():
+    # 空 id 应在触碰 DB 前返回，不报错
+    diy_storage.record_plan_confirmed("")
+
+
+def test_record_plan_confirmed_increments(fake_diy_db):
+    # 导入一个方案（order_count=1, confirm_count=0），用户会话内确认 → confirm_count+1
+    pid = diy_storage.import_proven_plan({"occasion": "生日", "flowers": ["玫瑰"], "success_count": 1})
+    diy_storage.record_plan_confirmed(pid)
+    plans = diy_storage.list_proven_plans()
+    assert plans[0]["order_count"] == 1
+    assert plans[0]["confirm_count"] == 1
+    # proven 排序取二者之和
+    assert plans[0]["popularity"] == 2
+
+
+def test_proven_ranking_blends_confirm_and_order(fake_diy_db):
+    # A：1 次成交 + 2 次确认（popularity=3）；B：5 次成交（popularity=5）→ B 排前
+    pid_a = diy_storage.import_proven_plan({"occasion": "生日", "flowers": ["玫瑰"], "success_count": 1})
+    pid_b = diy_storage.import_proven_plan({"occasion": "探病", "flowers": ["百合"], "success_count": 5})
+    diy_storage.record_plan_confirmed(pid_a)
+    diy_storage.record_plan_confirmed(pid_a)
+    plans = diy_storage.list_proven_plans()
+    assert plans[0]["id"] == pid_b  # popularity 5 > 3
+    assert plans[1]["id"] == pid_a
+
+
+def test_ingest_order_signal_by_plan_id(fake_diy_db):
+    # 平台回调带已知 plan_id → order_count+1（真实成交写入侧）
+    pid = diy_storage.import_proven_plan({"occasion": "生日", "flowers": ["玫瑰"], "success_count": 1})
+    res = diy_storage.ingest_order_signal({"plan_id": pid})
+    assert res["action"] == "order_bumped" and res["plan_id"] == pid
+    assert diy_storage.list_proven_plans()[0]["order_count"] == 2
+
+
+def test_ingest_order_signal_by_features(fake_diy_db):
+    # 平台回调仅带方案特征 → 哈希生成 proven 条目并计入 confirmed
+    res = diy_storage.ingest_order_signal({"occasion": "生日", "style": "韩式", "flowers": ["玫瑰"], "count": 3})
+    assert res["action"] == "proven_imported"
+    assert res["plan_id"].startswith("HIST_")
+    plans = diy_storage.list_proven_plans()
+    assert len(plans) == 1 and plans[0]["order_count"] == 3
+
+
+def test_ingest_order_signal_rejects_malformed(fake_diy_db):
+    with pytest.raises(ValueError):
+        diy_storage.ingest_order_signal({})  # 既无 plan_id 也无方案特征
+    with pytest.raises(ValueError):
+        diy_storage.ingest_order_signal("not a dict")

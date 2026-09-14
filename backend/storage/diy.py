@@ -89,13 +89,11 @@ async def save_diy_plan(plan: dict, user_id: str) -> dict[str, Any]:
     return {'saved': True, 'duplicate': False, 'plan_id': plan_id}
 
 
-async def mark_diy_plan_ordered(plan_id: str) -> None:
-    """订单成交 / 用户确认下单后调用：把该方案计入 proven 域（order_count+1，刷新 confirmed_at）。
+def _bump_plan_counter(plan_id: str, column: str) -> None:
+    """通用计数器自增：order_count（真实成交）或 confirm_count（会话内确认）。
 
-    这是 proven 学习闭环的**写入侧**——diy_plans 按 order_count 降序进入 proven 域，
-    被 query_knowledge('all') 召回，让高成交方案在相似需求下优先出现。
-    此前此函数为空桩（proven 永远拿不到增量），现补上真实 upsert。
-    空 plan_id 安全跳过；整行不存在也静默跳过（不报错影响主流程）。
+    column 仅接受内部硬编码字符串（非外部输入），无注入风险。
+    空 plan_id 直接跳过；整行不存在也静默跳过（不报错影响主流程）。
     """
     if not plan_id:
         return
@@ -103,11 +101,32 @@ async def mark_diy_plan_ordered(plan_id: str) -> None:
     try:
         with transaction() as c:
             c.execute(
-                'UPDATE diy_plans SET order_count = order_count + 1, confirmed_at = ? WHERE id = ?',
+                f'UPDATE diy_plans SET {column} = {column} + 1, confirmed_at = ? WHERE id = ?',
                 (now, plan_id),
             )
     except Exception:  # noqa: BLE001
-        logger.warning('[storage.diy] mark_diy_plan_ordered 失败 plan_id=%s', plan_id, exc_info=True)
+        logger.warning('[storage.diy] _bump_plan_counter 失败 plan_id=%s column=%s', plan_id, column, exc_info=True)
+
+
+async def mark_diy_plan_ordered(plan_id: str) -> None:
+    """真实订单成交后调用（平台回调 / 恢复直连下单时）：order_count+1。
+
+    这是 proven 学习闭环的**真实成交写入侧**。diy_plans 按
+    (order_count + confirm_count) 降序进入 proven 域，被 query_knowledge('all') 召回，
+    让高成交方案在相似需求下优先出现。
+    """
+    _bump_plan_counter(plan_id, 'order_count')
+
+
+def record_plan_confirmed(plan_id: str) -> None:
+    """会话内用户确认 DIY 方案时调用（agent.py 活跃路径）：confirm_count+1。
+
+    这是 L2「成交即学」的**即时实时钩子**——用户一说「就这个 / 确认方案」，
+    智能体落库方案的同时把该方案计入 proven 信号，无需再手动跑 learn_from_history.py。
+    confirm_count 与 order_count（平台真实成交）分离计数，proven 排序取二者之和，
+    语义清晰：confirm_count=用户喜欢，order_count=真实购买。
+    """
+    _bump_plan_counter(plan_id, 'confirm_count')
 
 
 async def save_as_template(plan_id: str) -> None:
@@ -129,12 +148,18 @@ async def search_diy_plans(user_id: str, requirement: Any | None = None, limit: 
 
 
 def list_proven_plans(limit: int = 20) -> list[dict[str, Any]]:
+    # proven 排序：order_count（真实成交）+ confirm_count（会话内确认）之和越高越靠前；
+    # 二者分离计数但合并排序，让「用户喜欢」与「真实购买」共同驱动 proven 召回。
     with transaction() as c:
-        rows = c.execute('SELECT * FROM diy_plans ORDER BY order_count DESC, confirmed_at DESC LIMIT ?', (limit,)).fetchall()
+        rows = c.execute(
+            'SELECT *, (order_count + confirm_count) AS popularity FROM diy_plans '
+            'ORDER BY popularity DESC, confirmed_at DESC LIMIT ?',
+            (limit,),
+        ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         p = _row_to_plan(r)
-        out.append({'id': p['plan_id'], 'name': p['name'], 'style': p['style'], 'recipient': p['recipient'], 'occasion': p['occasion'], 'budget': p['budget_num'], 'flowers': [f['name'] for f in p['design']['main_flowers']], 'color_scheme': p['design']['color_scheme'], 'packaging': p['design']['packaging'], 'meaning': p['design']['meaning'], 'status': r['status'], 'order_count': r['order_count'], 'confirmed_at': r['confirmed_at']})
+        out.append({'id': p['plan_id'], 'name': p['name'], 'style': p['style'], 'recipient': p['recipient'], 'occasion': p['occasion'], 'budget': p['budget_num'], 'flowers': [f['name'] for f in p['design']['main_flowers']], 'color_scheme': p['design']['color_scheme'], 'packaging': p['design']['packaging'], 'meaning': p['design']['meaning'], 'status': r['status'], 'order_count': r['order_count'], 'confirm_count': r['confirm_count'], 'popularity': r['popularity'], 'confirmed_at': r['confirmed_at']})
     return out
 
 
@@ -206,7 +231,39 @@ def import_proven_plan(rec: dict[str, Any]) -> str:
                 json.dumps(rec.get('color_scheme') or d.get('color_scheme') or [], ensure_ascii=False),
                 json.dumps([{'bucket': '主花', 'name': f['name'], 'ratio': f.get('ratio')} for f in flower_input if f['name']], ensure_ascii=False),
                 str(rec.get('packaging') or ''), str(rec.get('meaning') or ''),
-                'confirmed', oc, 'HISTORY', now, now,
+                'confirmed', oc,                 'HISTORY', now, now,
             ),
         )
     return plan_id
+
+
+def ingest_order_signal(payload: dict[str, Any]) -> dict[str, Any]:
+    """平台真实订单回调的**入库核心**（供 /api/learning/order 调用，便于单测）。
+
+    这是 L2「成交即学」的**真实成交钩子**：平台每产生一笔真实订单，回调本函数，
+    把该方案计入 proven 域，无需人工跑脚本。安全边界（红线）：纯 curated 写入，
+    不调 LLM、不改代码/工具/提示词（L4 自改代码为禁止项）。
+
+    - 带 plan_id（DIY / 已知方案）：直接 order_count+1（与 mark_diy_plan_ordered 等价）。
+    - 仅带平台方案特征（occasion/style/flowers 等）：按核心字段哈希生成 proven 条目并
+      success_count 取 1（或传入的 count），幂等复用 import_proven_plan。
+
+    Args:
+        payload: 订单信号，至少含 plan_id 或 (occasion|style|flowers) 之一。
+    Returns:
+        {"status": "ok", "action": str, "plan_id": str}
+    Raises:
+        ValueError: 非法 payload。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError('payload must be a dict')
+    plan_id = str(payload.get('plan_id') or '').strip()
+    if plan_id:
+        _bump_plan_counter(plan_id, 'order_count')
+        return {'status': 'ok', 'action': 'order_bumped', 'plan_id': plan_id}
+    if not (payload.get('occasion') or payload.get('style') or payload.get('flowers')):
+        raise ValueError('订单信号需含 plan_id 或 occasion/style/flowers 至少其一')
+    rec = dict(payload)
+    rec['success_count'] = int(payload.get('count') or payload.get('success_count') or 1)
+    pid = import_proven_plan(rec)
+    return {'status': 'ok', 'action': 'proven_imported', 'plan_id': pid}

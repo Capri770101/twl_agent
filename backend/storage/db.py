@@ -27,6 +27,8 @@ _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS user_preferences (user_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, key))""",
     """CREATE TABLE IF NOT EXISTS operations_config (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS diy_plans (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, fingerprint TEXT NOT NULL, name TEXT NOT NULL, requirement TEXT, recipient TEXT, occasion TEXT, style TEXT, budget DOUBLE PRECISION, color_scheme TEXT, flowers TEXT, packaging TEXT, meaning TEXT, diy_steps TEXT, care_tips TEXT, card_message TEXT, card_image_url TEXT, budget_breakdown TEXT, effect_image_url TEXT, difficulty TEXT, est_time INTEGER, shelf_life TEXT, suitable_for TEXT, caution TEXT, mood_tags TEXT, status TEXT NOT NULL DEFAULT 'confirmed', order_count INTEGER NOT NULL DEFAULT 0, source_user_id TEXT, created_at TIMESTAMPTZ NOT NULL, confirmed_at TIMESTAMPTZ NOT NULL)""",
+    # ── L2 成交即学（2026-09-14）：会话内确认计数，与 order_count 分离，proven 排序取二者之和 ──
+    """ALTER TABLE diy_plans ADD COLUMN IF NOT EXISTS confirm_count INTEGER NOT NULL DEFAULT 0""",
     """CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT, ref_type TEXT, ref_id TEXT, push_channel TEXT NOT NULL DEFAULT 'inbox', is_read INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS image_tasks (task_id TEXT PRIMARY KEY, user_id TEXT, status TEXT NOT NULL, prompt TEXT NOT NULL, result_url TEXT, error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
     """ALTER TABLE image_tasks ADD COLUMN IF NOT EXISTS user_id TEXT""",
