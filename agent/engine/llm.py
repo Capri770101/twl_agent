@@ -111,9 +111,11 @@ def _backoff(attempt: int) -> None:
     delay = min(settings.llm_retry_base_delay * 2 ** attempt, settings.llm_retry_max_delay)
     time.sleep(delay * (0.5 + random.random()))
 
-def _raw_call(provider: dict[str, str], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, stream: bool, response_format: dict[str, Any] | None) -> Any:
+def _raw_call(provider: dict[str, str], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, stream: bool, response_format: dict[str, Any] | None, timeout: float | None = None) -> Any:
     from openai import OpenAI
-    client = OpenAI(base_url=provider['base_url'], api_key=provider['api_key'], timeout=settings.llm_timeout, max_retries=0)
+    # timeout 为该次调用的上限（默认 settings.llm_timeout）；agent 会按本轮剩余预算传入更小的值，
+    # 避免「慢 LLM × 多轮 × 重试」把单个请求拖到远超用户可接受的时间。
+    client = OpenAI(base_url=provider['base_url'], api_key=provider['api_key'], timeout=timeout or settings.llm_timeout, max_retries=0)
     kwargs: dict[str, Any] = {'model': provider['model'], 'messages': messages, 'temperature': settings.llm_temperature, 'max_tokens': settings.llm_max_tokens, 'stream': stream}
     if tools:
         kwargs['tools'] = tools
@@ -142,7 +144,7 @@ def _record_cost(user_id: str | None, resp: Any) -> None:
     except Exception:
         pass
 
-def _try_providers(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, stream: bool, response_format: dict[str, Any] | None, user_id: str | None) -> Any:
+def _try_providers(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, stream: bool, response_format: dict[str, Any] | None, user_id: str | None, timeout: float | None = None) -> Any:
     last_exc: Exception | None = None
     for provider in _providers():
         cb = _cb(provider['name'])
@@ -151,7 +153,7 @@ def _try_providers(messages: list[dict[str, Any]], tools: list[dict[str, Any]] |
             continue
         for attempt in range(max(1, settings.llm_retry_max_attempts)):
             try:
-                resp = _raw_call(provider, messages, tools, stream, response_format)
+                resp = _raw_call(provider, messages, tools, stream, response_format, timeout)
                 cb.on_success()
                 if not stream:
                     _record_cost(user_id, resp)
@@ -175,17 +177,21 @@ def _try_providers(messages: list[dict[str, Any]], tools: list[dict[str, Any]] |
         pass
     raise LLMUnavailableError(f'所有 LLM provider 均不可用: {last_exc}')
 
-def call_llm(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, stream: bool=False, response_format: dict[str, Any] | None=None, user_id: str | None=None) -> Any:
-    """统一的 LLM 调用入口（live-only，多 provider + 重试 + 熔断 + 预算）。"""
+def call_llm(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, stream: bool=False, response_format: dict[str, Any] | None=None, user_id: str | None=None, timeout: float | None=None) -> Any:
+    """统一的 LLM 调用入口（live-only，多 provider + 重试 + 熔断 + 预算）。
+
+    timeout: 本次调用的超时上限（秒）；None 用 settings.llm_timeout。
+              agent 主循环会传「本轮剩余时间预算」，避免慢 LLM 拖长整轮。
+    """
     if not _llm_configured():
         raise RuntimeError('未配置 LLM_API_KEY 或 HY_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 HY_API_KEY/llm_providers）后启动。')
     if settings.llm_cost_enabled:
         allowed, reason = budget.check(user_id)
         if not allowed:
             raise LLMBudgetExceeded(f'LLM token 预算超限（{reason}），已降级')
-    return _try_providers(messages, tools, stream, response_format, user_id)
+    return _try_providers(messages, tools, stream, response_format, user_id, timeout)
 
-def call_llm_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, user_id: str | None=None) -> Any:
+def call_llm_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, user_id: str | None=None, timeout: float | None=None) -> Any:
     """流式 LLM 调用，返回 OpenAI Stream 对象（调用方自行迭代 chunk）。"""
     if not _llm_configured():
         raise RuntimeError('未配置 LLM_API_KEY 或 HY_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 HY_API_KEY/llm_providers）后启动。')
@@ -193,4 +199,4 @@ def call_llm_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] 
         allowed, reason = budget.check(user_id)
         if not allowed:
             raise LLMBudgetExceeded(f'LLM token 预算超限（{reason}），已降级')
-    return _try_providers(messages, tools, True, None, user_id)
+    return _try_providers(messages, tools, True, None, user_id, timeout)

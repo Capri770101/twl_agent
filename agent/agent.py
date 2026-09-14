@@ -36,6 +36,13 @@ from backend.storage import memory as mem_store
 _CHITCHAT_WORDS = ('你好', '您好', '在吗', '在么', '嗨', '哈喽', '谢谢', '感谢', '再见', '拜拜', '哈哈', '辛苦了', '赞', '呵呵')
 _BUY_INTENT = ('买', '送', '下单', '购买', '付款', '支付', '选一束', '挑一束', '想要', '需要', '来一束', '订一束')
 
+# 单轮时间预算（P0 防「线程裸跑」）：
+# 调用方（/chat、/chat/stream）在 REQUEST_TIMEOUT 处等待，但 asyncio 超时**只能取消 await**，
+# 杀不掉 run_in_executor 的线程。故 run() 自己也要感知 deadline，预算耗尽时主动收口，
+# 而不是让线程「慢 LLM × 多轮 × 重试」一路裸跑到十几分钟（并继续写状态 / 烧 token）。
+_DEADLINE_MARGIN = 5.0   # 给后处理 / 落库留的余量（秒）
+_MIN_ITER_BUDGET = 8.0   # 剩余预算低于此值就不再开新一轮 LLM 调用
+
 # 分隔线行（--- / *** / —— / ___ / === 及其带空格变体）：用户反馈这类分段排版难看，
 # 要求改为数字编号分点。prompt 已加规则，这里再兜一道 deterministic 清理。
 _SEPARATOR_LINE = re.compile(r'^[\s]*([-—*_=＝]{1}[\s]*){2,}$')
@@ -361,9 +368,22 @@ class ReActAgent:
                 loop.call_soon_threadsafe(queue.put_nowait, evt)
 
             async def _run():
-                result = await loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)))
-                await queue.put({'event': 'done', 'session_id': result.session_id})
-                await queue.put(None)
+                # 关键（P0）：无论成功 / 异常 / 超时，都必须补一个 None 结束哨兵，
+                # 否则消费端 `await queue.get()` 会永久阻塞 —— SSE 挂死、用户转圈不停。
+                try:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title))),
+                        timeout=settings.request_timeout,
+                    )
+                    await queue.put({'event': 'done', 'session_id': result.session_id})
+                except asyncio.TimeoutError:
+                    logger.warning('[agent] 流式对话超时（%.0fs）', settings.request_timeout)
+                    await queue.put({'event': 'error', 'message': '处理超时，请简化问题后重试'})
+                except Exception:
+                    logger.exception('[agent] 流式对话执行失败')
+                    await queue.put({'event': 'error', 'message': '处理过程中出现错误，请稍后重试'})
+                finally:
+                    await queue.put(None)
             task = loop.create_task(_run())
             try:
                 while True:
@@ -383,6 +403,8 @@ class ReActAgent:
 
     async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
         t0 = time.perf_counter()
+        # 本轮硬性时间预算（P0 防线程裸跑）：比调用方 wait_for(REQUEST_TIMEOUT) 略早收口，留收尾余量。
+        _deadline = t0 + max(10.0, settings.request_timeout - _DEADLINE_MARGIN)
         # 占位 shop_id（default/none/…）一律视为未锁店：前端从首页等非店铺入口进入时会
         # 传 shop_id='default'，若不规范化会被当成真实店铺锁死会话 → 查什么都查不到。
         shop_id = normalize_shop_id(shop_id)
@@ -423,9 +445,15 @@ class ReActAgent:
         final_reply = ''
         new_msgs: list[dict[str, Any]] = [{'role': 'user', 'content': message}]
         for turn in range(1, settings.max_iterations + 1):
+            _remaining = _deadline - time.perf_counter()
+            if _remaining <= _MIN_ITER_BUDGET:
+                logger.warning('[agent] 时间预算耗尽（剩余 %.1fs），第 %d 轮主动收尾', _remaining, turn)
+                final_reply = final_reply or '这个问题有点绕，我先给你一个初步建议；要更细致的可以咱们分步慢慢聊～'
+                break
             logger.info('[agent] ReAct 第 %d/%d 轮 阶段=%s', turn, settings.max_iterations, stage.value)
             try:
-                resp = call_llm(messages, tools=to_openai_tools())
+                # 按本轮剩余预算收紧单次 LLM 超时，避免「8 轮 × 3 重试 × 120s」把整轮拖长
+                resp = call_llm(messages, tools=to_openai_tools(), timeout=min(settings.llm_timeout, _remaining))
             except Exception as exc:
                 # 安全：原始异常只落服务端日志（含完整 traceback），绝不回显给用户，避免泄露
                 # endpoint / 模型 ID / 密钥前缀 / 内部堆栈等敏感信息（K-1 修复）。
