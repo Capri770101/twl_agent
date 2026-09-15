@@ -185,6 +185,15 @@ class Settings(BaseSettings):
     IMAGE_TASK_MAX_WORKERS: int = 2
     IMAGE_TASK_QUEUE_MAX: int = 50
 
+    # ── 官网演示页接入（www.tiaowulan.com/agent.html 的体验窗）──
+    # 端点 POST /api/agent/query：单轮、无状态、纯规则引擎（不调 LLM，零成本且稳定）。
+    # 关闭时对外表现为 404（未准备好时不被扫到）。限流复用 RATE_LIMIT_*。
+    AGENT_PAGE_ENABLED: bool = True
+    AGENT_PAGE_TIMEOUT: float = 5.0    # 适配层计算总超时（秒）；超时后页面会自动降级回自己的 demo
+    AGENT_PAGE_MAX_INPUT: int = 200    # 输入截断长度，防超长文本刷量
+    # 对外承诺的最低加价率：售价 ≥ 花材成本 × 该值（页面宣传「保底毛利」，不要低于 1.35）
+    AGENT_PAGE_MIN_MARGIN: float = 1.35
+
     # ── CORS ──
     ALLOWED_ORIGINS: str = "*"
 
