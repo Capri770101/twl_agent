@@ -240,6 +240,61 @@ def _read_raw_prompt(name: str) -> str:
     return _RAW_CACHE[name]
 
 
+def _latest_plan_summary(history: list[dict[str, Any]], max_plans: int = 3) -> str:
+    """取最近一次方案卡的可读摘要（供 system prompt 注入，作为权威方案数据）。
+
+    背景（线上实测 2026-09-15）：历史消息里的 ``data``（方案结构）并不会变成模型可读的
+    内容发过去，模型只能靠上一条回复的文字「回忆」方案，实测出现过把「粉康乃馨×6 +
+    粉洋桔梗×5」说成「粉佳人玫瑰配粉绣球」的失真。把方案要点显式注入 prompt 后，
+    模型回答方案细节与判断「要不要改方案」都有据可依。
+
+    Args:
+        history: ``load_history`` 返回的消息列表（assistant 消息可能带 ``ui``/``data``）。
+        max_plans: 最多摘要几个方案（一轮可能推多款）。
+
+    Returns:
+        形如 ``「名字」（参考价 200 元；主花：康乃馨×6、洋桔梗×5；配色：粉色系）``；
+        历史里没有方案卡时返回空字符串。
+    """
+    for msg in reversed(history or []):
+        if not isinstance(msg, dict) or msg.get('role') != 'assistant':
+            continue
+        data = msg.get('data')
+        if not isinstance(data, dict):
+            continue
+        plans = data.get('plans')
+        if not isinstance(plans, list) or not plans:
+            continue
+        items: list[str] = []
+        for plan in plans[:max_plans]:
+            if not isinstance(plan, dict):
+                continue
+            name = str(plan.get('name') or '').strip()
+            if not name:
+                continue
+            detail: list[str] = []
+            price = plan.get('budget_num') or plan.get('price')
+            if isinstance(price, (int, float)) and price > 0:
+                detail.append(f'参考价 {price:g} 元')
+            design = plan.get('design') if isinstance(plan.get('design'), dict) else {}
+            flowers = design.get('main_flowers') or []
+            stems = [
+                f"{f.get('name')}×{f.get('qty')}"
+                for f in flowers
+                if isinstance(f, dict) and f.get('name')
+            ]
+            if stems:
+                detail.append('主花：' + '、'.join(stems))
+            colors = str(design.get('color_scheme') or '').strip()
+            if colors:
+                detail.append(f'配色：{colors}')
+            items.append(f'「{name}」' + (f'（{"；".join(detail)}）' if detail else ''))
+        if items:
+            logger.info('[agent] 注入当前方案上下文（%d 个）', len(items))
+            return '；'.join(items)
+    return ''
+
+
 def _load_prompt(name: str) -> str:
     """读取**无变量**模板，按「每行一片段」拼好（行间空行）并缓存。"""
     key = f'{name}::plain'
@@ -702,9 +757,14 @@ class ReActAgent:
             await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
         long_term = await mem_store.get_long_term(user_id)
         history = await mem_store.load_history(sid, settings.history_limit)
-        system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)
+        # 历史里的方案卡数据（data）不会作为可读内容发给模型 → 抽成摘要注入 prompt，
+        # 让模型回答方案细节时有权威依据（避免凭记忆复述造成花材/配色失真）。
+        current_plan = _latest_plan_summary(history)
+        system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan)
+        # 只把 role/content 发给 LLM：ui/data 是本系统内部的卡片结构，既不是模型该读的
+        # 内容，也不该出现在请求体里（此前原样透传，属无意义载荷）。
         messages: list[dict[str, Any]] = [{'role': 'system', 'content': system}]
-        messages += history
+        messages += [{'role': str(m.get('role') or 'user'), 'content': str(m.get('content') or '')} for m in history]
         messages.append({'role': 'user', 'content': message})
         tool_log: list[ToolCallRecord] = []
         respond_args: dict[str, Any] | None = None
@@ -1077,7 +1137,7 @@ class ReActAgent:
 
         return new_stage, ui, data, final_reply, llm_intent
 
-    def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> str:
+    def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, current_plan: str='') -> str:
         """构造 system prompt：身份 + 能力 + 工具，鼓励自主推理。
 
         entry 决定会话模式：product/shop（已选定商品或店铺）→ 店铺锁定；home → 全平台。
@@ -1118,6 +1178,11 @@ class ReActAgent:
                 ),
                 shop_clause=f'在本店（{shop_id}）范围内' if shop_id else '',
             ))
+
+        # 会话已产出方案时，把方案要点作为**权威数据**注入（放在最后，靠近用户消息，
+        # 降低模型凭记忆复述方案导致的花材/配色失真；见 _latest_plan_summary 背景说明）。
+        if current_plan:
+            parts.append(_render_prompt('current_plan', plan_summary=current_plan))
 
         # 说明：不再注入「## 工具说明书」段 —— 工具定义已由 function-calling 的 tools 参数
         # 完整提供（含每个参数的 JSON Schema），prompt 内再写一份纯属重复，且信息更少。
