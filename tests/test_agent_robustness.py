@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.agent import ReActAgent, _ensure_card_summary
+from agent.agent import ReActAgent, _ensure_card_summary, _ensure_non_empty_reply, _strip_internal_leak
 from agent.engine.ui_protocol import UIType
 from backend.storage.tasks import _age_seconds
 
@@ -91,6 +91,36 @@ def test_card_summary_fills_plan_from_data():
 
 def test_card_summary_ignores_text_ui():
     assert _ensure_card_summary("", UIType.TEXT, {}) == ""
+
+
+# ── _ensure_non_empty_reply：清理链跑完仍为空 → 必须给出兜底（线上空回复缺陷）──
+
+def test_non_empty_fills_blank_text():
+    """纯文本被 _strip_internal_leak 清空后，必须补一句可读兜底（不能返回空）。"""
+    out = _ensure_non_empty_reply("", UIType.TEXT)
+    assert out.strip()
+    assert "source_id" not in out
+
+
+def test_non_empty_fills_whitespace_only():
+    assert _ensure_non_empty_reply("   \n  ", UIType.TEXT).strip()
+
+
+def test_non_empty_fills_blank_card():
+    out = _ensure_non_empty_reply("", UIType.PLAN_CARD)
+    assert out.strip() and "卡片" in out
+
+
+def test_non_empty_keeps_existing_reply():
+    assert _ensure_non_empty_reply("给你配了一束粉色系花束", UIType.TEXT) == "给你配了一束粉色系花束"
+
+
+def test_non_empty_leak_then_fallback_chain():
+    """模拟真实链路：正文只有一行原始 JSON → 脱敏后为空 → 兜底补上。"""
+    raw = '{"source_id": "wxmini", "shop_id": "S1"}'
+    stripped = _strip_internal_leak(raw)
+    assert stripped.strip() == ""
+    assert _ensure_non_empty_reply(stripped, UIType.TEXT).strip()
 
 
 # ── _age_seconds：时间戳工具（判断 processing 是否超时）──

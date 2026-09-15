@@ -182,6 +182,38 @@ def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
     return f'{base}\n\n{summary}' if base else summary
 
 
+# 纯文本回复被清空时的确定性兜底。
+#
+# 背景（线上实测 2026-09-15）：模型某轮把原始数据行当成正文输出 → `_strip_internal_leak`
+# 把整段删空；而它在清理链里**排在 `_ensure_card_summary` 之前**，且后者只兜卡片类 UI
+# → 纯文本场景下整条回复变成空串，用户只看到一个空气泡（表现为「答非所问 / 没回答」）。
+# 这里补最后一道闸：清理链跑完仍为空时，一定给出一句可读的兜底，不让空回复出到前端。
+_EMPTY_TEXT_FALLBACK = '抱歉，刚才那句我组织得不太清楚。你再说一下想要的风格或用途，我马上给你配一束～'
+_EMPTY_CARD_FALLBACK = '我已经为你整理好相关结果啦，请查看下方卡片～'
+
+_CARD_UIS = (
+    UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD,
+    UIType.PAY_JUMP, UIType.IMAGE_TASK, UIType.GREETING_CARD,
+)
+
+
+def _ensure_non_empty_reply(reply: str, ui: UIType) -> str:
+    """清理链跑完后仍为空 → 给确定性兜底，杜绝空回复。
+
+    Args:
+        reply: 经 ``_strip_separator_lines`` / ``_strip_internal_leak`` /
+            ``_ensure_card_summary`` 处理后的回复。
+        ui: 本轮 UI 类型。
+
+    Returns:
+        非空回复；原本已有内容时原样返回。
+    """
+    if (reply or '').strip():
+        return reply
+    logger.warning('[agent] 清理链后回复为空（ui=%s），已使用确定性兜底', ui.value)
+    return _EMPTY_CARD_FALLBACK if ui in _CARD_UIS else _EMPTY_TEXT_FALLBACK
+
+
 # ── system prompt 模板 ──────────────────────────────────────────────────────
 # 文本统一放 agent/prompts/*.md（外置原因：prompt 是本项目改动最频繁的资产，
 # 内联在 _build_system 里时改一句话要动 Python、无法单独 diff 或做 A/B）。
@@ -741,6 +773,9 @@ class ReActAgent:
         # 要点兜底：带卡片但回复过短时，追加一句基于卡片数据的可读要点
         # （模型有卡片时倾向只说「看卡片」，prompt 约束不稳定，此处确定性补齐）。
         final_reply = _ensure_card_summary(final_reply, ui, data)
+        # 非空兜底：脱敏可能把正文整段清空（模型把原始数据行当正文输出时），
+        # 纯文本场景下此前的兜底覆盖不到 → 用户看到空气泡。此处必须放在清理链**最后**。
+        final_reply = _ensure_non_empty_reply(final_reply, ui)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
