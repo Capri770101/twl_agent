@@ -418,9 +418,20 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
 
     row_id 非空时按主键精确查单行——用于「从商品详情页进入」时取用户正在看的
     那件商品；映射没有 id 列（canonical 名 id）时忽略该条件。
+
+    两种只读来源，**DB 优先**：
+    1. ``PLATFORM_DB_<SOURCE_ID>_URL`` + active mapping → 直连只读库（原有路径，行为不变）；
+    2. 未配库但配了 ``PLATFORM_API_<SOURCE_ID>_URL`` → 走平台 REST 只读通路
+       （见 ``backend/data_gateway/http_source.py``，免 mapping）。
     """
     if not _IDENTIFIER.match(entity or ''):
         raise ValueError('invalid entity')
+    # HTTP 数据源：绕开「必须有 active mapping」的硬要求（平台已提供等价的 REST 只读能力）
+    from backend.data_gateway import http_source
+    if http_source.is_configured(source_id):
+        return http_source.fetch_entity(
+            source_id, entity, keyword=keyword, limit=limit, shop_id=shop_id, row_id=row_id,
+        )
     from backend.data_gateway.mapping_store import get_active_mapping
     active = get_active_mapping(source_id)
     if not active:

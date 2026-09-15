@@ -367,17 +367,95 @@ _NEGATIVE = (
 def _platform_source_ids() -> list[str]:
     """扫描进程环境变量，返回已配置的平台数据源 source_id（小写去重排序）。
 
-    与 backend/data_gateway/external.py 一致：连接串从
-    ``PLATFORM_DB_<SOURCE_ID>_URL`` 读取（部署方注入容器环境变量）。
-    未配置任何平台库时返回空列表，供 system prompt 如实告知 LLM。
+    两类来源（与 backend/data_gateway 保持一致，部署方注入容器环境变量）：
+    - ``PLATFORM_DB_<SOURCE_ID>_URL``：直连只读库（需 active mapping）；
+    - ``PLATFORM_API_<SOURCE_ID>_URL``：平台 REST 只读源（免 mapping，见 http_source.py）。
+
+    未配置任何平台数据源时返回空列表，供 system prompt 如实告知 LLM。
+    注：``PLATFORM_API_KEYS``（接入方鉴权）不以 ``_URL`` 结尾，天然不会被误判成数据源。
     """
     ids: set[str] = set()
     for key in os.environ:
-        if key.startswith('PLATFORM_DB_') and key.endswith('_URL'):
-            mid = key[len('PLATFORM_DB_'):-len('_URL')]
-            if mid:
-                ids.add(mid.lower())
+        if not key.endswith('_URL'):
+            continue
+        for prefix in ('PLATFORM_DB_', 'PLATFORM_API_'):
+            if key.startswith(prefix):
+                mid = key[len(prefix):-len('_URL')]
+                if mid:
+                    ids.add(mid.lower())
+                break
     return sorted(ids)
+
+
+# 用户此轮是否在问「平台事实类」信息（店铺 / 商品）——命中则在**本轮** system prompt 追加
+# 「必须先查证再回答」的指令。
+# 背景（线上实测 2026-09-15）：问「有哪些店铺可以送花？」时模型**一轮零工具调用**直接作答，
+# 编造出 3 家平台上根本不存在的店铺名，还配上了评分 / 营业时间 / 配送费 / 电话（全假）。
+# 「平台信息只能来自查询结果」是硬约束，base.md 的场景描述约束力不够，故按轮注入强调。
+_PLATFORM_SHOP_WORDS = (
+    '店铺', '花店', '店家', '哪家', '哪几家', '几家店', '营业', '开门', '打烊', '几点关',
+    '配送费', '起送', '送到', '配送', '包邮', '地址', '电话', '评分',
+)
+_PLATFORM_PLAN_WORDS = (
+    '推荐', '有什么花', '在售', '多少钱', '价格', '库存', '有货', '哪款', '哪束',
+    '方案', '花束', '商品', '款式', '有没有卖',
+)
+
+
+def _platform_fact_hint(message: str) -> str:
+    """本轮是否在问平台事实类信息；返回需要的实体 ``'shop'`` / ``'plan'`` / ``''``。
+
+    只做**方向性**判断（命中即注入「先查证」指令），不决定是否作答：
+    误判的代价只是多一条约束，漏判的代价是编造店铺/价格，所以宁可偏宽。
+
+    Args:
+        message: 用户本轮原话。
+
+    Returns:
+        ``'shop'``（问店铺类）｜``'plan'``（问商品/价格类）｜``''``（未命中）。
+    """
+    text = message or ''
+    if not text:
+        return ''
+    if any(w in text for w in _PLATFORM_SHOP_WORDS):
+        return 'shop'
+    if any(w in text for w in _PLATFORM_PLAN_WORDS):
+        return 'plan'
+    return ''
+
+
+def _platform_queried(tool_log: list[Any], entity: str) -> bool:
+    """本轮是否成功查过该实体的平台数据（用于「未查证不许作答」的判定）。
+
+    Args:
+        tool_log: 本轮工具调用记录（ToolCallRecord）。
+        entity: ``plan`` / ``shop``。
+
+    Returns:
+        存在成功且 entity 匹配的 platform_db_query_entity 调用时为 True。
+    """
+    for tc in tool_log or []:
+        if getattr(tc, 'name', '') != 'platform_db_query_entity':
+            continue
+        if getattr(tc, 'status', '') != 'ok':
+            continue
+        if str((getattr(tc, 'arguments', None) or {}).get('entity') or '') == entity:
+            return True
+    return False
+
+
+def _platform_nudge_text(entity: str) -> str:
+    """「未查证即作答」时注入的一次性纠正指令（只进本轮上下文，不落库）。"""
+    sources = '、'.join(_platform_source_ids()) or '已配置数据源'
+    what = ('店铺信息（店名 / 营业时间 / 配送费 / 起送价 / 地址 / 电话 / 评分）' if entity == 'shop'
+            else '在售商品信息（商品名 / 价格 / 花材构成 / 库存）')
+    return (
+        '[系统校验未通过] 你刚才**没有查询平台数据**就直接作答了，而本轮用户问的是平台' + what + '。\n'
+        f'请先调用 platform_db_query_entity(source_id="{sources}", entity="{entity}")'
+        '（可用 keyword 缩小范围），拿到真实返回后再用 respond_to_user 回答。\n'
+        '⚠️ 严禁凭印象写出具体店名 / 商品名 / 价格 / 营业时间 / 配送费等事实——'
+        '编造这类信息是本系统最严重的错误（用户会照着去下单）。确实查不到时，就如实说明「平台上暂未查到」。'
+    )
 
 
 _IMAGE_DECLINE_WORDS = (
@@ -760,7 +838,11 @@ class ReActAgent:
         # 历史里的方案卡数据（data）不会作为可读内容发给模型 → 抽成摘要注入 prompt，
         # 让模型回答方案细节时有权威依据（避免凭记忆复述造成花材/配色失真）。
         current_plan = _latest_plan_summary(history)
-        system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan)
+        # 本轮问的是平台事实类信息（店铺/商品）→ 注入「必须先查证」指令，防编造（见 _platform_fact_hint）
+        platform_facts = _platform_fact_hint(message)
+        platform_sources = _platform_source_ids()
+        _platform_nudge_left = 1  # 「未查证即作答」只纠正一次，避免与模型拉锯
+        system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
         # 只把 role/content 发给 LLM：ui/data 是本系统内部的卡片结构，既不是模型该读的
         # 内容，也不该出现在请求体里（此前原样透传，属无意义载荷）。
         messages: list[dict[str, Any]] = [{'role': 'system', 'content': system}]
@@ -809,6 +891,20 @@ class ReActAgent:
                     messages.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
                     new_msgs.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
                 if respond_args is not None:
+                    # 平台事实类提问却整轮没查过平台 → 不让模型凭想象作答。
+                    # 线上实测（2026-09-15）：问「有哪些店铺可以送花？」编造了 3 家不存在的店铺；
+                    # 修店铺分支后，问「推荐送妈妈的花束」又编造了 3 个不存在的商品名与价格。
+                    # 这里做**确定性拦截**：注入一次性纠正（只进本轮 LLM 上下文，不落库、不入历史），
+                    # 要求先查再答；只拦一次，避免与模型拉锯。
+                    if (_platform_nudge_left and platform_facts and platform_sources
+                            and not _platform_queried(tool_log, platform_facts)):
+                        _platform_nudge_left -= 1
+                        messages.append({'role': 'user', 'content': _platform_nudge_text(platform_facts)})
+                        respond_args = None
+                        logger.warning(
+                            '[agent] 平台事实类提问未查询平台（entity=%s），已注入纠正并要求重答', platform_facts,
+                        )
+                        continue
                     break
                 continue
             else:
@@ -1137,10 +1233,12 @@ class ReActAgent:
 
         return new_stage, ui, data, final_reply, llm_intent
 
-    def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, current_plan: str='') -> str:
+    def _build_system(self, stage: SessionStage, long_term: dict[str, str], shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, current_plan: str='', platform_facts: str='') -> str:
         """构造 system prompt：身份 + 能力 + 工具，鼓励自主推理。
 
         entry 决定会话模式：product/shop（已选定商品或店铺）→ 店铺锁定；home → 全平台。
+        platform_facts 非空（'shop'/'plan'）表示**本轮**在问平台事实类信息，追加
+        「必须先查证再回答」的按轮指令（防编造店铺名/价格，见 _platform_fact_hint）。
         """
         parts = [_render_prompt('base', current_time=_now_context())]
 
@@ -1149,6 +1247,14 @@ class ReActAgent:
             parts.append(_render_prompt('platform_sources', sources='、'.join(sources)))
         else:
             parts.append(_load_prompt('platform_none'))
+
+        if platform_facts and sources:
+            label = ('店铺（名称/营业时间/配送/地址/电话/评分等）' if platform_facts == 'shop'
+                     else '在售商品/方案（名称/价格/花材构成等）')
+            parts.append(_render_prompt(
+                'platform_facts_turn',
+                entity_label=label, entity=platform_facts, sources='、'.join(sources),
+            ))
 
         if stage == SessionStage.IMAGE_GEN:
             parts.append(_load_prompt('stage_image_gen'))

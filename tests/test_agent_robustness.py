@@ -9,7 +9,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agent.agent import ReActAgent, _ensure_card_summary, _ensure_non_empty_reply, _strip_internal_leak
+from agent.agent import (
+    ReActAgent,
+    _ensure_card_summary,
+    _ensure_non_empty_reply,
+    _platform_fact_hint,
+    _platform_nudge_text,
+    _platform_queried,
+    _strip_internal_leak,
+)
 from agent.engine.ui_protocol import UIType
 from backend.storage.tasks import _age_seconds
 
@@ -139,3 +147,64 @@ def test_age_seconds_old():
 
 def test_age_seconds_bad_input():
     assert _age_seconds("not-a-date") == 0.0
+
+
+# ── 平台事实类「按轮注入」指令：防「未查证即作答」编造店铺/价格 ──
+# 线上实测：问「有哪些店铺可以送花？」时模型一轮零工具调用，编造了 3 家不存在的店铺。
+
+def test_platform_fact_hint_shop():
+    for msg in ('有哪些店铺可以送花？', '这家店几点关门', '配送费多少', '现在开门吗', '起送价是多少'):
+        assert _platform_fact_hint(msg) == 'shop', msg
+
+
+def test_platform_fact_hint_plan():
+    for msg in ('推荐一款送妈妈的花', '这个多少钱', '有货吗', '有哪些方案'):
+        assert _platform_fact_hint(msg) == 'plan', msg
+
+
+def test_platform_fact_hint_none():
+    assert _platform_fact_hint('你好') == ''
+    assert _platform_fact_hint('') == ''
+    assert _platform_fact_hint(None) == ''  # type: ignore[arg-type]
+
+
+def test_build_system_injects_platform_facts(monkeypatch):
+    monkeypatch.setenv('PLATFORM_API_DEMO_URL', 'https://example.com')
+    out = ReActAgent._build_system(None, None, {}, platform_facts='shop')  # type: ignore[arg-type]
+    assert '本轮用户问的是平台信息' in out
+    assert 'entity="shop"' in out
+    assert 'demo' in out  # 注入真实 source_id，避免模型用错来源
+
+
+def test_build_system_omits_platform_facts_when_not_needed(monkeypatch):
+    monkeypatch.setenv('PLATFORM_API_DEMO_URL', 'https://example.com')
+    out = ReActAgent._build_system(None, None, {}, platform_facts='')  # type: ignore[arg-type]
+    assert '本轮用户问的是平台信息' not in out
+
+
+def test_build_system_skips_platform_facts_without_source(monkeypatch):
+    """没配平台数据源时不该注入（那段指令会提到 source_id）。"""
+    monkeypatch.delenv('PLATFORM_API_DEMO_URL', raising=False)
+    monkeypatch.delenv('PLATFORM_DB_DEMO_URL', raising=False)
+    out = ReActAgent._build_system(None, None, {}, platform_facts='shop')  # type: ignore[arg-type]
+    assert '本轮用户问的是平台信息' not in out
+
+
+def test_platform_queried_requires_matching_success():
+    from agent.engine.ui_protocol import ToolCallRecord
+
+    def rec(entity, status='ok', name='platform_db_query_entity'):
+        return ToolCallRecord(name=name, arguments={'entity': entity}, result='{}', status=status)
+
+    log = [rec('shop'), rec('plan', name='retrieve_knowledge')]
+    assert _platform_queried(log, 'shop') is True
+    assert _platform_queried(log, 'plan') is False
+    assert _platform_queried([], 'shop') is False
+    assert _platform_queried([rec('shop', status='error')], 'shop') is False
+
+
+def test_platform_nudge_text_mentions_source_and_entity(monkeypatch):
+    monkeypatch.setenv('PLATFORM_API_DEMO_URL', 'https://example.com')
+    text = _platform_nudge_text('plan')
+    assert 'entity="plan"' in text and 'demo' in text
+    assert '严禁' in text
