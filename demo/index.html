@@ -430,8 +430,23 @@ textarea::placeholder{color:var(--ink-3)}
    与后端的唯一约定（不要改路径）：
      BASE 前缀 /demo-api/ → 由 nginx 反代到**演示专用**容器 flora-agent-demo
      演示容器用独立数据库（flora_demo），与生产库完全隔离。
+
+   基址自适应（根治"本地双击打开就连不上服务器"）：
+     1) URL 带 ?api=https://host/prefix  → 用该地址（显式覆盖，优先级最高）
+     2) 通过 nginx 的 /demo/ 路径打开     → 同源相对前缀 /demo-api（推荐，零跨域）
+     3) 其他（file:// 双击打开、本地静态服务器、拷到别的站点）
+                                         → 直连线上演示接口 API_FALLBACK
+   ⚠️ 线上接口只服务演示沙箱，不读生产库。
    ═══════════════════════════════════════════════════════════════════ */
-const BASE = "/demo-api";
+const API_FALLBACK = "https://api.tiaowulan.com/demo-api";
+const BASE = (() => {
+  const q = new URLSearchParams(location.search).get("api");
+  if (q) return q.replace(/\/+$/, "");
+  if (/^https?:$/.test(location.protocol) && /^\/demo(\/|$)/.test(location.pathname)) {
+    return "/demo-api";
+  }
+  return API_FALLBACK;
+})();
 const THINK_STAGES = [
   "正在理解你的需求…",
   "正在检索花材与寓意…",
@@ -494,7 +509,8 @@ async function ensureSession() {
       return true;
     } catch (e) {
       setStatus("err", "连接失败");
-      note("无法连接演示服务（" + esc(e.message) + "）。请稍后刷新页面重试。");
+      note("无法连接演示服务（" + esc(e.message) + "）。<br>接口地址：<code>" + esc(BASE) + "</code>"
+         + "<br>请稍后刷新重试，或改用线上入口 <b>https://api.tiaowulan.com/demo/</b>");
       return false;
     } finally {
       loginPromise = null;
