@@ -49,7 +49,7 @@ def test_extract_stem_count_covers_chinese_numerals() -> None:
     assert _extract_stem_count('9999朵') == 999
 
 
-# ── 2. merge_requirement：只补空、值域白名单 ──
+# ── 2. merge_requirement：理解类字段 LLM 优先，精确字段规则优先 ──
 
 def test_merge_returns_baseline_when_llm_payload_invalid() -> None:
     req = extract_requirement('送给妈妈的花')
@@ -60,15 +60,34 @@ def test_merge_returns_baseline_when_llm_payload_invalid() -> None:
     assert empty is not req and empty.recipient == req.recipient and req.relationship == '亲子'
 
 
-def test_merge_never_overrides_rule_values() -> None:
+def test_merge_llm_overrides_soft_fields() -> None:
+    """宽松字段（收花人 / 场合 / 预算）以**模型读到的**为准。
+
+    2026-09-16 改动（Capri：先读懂用户的话，而不是识别关键词）：
+    原实现是 fill-the-gap（规则抽到的值不得被改写），会让正则的误判锁死、
+    模型即使读懂了也纠正不了。现在宽松字段 LLM 优先，正则只在模型没读到该字段时兜底。
+    """
     req = extract_requirement('送给妈妈的花，预算200')
     assert req.recipient == '母亲' and req.budget_num == 200
     merged = merge_requirement(req, {'recipient': '恋人', 'budget': 5000, 'occasion': '告白'})
-    # 规则已抽到的值不得被模型改写
-    assert merged.recipient == '母亲'
-    assert merged.budget_num == 200
-    # 规则没抽到的场合 → 可以由模型补
+    assert merged.recipient == '恋人'
+    assert merged.budget_num == 5000
     assert merged.occasion == '告白'
+
+
+def test_merge_strict_fields_keep_rule_priority() -> None:
+    """精确字段（单一花材 / 支数）仍以规则为准。
+
+    它们是**用户明确说出的**强约束（正则按花名表 / 中文数字精确匹配），
+    不该被模型的转述覆盖——否则「就要纯白百合」可能被改成别的花。
+    """
+    single = extract_requirement('就要纯白百合')
+    assert single.single_flower == '百合'
+    assert merge_requirement(single, {'single_flower': '红玫瑰'}).single_flower == '百合'
+
+    stems = extract_requirement('想要11朵玫瑰')
+    if stems.stem_count is not None:          # 正则抽到支数时
+        assert merge_requirement(stems, {'stem_count': 99}).stem_count == stems.stem_count
 
 
 def test_merge_fills_only_whitelisted_values() -> None:

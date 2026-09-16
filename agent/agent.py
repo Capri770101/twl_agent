@@ -679,11 +679,17 @@ def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, repl
     text = message or ''
     if any(w in text for w in _PLAN_QUESTION_WORDS):
         return False
+    # ① **模型已经在口述方案**（回复里有具体花材数量 / 方案+具体价格）→ 必须出卡。
+    #    这条刻意不依赖用户话里的关键词：用户可能说得很含蓄
+    #    （「她最近心情不太好，我想让她开心一下」——正则抽不出任何"花艺需求"字段），
+    #    但模型显然已经进入出方案的状态，此时不给卡就是让用户拿不到可核验的东西。
+    #    （2026-09-16 实测：正是这种句子被漏掉，模型口述了整套方案却没出卡。）
+    if _looks_like_plan_prose(reply):
+        return True
+    # ② 其余情况：用户这句话确实表达了花艺需求，且会话已有上下文 → 也拦。
     if not _expresses_flower_need(text):
         return False
-    if has_context:
-        return True
-    return _looks_like_plan_prose(reply)
+    return has_context
 
 
 def _card_nudge_text() -> str:

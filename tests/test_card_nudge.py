@@ -134,3 +134,18 @@ def test_nudge_silent_on_first_turn_for_real_clarification():
 def test_nudge_silent_on_first_turn_without_reply_text():
     """不传 reply 时行为与改动前一致（首轮不拦），保证既有调用点语义不变。"""
     assert not _needs_card_nudge('生日，粉色系，你决定就好', [], has_context=False)
+
+
+def test_nudge_fires_on_dictated_plan_without_any_user_keywords():
+    """⚠️ 关键回归（2026-09-16 实测）：「她最近心情不太好，我想让她开心一下」——
+    用户话里**没有任何**花艺需求关键词（正则抽不出收花人/场合/预算/颜色），
+    但模型已经口述了整套方案（含支数与价格）。此时必须拦下要卡。
+
+    护栏判定不能只认「用户话里的关键词」，否则最自然的那类表达恰好会被漏掉。
+    """
+    oral = '我按这个思路配了一束：主花 向日葵4支 + 非洲菊3支，预算约150元，含人工和装饰费。'
+    assert _needs_card_nudge('她最近心情不太好，我想让她开心一下', [],
+                             has_context=False, reply=oral)
+    # 对照：模型只是在追问时不该被拦
+    assert not _needs_card_nudge('她最近心情不太好', [], has_context=False,
+                                 reply='想让她开心的话，方便告诉我预算大概多少吗？')

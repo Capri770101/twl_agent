@@ -501,66 +501,81 @@ def _safe_int(value: Any) -> int | None:
 
 
 def merge_requirement(req: FlowerRequirement, llm_req: dict | None) -> FlowerRequirement:
-    """把 LLM 的结构化抽取**补**进规则抽取结果（fill-the-gap：只补空，绝不覆盖）。
+    """把 LLM 的结构化理解**合并进**规则抽取结果 —— **LLM 理解主导，规则兜底**。
 
-    为什么只补不覆盖：规则的确定性优势必须保住——正则一旦抽到「11 朵」，就不该被模型的
-    推测改写；模型的价值在于读懂口语（「手头不宽裕」「就要那种很仙的」）里正则漏掉的字段。
-    所有补入的值都过一遍**值域白名单**（复用规则表的值集 / 已知花名表），杜绝幻觉字段污染下游。
+    为什么改（2026-09-16，Capri 明确要求「先读懂用户的话，再决定调什么工具，
+    而不是识别关键词」）：原实现是 fill-the-gap（**只补空、绝不覆盖**），
+    于是**正则先抽到的值会锁死**，模型即使读懂了也改不动——例如正则把口语里
+    「就要那种很仙的」漏成默认风格、或把模糊预算判错，模型都无从纠正。
+    现在改成：**LLM 读到值就采用 LLM 的**，正则只在模型没读到该字段时兜底。
+
+    护栏一个没少：
+      ① prompt 要求「只把你**明确读到**的需求结构化，没说的填 null，不要猜」；
+      ② 所有 LLM 值都要过**值域白名单**（规则表值集 / 已知花名表 / 场景表），
+         幻觉字段与越界值一律进不来；
+      ③ 预算 / 支数仍有数值范围校验；
+      ④ **精确字段例外**：支数与单一花材保持「规则优先、只补空」——
+         用户明确说出的「11 朵」「纯白百合」由正则按中文数字 / 花名表精确匹配，
+         比模型转述可靠，不该被改写。
 
     Args:
-        req: 规则引擎抽出的结构化需求（权威基线，不会被修改）。
+        req: 规则引擎抽出的结构化需求（**兜底基线**）。
         llm_req: 模型输出的 requirements 对象；非 dict（模型没给 / 给了坏值）时原样返回基线。
 
     Returns:
-        补全后的新 FlowerRequirement。
+        合并后的新 FlowerRequirement。
     """
     if not isinstance(llm_req, dict):
         return req
     out = FlowerRequirement(**req.to_dict())
 
-    def _fill_text(attr: str, allowed: set[str]) -> None:
-        if getattr(out, attr):
-            return
+    def _apply_text(attr: str, allowed: set[str]) -> None:
+        """LLM 读到合法值 → 采用；没读到（null / 越界）→ 保留规则基线的值。"""
         val = llm_req.get(attr)
         if isinstance(val, str) and val.strip() in allowed:
             setattr(out, attr, val.strip())
 
-    _fill_text('recipient', set(_RECIPIENT_KW.values()))
-    _fill_text('occasion', set(_OCCASION_KW.values()))
-    _fill_text('style', set(_STYLE_KW.values()))
-    _fill_text('mood', set(_MOOD_KW.values()))
-    if not out.colors:
-        raw = llm_req.get('colors')
-        candidates = [c.strip() for c in raw if isinstance(c, str)] if isinstance(raw, list) else []
-        picked = [c for c in candidates if c in set(_COLOR_KW.values())]
-        if picked:
-            out.colors = list(dict.fromkeys(picked))[:3]
-    if not out.scene:
-        val = llm_req.get('scene')
-        if isinstance(val, str) and val.strip() in set(_get_scene_map().values()):
-            out.scene = val.strip()
-    if out.budget_num is None:
-        raw_budget = llm_req.get('budget')
-        num = _safe_float(raw_budget)
-        if num is None:
-            # 模型常写成「约200元」「200 左右」→ 从字符串里取第一个数字
-            m = re.search(r'(\d{2,5})', str(raw_budget or ''))
-            num = float(m.group(1)) if m else None
-        if num is not None and 20 <= num <= 10000:
-            out.budget_num = num
-            out.budget_min = round(num * 0.8)
-            out.budget_max = round(num * 1.2)
-    if out.stem_count is None:
-        raw_stems = llm_req.get('stem_count')
-        sc = _safe_int(raw_stems)
-        if sc is None and isinstance(raw_stems, str):
-            sc = _cn_to_int(raw_stems.strip())   # 模型可能回「十一」这种中文数字
-        if sc is not None and 1 <= sc <= 999:
-            out.stem_count = sc
-    if not out.single_flower:
-        val = llm_req.get('single_flower')
-        if isinstance(val, str) and val.strip() in set(_all_flower_terms()):
-            out.single_flower = val.strip()
+    _apply_text('recipient', set(_RECIPIENT_KW.values()))
+    _apply_text('occasion', set(_OCCASION_KW.values()))
+    _apply_text('style', set(_STYLE_KW.values()))
+    _apply_text('mood', set(_MOOD_KW.values()))
+
+    raw_colors = llm_req.get('colors')
+    candidates = [c.strip() for c in raw_colors if isinstance(c, str)] if isinstance(raw_colors, list) else []
+    picked = [c for c in candidates if c in set(_COLOR_KW.values())]
+    if picked:
+        out.colors = list(dict.fromkeys(picked))[:3]
+
+    val = llm_req.get('scene')
+    if isinstance(val, str) and val.strip() in set(_get_scene_map().values()):
+        out.scene = val.strip()
+
+    raw_budget = llm_req.get('budget')
+    num = _safe_float(raw_budget)
+    if num is None and raw_budget is not None:
+        # 模型常写成「约200元」「200 左右」→ 从字符串里取第一个数字
+        m = re.search(r'(\d{2,5})', str(raw_budget))
+        num = float(m.group(1)) if m else None
+    if num is not None and 20 <= num <= 10000:
+        out.budget_num = num
+        out.budget_min = round(num * 0.8)
+        out.budget_max = round(num * 1.2)
+
+    raw_stems = llm_req.get('stem_count')
+    sc = _safe_int(raw_stems)
+    if sc is None and isinstance(raw_stems, str):
+        sc = _cn_to_int(raw_stems.strip())   # 模型可能回「十一」这种中文数字
+    # ⚠️ 精确字段例外：支数与单一花材是**用户明确说出**的强约束（正则按中文数字 / 花名表
+    # 精确匹配，比模型的转述可靠），所以这两个字段保持「只补空」——避免模型把
+    # 「就要纯白百合」转述成别的花名、把「11 朵」说成别的数量，反而覆盖用户原话。
+    if out.stem_count is None and sc is not None and 1 <= sc <= 999:
+        out.stem_count = sc
+
+    val = llm_req.get('single_flower')
+    if (not out.single_flower and isinstance(val, str)
+            and val.strip() in set(_all_flower_terms())):
+        out.single_flower = val.strip()
+
     if out.recipient and not out.relationship:
         out.relationship = _RELATIONSHIP_MAP.get(out.recipient)
     return out
