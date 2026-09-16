@@ -30,7 +30,7 @@ from agent.engine.llm import call_llm
 from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
-from agent.toolkit import execute_tool, to_openai_tools
+from agent.toolkit import allowed_entities, execute_tool, to_openai_tools
 from backend.config import settings, setup_logging
 from backend.storage import memory as mem_store
 
@@ -230,7 +230,7 @@ def _align_card_data_with_reply(ui: UIType, data: dict, reply: str) -> dict:
     回复里还没有商品名，按文案过滤会**静默失效**。线上实测（2026-09-16）：
     文案推荐「感恩母亲 / 春风暖阳 / 温柔以待…」5 款，卡片却给了 8 款文案没提过的商品。
     """
-    if ui != UIType.PLAN_CARD or not reply or not isinstance(data, dict):
+    if ui != UIType.PLAN_CARD or not isinstance(data, dict):
         return data
     plans = data.get('plans')
     if not isinstance(plans, list) or not plans:
@@ -241,11 +241,35 @@ def _align_card_data_with_reply(ui: UIType, data: dict, reply: str) -> dict:
         return data
     aligned = ReActAgent._align_products_with_reply(prods, reply)
     if not aligned or aligned == prods:
+        # 对齐不生效时把上下文打出来：大多数情况是 reply 为空/未点名（那时本就该保留全集）。
+        logger.info(
+            '[agent] 商品卡对齐无变化：%d 款（reply %d 字，点名命中 %d 款）',
+            len(prods), len(reply or ''),
+            len([r for r in prods if str(r.get('name') or '').strip() in (reply or '')]),
+        )
         return data
-    logger.info('[agent] 商品卡已与回复对齐：%d 款 → %d 款', len(prods), len(aligned))
+    logger.info('[agent] 商品卡已与回复对齐：%d 款 → %d 款（reply %d 字）',
+                len(prods), len(aligned), len(reply or ''))
     out = dict(data)
     out['plans'] = diy + aligned
     return out
+
+
+def _shop_entity_enabled() -> bool:
+    """本实例是否开放「店铺查询」链路。
+
+    体验/演示实例把 ``PLATFORM_ALLOWED_ENTITIES`` 设为 ``plan``，于是：schema 里不暴露
+    ``shop``（模型看不到这个选项）、执行层直接拒绝、prompt 换成「只做方案与建议」的变体、
+    也不产出店铺卡。留空 = 不限制（生产默认）。
+
+    Returns:
+        True 表示允许店铺查询与店铺卡。
+    """
+    try:
+        allowed = allowed_entities()
+    except Exception:
+        return True
+    return not allowed or 'shop' in allowed
 
 
 # ── system prompt 模板 ──────────────────────────────────────────────────────
@@ -1439,7 +1463,8 @@ class ReActAgent:
         else:
             parts.append(_load_prompt('platform_none'))
 
-        if platform_facts and sources:
+        # 店铺链路关闭时不再按轮注入「先查店铺再回答」的指令（schema 也不暴露 shop）。
+        if platform_facts and sources and not (platform_facts == 'shop' and not _shop_entity_enabled()):
             label = ('店铺（名称/营业时间/配送/地址/电话/评分等）' if platform_facts == 'shop'
                      else '在售商品/方案（名称/价格/花材构成等）')
             parts.append(_render_prompt(
@@ -1455,11 +1480,13 @@ class ReActAgent:
             parts.append('## 用户偏好记忆：' + mem)
 
         entry = normalize_entry(entry, shop_id, product_id)
-        if shop_id:
+        if shop_id and _shop_entity_enabled():
             origin = '从商品详情页进入，该商品归属' if entry == 'product' else '从店铺详情页进入，'
             parts.append(_render_prompt('shop_lock', origin=origin, shop_id=shop_id))
         else:
-            parts.append(_load_prompt('full_platform'))
+            # 体验版（不开放店铺）换「只做方案与建议」的变体，否则 prompt 会引导模型去查店铺，
+            # 而 schema 里已经没有 shop → 白跑一轮还被执行层拒。
+            parts.append(_load_prompt('full_platform' if _shop_entity_enabled() else 'full_platform_plan_only'))
 
         if entry == 'product' and (product_id or product_title):
             # 用户从商品详情页进入：智能体必须知道「用户此刻在看哪件商品」，
@@ -1604,6 +1631,9 @@ class ReActAgent:
                     # 真正推荐的商品挤掉。统一交给 run() 末尾的 _align_card_data_with_reply。
                     return (UIType.PLAN_CARD, {'plans': rows})
                 if entity == 'shop':
+                    # 双保险：执行层已按白名单拒绝店铺查询，这里确保也不会漏出店铺卡。
+                    if not _shop_entity_enabled():
+                        continue
                     return (UIType.SHOP_CARD, {'shops': rows})
                 continue
             render = renderers.get(tc.name)
@@ -1629,26 +1659,24 @@ class ReActAgent:
             可直接渲染的商品行列表。
 
         为什么（2026-09-16 线上实测）：平台 `products` 里同款花束会在多家店铺各自上架，
-        原始查询一次返回 20 行，其中「感恩母亲 ¥158」重复出现 6 次以上；而模型回复只
-        推荐了 4-5 款 → 卡片区「大片重复 + 与文案对不上」。规则：
+        原始查询一次返回 20~50 行，其中「感恩母亲 ¥158」重复出现 6 次以上；而且**同款在不同
+        店铺定价还不一样**（实测「粉色梦境」s004=118 元 / s008=129 元），所以去重键只能取
+        **花名**，不能带价格——否则用户照样看到两张「粉色梦境」。规则：
 
-        1. 同「花名 + 价格」视为同一款，保留平台排序靠前的那条；
+        1. **同名即同款**，保留平台排序靠前的那条（通常为主店铺）；
         2. 回复里**点名**了若干款时只展示这些（模型已替用户筛过一轮）；若一个都没匹配上
            （模型换了说法/用别名），退回去重后的全集——宁多勿漏，避免卡片空掉；
         3. 最多 `PRODUCT_CARD_LIMIT` 条。
         """
         uniq: list[dict[str, Any]] = []
-        seen: set[tuple[str, Any]] = set()
+        seen: set[str] = set()
         for r in rows or []:
             if not isinstance(r, dict):
                 continue
             name = str(r.get('name') or '').strip()
-            if not name:
+            if not name or name in seen:
                 continue
-            key = (name, r.get('price'))
-            if key in seen:
-                continue
-            seen.add(key)
+            seen.add(name)
             uniq.append(r)
         if not uniq:
             return []

@@ -21,9 +21,13 @@ def test_dedupes_same_name_and_price():
     assert [r['name'] for r in _align(rows, '')] == ['感恩母亲', '春风暖阳']
 
 
-def test_same_name_different_price_stays_separate():
-    rows = _rows(('感恩母亲', 158), ('感恩母亲', 198))
-    assert len(_align(rows, '')) == 2
+def test_same_name_different_price_collapses_to_one():
+    """同款在不同店铺定价会不同（实测「粉色梦境」s004=118 / s008=129）——
+    同名即同款，只保留平台排序靠前的那条。"""
+    rows = _rows(('粉色梦境', 118), ('粉色梦境', 129), ('幸运女神', 118))
+    out = _align(rows, '')
+    assert [r['name'] for r in out] == ['粉色梦境', '幸运女神']
+    assert out[0]['price'] == 118
 
 
 def test_filters_to_products_mentioned_in_reply():
@@ -70,8 +74,15 @@ def test_card_data_untouched_for_non_plan_ui():
     assert _align_card_data_with_reply(UIType.SHOP_CARD, data, 'A') is data
 
 
-def test_card_data_untouched_without_reply():
+def test_card_data_dedupes_even_without_reply():
+    """没有回复可对齐时也要去重——重复卡片本身就是问题。"""
     data = {'plans': [{'name': 'A', 'price': 1}, {'name': 'A', 'price': 1}]}
+    out = _align_card_data_with_reply(UIType.PLAN_CARD, data, '')
+    assert [p['name'] for p in out['plans']] == ['A']
+
+
+def test_card_data_untouched_when_nothing_to_change():
+    data = {'plans': [{'name': 'A', 'price': 1}, {'name': 'B', 'price': 2}]}
     assert _align_card_data_with_reply(UIType.PLAN_CARD, data, '') is data
 
 

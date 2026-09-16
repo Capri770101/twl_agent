@@ -104,6 +104,7 @@ PROMPT_TEMPLATES = [
     'stage_image_gen',
     'shop_lock',
     'full_platform',
+    'full_platform_plan_only',
     'product_context',
 ]
 
@@ -125,3 +126,24 @@ def test_prompt_templates_cover_all_dynamic_sections() -> None:
     assert '全平台模式' in _prompt()
     assert '用户正在查看的商品' in _prompt(shop_id='S1', entry='product', product_id='P1', product_title='红花')
     assert 'PLATFORM_DB_<SOURCE_ID>_URL' in _prompt()
+
+
+def test_plan_only_variant_when_shop_entity_disabled(monkeypatch) -> None:
+    """体验/演示实例（平台可查实体不含 shop）应换成「只做方案与建议」的变体。
+
+    否则 prompt 会引导模型去查店铺，而 schema 里已经没有 shop → 白跑一轮还被拒。
+    """
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, 'PLATFORM_ALLOWED_ENTITIES', 'plan', raising=False)
+    prompt = _prompt()
+    assert '体验版：只做方案设计与建议' in prompt
+    assert '推荐花店' not in prompt  # 原 full_platform 段的「推荐花店」引导不应出现
+
+
+def test_full_platform_variant_by_default(monkeypatch) -> None:
+    """未限制实体（生产默认）时保持原 full_platform 行为。"""
+    from backend.config import settings
+
+    monkeypatch.setattr(settings, 'PLATFORM_ALLOWED_ENTITIES', '', raising=False)
+    assert '推荐花店' in _prompt()

@@ -97,6 +97,9 @@ AGENT_PAGE_ENABLED=true
 
 # ── 平台只读数据源（平台侧接口，非我们的数据库）：让演示能查真实商品/店铺 ──
 PLATFORM_API_AISTORE_URL={aistore}
+# 体验版只走「生成方案 + 给建议」：不开放店铺查询 → schema 不暴露 shop、执行层拒绝、
+# prompt 换 full_platform_plan_only 变体、不产店铺卡、不引导下单。
+PLATFORM_ALLOWED_ENTITIES=plan
 """
 
 

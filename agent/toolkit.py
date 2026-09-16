@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import logging
+import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 logger = logging.getLogger('tools')
@@ -55,14 +57,75 @@ def visible_tool_specs() -> list[ToolSpec]:
     """返回当前会话可见的工具列表。
 
     默认排除带 ``ops`` 标签的运维/接入工具；``ENABLE_OPS_TOOLS=true`` 时全量返回。
+    若配置了 ``PLATFORM_ALLOWED_ENTITIES``，再把 ``platform_db_query_entity`` 的
+    ``entity`` 选项收窄到白名单内的实体（体验/演示实例用它关掉店铺查询）。
 
     Returns:
         可见的 :class:`ToolSpec` 列表（顺序与注册顺序一致）。
     """
     specs = get_tool_specs()
-    if ops_tools_enabled():
-        return specs
-    return [s for s in specs if OPS_TOOL_TAG not in s.tags]
+    if not ops_tools_enabled():
+        specs = [s for s in specs if OPS_TOOL_TAG not in s.tags]
+    allowed = allowed_entities()
+    if allowed:
+        specs = [
+            _narrow_entity_schema(s, allowed) if s.name == 'platform_db_query_entity' else s
+            for s in specs
+        ]
+    return specs
+
+
+# 平台数据支持的实体（与 data_tools / http_source 对齐）。
+_PLATFORM_ENTITIES: tuple[str, ...] = ('plan', 'shop', 'order', 'user')
+
+
+def allowed_entities() -> set[str]:
+    """平台数据「可查实体」白名单；返回空集合表示**不限制**（生产默认）。
+
+    用途：体验/演示实例只需要「生成方案 + 给建议」这条主线，把店铺查询关掉，
+    避免向体验客户暴露店铺与成交链路。配置见 ``PLATFORM_ALLOWED_ENTITIES``。
+
+    Returns:
+        允许多查询的实体名集合（小写）；未配置时为空集合。
+    """
+    try:
+        from backend.config import settings
+        raw = str(getattr(settings, 'PLATFORM_ALLOWED_ENTITIES', '') or '').strip()
+    except Exception:
+        return set()
+    if not raw:
+        return set()
+    items = raw.replace('，', ',').split(',')
+    return {x.strip().lower() for x in items if x.strip()}
+
+
+def _narrow_entity_schema(spec: ToolSpec, allowed: set[str]) -> ToolSpec:
+    """把 ``platform_db_query_entity`` 的 entity 选项收窄到白名单内的实体。
+
+    为什么改 schema 而不是只做执行期拦截：模型**看不到** ``shop`` 这个取值，就不会
+    去查店铺，也就不会产出店铺卡或「去哪家店买」的话术；执行期拦截只作兜底。
+    描述里的「entity 取值：…」枚举串一并收窄，避免 schema 与说明自相矛盾。
+
+    Args:
+        spec: 原工具定义。
+        allowed: 允许的实体集合。
+
+    Returns:
+        收窄后的工具定义；``allowed`` 与支持实体无交集时原样返回。
+    """
+    kept = [e for e in _PLATFORM_ENTITIES if e in allowed]
+    if not kept:
+        return spec
+    params = copy.deepcopy(spec.parameters)
+    props = params.get('properties') or {}
+    if isinstance(props.get('entity'), dict):
+        props['entity'] = {**props['entity'], 'description': '/'.join(kept), 'enum': kept}
+    description = re.sub(
+        r'entity 取值：[^；]*；',
+        f'entity 取值：{"、".join(kept)}；',
+        spec.description,
+    )
+    return replace(spec, description=description, parameters=params)
 
 
 def register_tool(name: str, description: str, parameters: dict[str, Any], inject_context: bool = False, tags: list[str] | None = None) -> Callable[[Callable], Callable]:

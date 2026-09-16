@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     # 供配置方通过对话完成结构与映射接入。日常运营保持 false。
     ENABLE_OPS_TOOLS: bool = False
 
+    # ── 平台数据「可查实体」白名单（留空 = 不限制）──
+    # 逗号分隔，取值 plan / shop / order / user。留空时保持原有全量行为（生产默认）。
+    # 用途：**体验/演示实例**只让用户走「生成方案 + 给建议」这条主线，于是把它设为
+    # `plan`（只查在售商品），店铺查询从 schema 与执行两层一起关掉——
+    # 模型连 shop 这个选项都看不到，也不产出店铺卡。
+    # 例：PLATFORM_ALLOWED_ENTITIES=plan
+    PLATFORM_ALLOWED_ENTITIES: str = ""
+
     # ── 监控面板（/api/metrics + 独立 dashboard 容器）──
     # 生产必填：未配置时 /api/metrics 一律 503，避免面板被裸奔暴露。
     # 建议用 `openssl rand -hex 32` 生成高强度随机串，与业务 JWT_SECRET 区分。

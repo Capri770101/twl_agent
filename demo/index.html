@@ -418,7 +418,7 @@ textarea::placeholder{color:var(--ink-3)}
       </button>
     </form>
     <p class="foot-note">
-      体验版 · 会话数据仅存于演示沙箱，不进入生产系统 &nbsp;·&nbsp; <b>以花传情</b>
+      体验版 · 只做方案设计与养护建议，不含店铺推荐与下单 &nbsp;·&nbsp; 会话数据存于演示沙箱 &nbsp;·&nbsp; <b>以花传情</b>
     </p>
   </footer>
 
@@ -879,15 +879,15 @@ document.addEventListener("click", (e) => {
 const EXAMPLES = [
   ["送妈妈一束花，预算200", "长按可改预算"],
   ["女朋友生日，想要浪漫一点", "年轻客群常见需求"],
-  ["有哪些店铺可以送花？", "查真实在营商户"],
+  ["这束花怎么养得久一点？", "鲜切花养护建议"],
   ["帮我设计一束白绿色系的花", "指定色系定制"],
   ["老师节日快乐，预算300", "节日场景"],
   ["手头不太宽裕，想表达心意", "口语化预算理解"]
 ];
-const CHIPS = ["预算200送妈妈", "女朋友生日·浪漫", "有哪些店铺？", "白绿色系定制", "出个效果图"];
+const CHIPS = ["预算200送妈妈", "女朋友生日·浪漫", "怎么养得久", "白绿色系定制", "出个效果图"];
 
 function renderWelcome() {
-  const caps = ["多轮追问", "42 种花材知识库", "真实在售商品", "真实营业店铺", "效果图生成", "预算保底毛利"];
+  const caps = ["多轮追问", "42 种花材知识库", "真实在售商品", "养护保鲜建议", "效果图生成", "预算保底毛利"];
   log.innerHTML =
     '<div class="hero rise">' +
       '<div class="hero-kicker">Botanical Atelier</div>' +
