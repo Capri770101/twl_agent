@@ -1415,3 +1415,44 @@ def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='v
     if image not in _IMAGE_VALUES:
         image = 'none'
     return {'reply': reply, 'ui': UIType.PLAN_CARD.value, 'data': {'plans': plans or []}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative), 'missing': normalize_missing_slots(missing)}
+
+
+@register_tool(name='show_options', description='给用户一组可点选的选项（前端渲染成按钮），需要用户从几个方向里挑一个时用它——比如「想要哪种风格 / 哪个色系」「要不要继续调整」「换一批往哪个方向换」。传 options（每项一个简短标签）即可，工具会自动包装成选项列表并结束本轮对话。', parameters={'type': 'object', 'properties': {'options': {'type': 'array', 'items': {'type': 'string'}, 'description': '选项列表，每项一个简短标签（建议 2-4 项，每项不超过 12 字），如 ["温柔韩式","清新自然","复古法式"]'}, 'reply': {'type': 'string', 'description': '给用户的自然语言说明（说明你为什么让他选，不要只写「请选择」）'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 analyze'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['options']}, tags=['meta'])
+def show_options(options: list | None=None, reply: str='', stage: str='analyze', intent: str='other', confirmation: str='none', image: str='none', wants_alternative: bool=False, missing: list[str] | None=None) -> dict[str, Any]:
+    """选项列表终结工具：把「让用户挑一个」变成显式的工具调用。
+
+    为什么单独成工具（2026-09-16）：此前「出选项」只能靠
+    ``respond_to_user(ui="dialog_options", data={"options":[...]})`` —— 模型得自己拼
+    data 结构，既容易拼错，也**想不到有这个能力**（能力藏在参数里 = 对模型不可见）。
+    独立成工具后，模型在工具清单里就能看到「我可以给用户出选项」，从而在需要时主动用。
+
+    Args:
+        options: 选项标签列表；兼容字符串与 ``{label, value, hint}`` 两种写法。
+        reply: 给用户的自然语言说明。
+        stage: 下一业务阶段。
+        intent: 用户本轮真实意图。
+        confirmation / image / wants_alternative / missing: 与 ``respond_to_user`` 同契约。
+
+    Returns:
+        与 ``respond_to_user`` 同构的参数字典（``ui=dialog_options``）。
+    """
+    norm: list[dict[str, str]] = []
+    for o in options or []:
+        if isinstance(o, dict):
+            label = str(o.get('label') or o.get('value') or '').strip()
+            if not label:
+                continue
+            item = {'label': label, 'value': str(o.get('value') or label).strip()}
+            if o.get('hint'):
+                item['hint'] = str(o['hint']).strip()
+            norm.append(item)
+        elif isinstance(o, str) and o.strip():
+            label = o.strip()
+            norm.append({'label': label, 'value': label})
+    if intent not in ('buying', 'qa', 'chitchat', 'design', 'other'):
+        intent = 'other'
+    if confirmation not in _CONFIRM_VALUES:
+        confirmation = 'none'
+    if image not in _IMAGE_VALUES:
+        image = 'none'
+    return {'reply': reply, 'ui': UIType.DIALOG_OPTIONS.value, 'data': {'options': norm}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative), 'missing': normalize_missing_slots(missing)}

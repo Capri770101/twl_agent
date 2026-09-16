@@ -576,6 +576,10 @@ def _platform_nudge_text(entity: str) -> str:
 
 
 _CARD_TOOLS = ('generate_diy_plan', 'revise_diy_plan', 'show_plan_card')
+# 终结工具族：调用其中任一 = 模型在本轮**选定了 UI 输出形态**并结束本轮。
+# 三者返回结构同构（reply / ui / data / stage / intent / 结构化信号），下游统一按
+# respond_args 消费，不必按工具名分支——新增「非文字输出」工具时只需登记到这里。
+_TERMINAL_TOOLS = ('respond_to_user', 'show_plan_card', 'show_options')
 # 「方案类追问」——命中这些词的问句应按知识问答作答，不该被强制拉回出卡
 _PLAN_QUESTION_WORDS = (
     '为什么', '为何', '怎么养', '如何养', '养护', '寓意', '花语', '有毒', '能吃',
@@ -740,7 +744,23 @@ def _image_task_created(tool_log: list[Any]) -> bool:
     Returns:
         有成功且带 task_id 的 generate_effect_image 调用时为 True。
     """
-    for tc in tool_log or []:
+    return bool(_extract_image_task(tool_log).get('task_id'))
+
+
+def _extract_image_task(tool_log: list[Any]) -> dict[str, Any]:
+    """取本轮**成功提交**的生图任务信息（task_id / poll / result_url）。
+
+    与 :func:`_image_task_created` 同源判据：光"调用了"不算，必须拿到 task_id。
+    供 UI 决议复用 —— 方案卡与生图任务并存时，把任务信息挂到卡片 data 上，
+    前端据此轮询并在出图后补图（见 `demo/index.html` 的 task_id 处理）。
+
+    Args:
+        tool_log: 本轮工具调用记录。
+
+    Returns:
+        任务信息字典（取最近一次成功提交）；没有真实任务时返回空字典。
+    """
+    for tc in reversed(tool_log or []):
         if getattr(tc, 'status', '') != 'ok' or getattr(tc, 'name', '') != 'generate_effect_image':
             continue
         try:
@@ -748,8 +768,13 @@ def _image_task_created(tool_log: list[Any]) -> bool:
         except (json.JSONDecodeError, TypeError):
             result = {}
         if isinstance(result, dict) and result.get('task_id'):
-            return True
-    return False
+            out: dict[str, Any] = {'task_id': result['task_id']}
+            if result.get('poll'):
+                out['poll'] = result['poll']
+            if result.get('result_url'):
+                out['result_url'] = result['result_url']
+            return out
+    return {}
 
 
 def _claims_image_done(reply: str) -> bool:
@@ -1082,8 +1107,14 @@ def _append_clarify(reply: str, slots: list[str]) -> str:
     asks = '；'.join(_SLOT_ASK[s] for s in slots if s in _SLOT_ASK)
     if not asks:
         return reply
-    tail = f'在给你定方案之前，想先确认一下：{asks}？'
     base = (reply or '').strip()
+    # 模型**自己**已经把追问问出来了 → 不再追加模板句。
+    # 为什么（2026-09-16「要像真人对话，不要机械走流程」）：固定模板
+    # 「在给你定方案之前，想先确认一下：…？」会一轮一轮一字不差地重复，是我们最明显的
+    # 机械感来源；模型自己组织问法远好于模板。这里退化为「它忘了问」时的兜底。
+    if base and ('？' in base or '?' in base):
+        return base
+    tail = f'在给你定方案之前，想先确认一下：{asks}？'
     return f'{base}\n{tail}' if base else tail
 
 class ReActAgent:
@@ -1257,7 +1288,7 @@ class ReActAgent:
                 messages.append(assistant_msg)
                 new_msgs.append({**assistant_msg, 'content': ''})
                 for tc in tool_calls:
-                    if tc['name'] in ('respond_to_user', 'show_plan_card'):
+                    if tc['name'] in _TERMINAL_TOOLS:
                         respond_args = tc['arguments']
                         obs = json.dumps(respond_args, ensure_ascii=False)
                         messages.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
@@ -1472,6 +1503,13 @@ class ReActAgent:
             if inferred_ui in (UIType.ORDER_CARD, UIType.PAY_JUMP) and inferred_data.get('pay_jump'):
                 ui = UIType.PAY_JUMP
                 data = inferred_data
+            # 方案卡 + 生图任务并存：卡片是主 UI（花材 / 价格明细优先级更高），生图任务信息
+            # 挂到卡片 data 上，前端据此轮询并在出图后补图。
+            # 为什么（2026-09-16 线上实测）：模型出方案后会顺手调 generate_effect_image，
+            # 旧逻辑让生图顶掉了方案卡 —— 用户只看到「效果图正在生成」，拿不到任何方案明细。
+            _img_task = _extract_image_task(tool_log)
+            if _img_task.get('task_id') and ui in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.GREETING_CARD):
+                data = {**data, **_img_task}
             if inferred_data.get('task_id'):
                 if inferred_data.get('result_url'):
                     ui = UIType.IMAGE_TASK
@@ -1854,49 +1892,58 @@ class ReActAgent:
         店铺卡（已复现：generate_diy_plan > save_memory 时 ui 退化为 text）。
         这里从最近一次成功工具回溯，跳过不产出卡片的辅助工具，命中即返回。
         """
-        renderers: dict[str, Callable[[dict[str, Any]], tuple[UIType, dict[str, Any]]]] = {
+        # 卡片类：本轮的**主输出**。
+        card_renderers: dict[str, Callable[[dict[str, Any]], tuple[UIType, dict[str, Any]]]] = {
             'generate_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}),
             'revise_diy_plan': lambda r: (UIType.PLAN_CARD, {'plans': [r]}),
-            'generate_effect_image': lambda r: (UIType.IMAGE_TASK, {'task_id': r.get('task_id'), 'poll': r.get('poll'), **({'result_url': r['result_url']} if r.get('result_url') else {})}),
             'create_order': lambda r: (UIType.ORDER_CARD, r),
             'render_greeting_card': lambda r: (UIType.GREETING_CARD, r),
         }
-        for tc in reversed(tool_log):
-            if tc.status != 'ok':
-                continue
-            try:
-                result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
-            except (json.JSONDecodeError, TypeError):
-                result = {}
-            if isinstance(result, dict) and result.get('error'):
-                # 工具自身返回 {error}（如下单/渲染失败）：不产卡片，回退 text 如实播报
-                continue
-            # platform_db_query_entity 返回 tool_result 封装 {ok, data:[规范行], error}，
-            # 按调用参数的 entity 分流：plan → plan_card、shop → shop_card；失败/空结果不产卡片。
-            if tc.name == 'platform_db_query_entity':
-                if not isinstance(result, dict) or result.get('ok') is not True:
+        # 生图是**补充产出**，单独一轮、后扫。为什么（2026-09-16 线上实测）：模型出方案后
+        # 常顺手调 generate_effect_image，若与卡片混在同一轮「取最近一次产卡工具」，生图
+        # （排在方案之后）会顶掉方案卡 —— 用户只看到「效果图正在生成」，拿不到花材与价格明细。
+        image_renderers: dict[str, Callable[[dict[str, Any]], tuple[UIType, dict[str, Any]]]] = {
+            'generate_effect_image': lambda r: (UIType.IMAGE_TASK, {'task_id': r.get('task_id'), 'poll': r.get('poll'), **({'result_url': r['result_url']} if r.get('result_url') else {})}),
+        }
+        for renderers in (card_renderers, image_renderers):
+            for tc in reversed(tool_log):
+                if tc.status != 'ok':
                     continue
-                rows = result.get('data')
-                if not isinstance(rows, list) or not rows:
+                try:
+                    result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
+                except (json.JSONDecodeError, TypeError):
+                    result = {}
+                if isinstance(result, dict) and result.get('error'):
+                    # 工具自身返回 {error}（如下单/渲染失败）：不产卡片，回退 text 如实播报
                     continue
-                entity = (tc.arguments or {}).get('entity')
-                if entity == 'plan':
-                    # ⚠️ 此处**不**做去重/文案对齐：_derive_ui 被调用时 reply 还没定型
-                    # （respond_to_user 的 reply 更晚才覆盖 final_reply），提前过滤+截断会把
-                    # 真正推荐的商品挤掉。统一交给 run() 末尾的 _align_card_data_with_reply。
-                    return (UIType.PLAN_CARD, {'plans': rows})
-                if entity == 'shop':
-                    # 双保险：执行层已按白名单拒绝店铺查询，这里确保也不会漏出店铺卡。
-                    if not _shop_entity_enabled():
+                # platform_db_query_entity 返回 tool_result 封装 {ok, data:[规范行], error}，
+                # 按调用参数的 entity 分流：plan → plan_card、shop → shop_card；失败/空结果不产卡片。
+                if tc.name == 'platform_db_query_entity':
+                    if renderers is not card_renderers:
                         continue
-                    return (UIType.SHOP_CARD, {'shops': rows})
-                continue
-            render = renderers.get(tc.name)
-            if not render:
-                continue
-            if isinstance(result, list) and (not result):
-                continue
-            return render(result)
+                    if not isinstance(result, dict) or result.get('ok') is not True:
+                        continue
+                    rows = result.get('data')
+                    if not isinstance(rows, list) or not rows:
+                        continue
+                    entity = (tc.arguments or {}).get('entity')
+                    if entity == 'plan':
+                        # ⚠️ 此处**不**做去重/文案对齐：_derive_ui 被调用时 reply 还没定型
+                        # （respond_to_user 的 reply 更晚才覆盖 final_reply），提前过滤+截断会把
+                        # 真正推荐的商品挤掉。统一交给 run() 末尾的 _align_card_data_with_reply。
+                        return (UIType.PLAN_CARD, {'plans': rows})
+                    if entity == 'shop':
+                        # 双保险：执行层已按白名单拒绝店铺查询，这里确保也不会漏出店铺卡。
+                        if not _shop_entity_enabled():
+                            continue
+                        return (UIType.SHOP_CARD, {'shops': rows})
+                    continue
+                render = renderers.get(tc.name)
+                if not render:
+                    continue
+                if isinstance(result, list) and (not result):
+                    continue
+                return render(result)
         return (UIType.TEXT, {})
 
     # 商品卡展示上限：平台一次查询常回 20 行，全倒出来既啰嗦又把文案冲淡。
