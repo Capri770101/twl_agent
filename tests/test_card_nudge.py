@@ -10,6 +10,7 @@ from agent.agent import (
     _card_nudge_text,
     _card_produced,
     _expresses_flower_need,
+    _looks_like_plan_prose,
     _needs_card_nudge,
 )
 
@@ -98,3 +99,38 @@ def test_nudge_text_mentions_tools_and_forbids_fabrication():
     assert 'generate_diy_plan' in txt and 'revise_diy_plan' in txt
     assert 'platform_db_query_entity' in txt
     assert '严禁' in txt and '编造' in txt
+
+
+# ── 首轮豁免的收口（2026-09-16）────────────────────────────────────────
+# 首轮 has_context 为假，护栏此前**整体豁免**；但模型常常首轮就零工具调用地口述整套方案。
+
+def test_looks_like_plan_prose_detects_oral_plan():
+    """线上那句：「香槟色洋桔梗×5 + 紫色风信子×5…预算 318 元」。"""
+    assert _looks_like_plan_prose('给你女朋友设计了一份方案：香槟色洋桔梗×5 + 紫色风信子×5，预算318元')
+    assert _looks_like_plan_prose('22朵粉康乃馨配5朵粉玫瑰，约158元')
+    assert _looks_like_plan_prose('33枝粉色康乃馨，总价146元')
+
+
+def test_looks_like_plan_prose_ignores_clarifying_question():
+    """老实追问不能被当成口述方案——否则「信息不够先问」会被拦成硬出卡。"""
+    assert not _looks_like_plan_prose('方便告诉我送给谁、什么场合吗？预算大概多少呢？')
+    assert not _looks_like_plan_prose('你想送妈妈还是女朋友？')
+    assert not _looks_like_plan_prose('')
+    assert not _looks_like_plan_prose('好的，我来帮你安排～')
+
+
+def test_nudge_fires_on_first_turn_when_model_dictates_plan():
+    """首轮 + 口述方案 → 必须拦（此前整体豁免，实测两轮都这么走）。"""
+    oral = '给你女朋友设计了一份方案：香槟色洋桔梗×5 + 紫色风信子×5，预算318元'
+    assert _needs_card_nudge('送女朋友生日花，预算300左右', [], has_context=False, reply=oral)
+
+
+def test_nudge_silent_on_first_turn_for_real_clarification():
+    """首轮 + 老实追问 → 放行。"""
+    ask = '方便告诉我送给谁、什么场合吗？预算大概多少呢？'
+    assert not _needs_card_nudge('想买花', [], has_context=False, reply=ask)
+
+
+def test_nudge_silent_on_first_turn_without_reply_text():
+    """不传 reply 时行为与改动前一致（首轮不拦），保证既有调用点语义不变。"""
+    assert not _needs_card_nudge('生日，粉色系，你决定就好', [], has_context=False)

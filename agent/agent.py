@@ -272,6 +272,29 @@ def _shop_entity_enabled() -> bool:
     return not allowed or 'shop' in allowed
 
 
+# 交易引导词：体验版不承接下单，回复里出现这些就是越界。
+_TRADE_WORDS_RE = re.compile(r'下单|购买|支付|结算|发货')
+
+
+def _demo_trade_note(reply: str) -> str:
+    """体验版兜底：回复里出现交易引导时补一句边界说明。
+
+    为什么不能只靠 prompt（实测 2026-09-16）：体验版实测回复结尾仍写了
+    「点击卡片即可在小程序下单配送」——本项目反复验证过「模型行为类缺陷光靠 prompt 不够」。
+    这里**不改写原文**（避免破坏语感），只在末尾补一句确定性说明；已经说明过就不重复。
+
+    Args:
+        reply: 最终回复。
+
+    Returns:
+        可能追加了边界说明的回复。
+    """
+    text = (reply or '').rstrip()
+    if not text or not _TRADE_WORDS_RE.search(text) or '体验版' in text:
+        return reply
+    return text + '\n\n（体验版仅作参考展示，选购与下单请到正式小程序。）'
+
+
 # ── system prompt 模板 ──────────────────────────────────────────────────────
 # 文本统一放 agent/prompts/*.md（外置原因：prompt 是本项目改动最频繁的资产，
 # 内联在 _build_system 里时改一句话要动 Python、无法单独 diff 或做 A/B）。
@@ -561,7 +584,38 @@ def _expresses_flower_need(message: str) -> bool:
     )
 
 
-def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool) -> bool:
+# 「模型已经在口述方案」的信号：① 出现具体花材数量（真在追问需求时几乎不会报支数）；
+# ② 「方案」措辞 + 具体价格。用于首轮豁免的收口，见 _looks_like_plan_prose。
+_PROSE_QTY_PATTERNS = (
+    re.compile(r'\d{1,3}\s*[朵支枝]'),                        # 22朵 / 33枝
+    re.compile(r'[\u4e00-\u9fff]{2,6}\s*[×xX]\s*\d{1,3}'),    # 洋桔梗×5
+)
+_PROSE_PRICE_RE = re.compile(r'\d{2,4}\s*元')
+
+
+def _looks_like_plan_prose(reply: str) -> bool:
+    """回复里是否已经**口述出实质方案**（而不是在追问需求或寒暄）。
+
+    为什么需要（2026-09-16 线上实测）：首轮的 `has_context` 是 False，护栏整体豁免。
+    但模型经常在**首轮就零工具调用地口述整套方案**——「香槟色洋桔梗×5 + 紫色风信子×5…
+    预算 318 元」，用户既拿不到卡片、也无法核验真伪（此前实测两轮都是这种走法）。
+    「首次提问用文字追问是合理的」这个豁免只应对**老实追问**成立，不该放过口述方案。
+
+    Args:
+        reply: 模型本轮已经产出的回复文本。
+
+    Returns:
+        看起来已在口述方案时返回 True。
+    """
+    text = (reply or '').strip()
+    if not text:
+        return False
+    if any(p.search(text) for p in _PROSE_QTY_PATTERNS):
+        return True
+    return '方案' in text and bool(_PROSE_PRICE_RE.search(text))
+
+
+def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, reply: str = '') -> bool:
     """是否该拦下「只有文字、没有方案卡」的回复。
 
     线上实测（2026-09-16，演示实例）：用户先说「送妈妈一束花，预算200」拿到方案卡，
@@ -569,24 +623,31 @@ def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool) -> b
     （其中「樱雾甜梦」在平台上根本不存在），用户拿不到卡片，也无法核验真伪。
 
     判定刻意保守（误判要多花一轮 LLM）：
-      · 只在本会话**已有方案上下文**时才拦（`has_context`）——首次提问时用文字追问是合理的；
       · 命中知识类问句（为什么/怎么养/花语…）不拦——那是真该用文字答；
-      · 必须这句话确实表达了花艺需求才拦。
+      · 必须这句话确实表达了花艺需求才拦；
+      · **首轮**（`has_context` 为假）再收一道：只有模型**已经在口述方案**时才拦
+        （`_looks_like_plan_prose`）。老实追问「送给谁、预算多少」仍然放行——
+        那是合理交互，拦了反而变成硬出卡。
 
     Args:
         message: 用户本轮原话。
         tool_log: 本轮工具调用记录。
         has_context: 本会话是否已有方案卡或已追问过一轮。
+        reply: 模型本轮已产出的回复文本（用于首轮判断是否在口述方案）。
 
     Returns:
         需要注入「必须出卡」纠正时为 True。
     """
-    if not has_context or _card_produced(tool_log):
+    if _card_produced(tool_log):
         return False
     text = message or ''
     if any(w in text for w in _PLAN_QUESTION_WORDS):
         return False
-    return _expresses_flower_need(text)
+    if not _expresses_flower_need(text):
+        return False
+    if has_context:
+        return True
+    return _looks_like_plan_prose(reply)
 
 
 def _card_nudge_text() -> str:
@@ -1064,7 +1125,9 @@ class ReActAgent:
                     # 「只有文字、没有方案卡」→ 同样拦一次。
                     # 线上实测（2026-09-16）：已有方案的会话里，用户补一句「生日，粉色系，你决定就好」，
                     # 模型零工具调用直接写了两个方案（其中一个商品名平台上根本不存在）。
-                    if _card_nudge_left and _needs_card_nudge(message, tool_log, _has_plan_context):
+                    if _card_nudge_left and _needs_card_nudge(
+                            message, tool_log, _has_plan_context,
+                            str((respond_args or {}).get('reply') or final_reply or '')):
                         _card_nudge_left -= 1
                         messages.append({'role': 'user', 'content': _card_nudge_text()})
                         respond_args = None
@@ -1086,7 +1149,7 @@ class ReActAgent:
                     final_reply = ''
                     logger.warning('[agent] 未调工具即答平台事实（entity=%s），已注入纠正并要求重答', platform_facts)
                     continue
-                if _card_nudge_left and _needs_card_nudge(message, tool_log, _has_plan_context):
+                if _card_nudge_left and _needs_card_nudge(message, tool_log, _has_plan_context, final_reply):
                     _card_nudge_left -= 1
                     messages.append({'role': 'assistant', 'content': final_reply})
                     messages.append({'role': 'user', 'content': _card_nudge_text()})
@@ -1104,7 +1167,7 @@ class ReActAgent:
         # 线上实测（2026-09-16）：模型连续两轮都只写文字，还谎称「明细在卡片里」。
         # 与其让客户看到一张不存在的卡，不如给一张朴素但真实的方案卡（零 LLM 成本）。
         if (_card_nudge_left == 0 and not _card_produced(tool_log)
-                and _needs_card_nudge(message, tool_log, _has_plan_context)):
+                and _needs_card_nudge(message, tool_log, _has_plan_context, final_reply)):
             try:
                 from agent.tools import _build_plan, extract_requirement
                 _dims = req_acc.to_legacy_dict() if req_acc is not None else extract_requirement(message).to_legacy_dict()
@@ -1139,6 +1202,9 @@ class ReActAgent:
         # 非空兜底：脱敏可能把正文整段清空（模型把原始数据行当正文输出时），
         # 纯文本场景下此前的兜底覆盖不到 → 用户看到空气泡。此处必须放在清理链**最后**。
         final_reply = _ensure_non_empty_reply(final_reply, ui)
+        # 体验版（不承接下单）兜底：回复里若提到交易，补一句边界说明。
+        if not _shop_entity_enabled():
+            final_reply = _demo_trade_note(final_reply)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})

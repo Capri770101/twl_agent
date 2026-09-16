@@ -114,3 +114,34 @@ def test_shop_entity_enabled_matrix(monkeypatch):
     assert _shop_entity_enabled() is False
     _set_allowed(monkeypatch, 'plan,shop')
     assert _shop_entity_enabled() is True
+
+
+# ── 体验版交易引导兜底（实测：「点击卡片即可在小程序下单配送」）──────
+
+def test_trade_note_appended_when_cta_present():
+    from agent.agent import _demo_trade_note
+
+    out = _demo_trade_note('都远低于300，点击卡片即可在小程序下单配送。')
+    assert '体验版仅作参考展示' in out
+    assert '下单' in out  # 原文不被改写，只在末尾补说明（避免破坏语感）
+
+
+def test_trade_note_silent_without_cta():
+    from agent.agent import _demo_trade_note
+
+    text = '给你挑了 3 款，点击卡片可以看详情。'
+    assert _demo_trade_note(text) is text
+
+
+def test_trade_note_not_duplicated():
+    from agent.agent import _demo_trade_note
+
+    text = '体验版仅作参考展示，选购与下单请到正式小程序。'
+    assert _demo_trade_note(text) is text
+
+
+def test_trade_note_handles_empty():
+    from agent.agent import _demo_trade_note
+
+    assert _demo_trade_note('') == ''
+    assert _demo_trade_note(None) is None
