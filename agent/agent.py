@@ -669,7 +669,17 @@ def _card_nudge_text() -> str:
 # 「效果图任务已提交（AI 生成中，通常几十秒到几分钟）」；用户追问「图呢？」→ 又回
 # 「这张是按「星河长明」的花材构成生成的参考图」。**全程没有任何生图任务**，
 # 用户在等一张根本不存在的图。与「未查证即作答」同类：光靠 prompt 不够，必须确定性拦截。
-_IMAGE_DONE_WORDS = ('已提交', '生成中', '已生成', '生成好了', '已就绪', '已出图', '参考图', '效果图已')
+# ⚠️ 判定必须是「**图词 + 完成态**的邻近组合」，**绝不能**用「提到图」+「提到生成」的宽松共现——
+# 线上实测（2026-09-16）后者把普通的「我已经生成了方案」也算成「谎称已出图」，导致
+# 用户问「目前这个数据库的信息包括哪些？」被白拦一轮、多烧 30 秒重答（日志留痕）。
+_IMAGE_CLAIM_PATTERNS = (
+    re.compile(r'(?:效果图|生图|图片|参考图|出图)[^。！？\n]{0,10}'
+               r'(?:已提交|已生成|生成中|生成好了|已就绪|已出|正在生成|已完成)'),
+    re.compile(r'(?:已提交|已生成|生成中|正在生成|已出图)[^。！？\n]{0,10}'
+               r'(?:效果图|生图|图片|参考图|出图)'),
+    # 「这张是…生成的参考图」= 在描述一张图的内容，等于暗示图已存在
+    re.compile(r'(?:这张|这张图|上图|下图|配图)[^。！？\n]{0,20}(?:生成|参考图|效果图)'),
+)
 # 如实说明失败的字眼 → 不算「声称已出图」
 _IMAGE_FAIL_WORDS = ('没有生成', '未生成', '无法生成', '生成失败', '没能生成', '还未生成', '尚未生成')
 
@@ -703,7 +713,10 @@ def _image_task_created(tool_log: list[Any]) -> bool:
 def _claims_image_done(reply: str) -> bool:
     """回复是否在**声称**效果图已提交/已生成（而不是如实说明失败）。
 
-    必须与 :func:`_image_task_created` 配对使用：声称了却没有任务 = 编造。
+    与 :func:`_image_task_created` 配对使用：声称了却没有任务 = 编造。
+
+    ⚠️ 只认「**图词 + 完成态**的邻近组合」（见 ``_IMAGE_CLAIM_PATTERNS``）——
+    宽松共现会大面积误伤普通回复（「我已经生成了方案」也会被判成谎称出图）。
 
     Args:
         reply: 本轮回复文本。
@@ -712,11 +725,11 @@ def _claims_image_done(reply: str) -> bool:
         看起来在声称已出图时返回 True。
     """
     text = reply or ''
-    if not text or not _img_mentioned(text):
+    if not text:
         return False
     if any(w in text for w in _IMAGE_FAIL_WORDS):
-        return False
-    return any(w in text for w in _IMAGE_DONE_WORDS)
+        return False  # 如实说明失败 → 放行
+    return any(p.search(text) for p in _IMAGE_CLAIM_PATTERNS)
 
 
 def _needs_image_nudge(tool_log: list[Any], reply: str) -> bool:
@@ -1129,6 +1142,19 @@ class ReActAgent:
         except Exception:
             logger.exception('[agent] 会话需求累积失败')
         stage = SessionStage(await mem_store.get_stage(sid))
+        # ── 阶段粘滞治理（2026-09-16）──
+        # IMAGE_GEN 表示「图正在生成」这个**事实**，不是「话题锁定」。图出完就该退出，
+        # 否则每轮都会注入 stage_image_gen.md 的「图正在生成中」，模型被这个**假前提**带得
+        # 只会聊图、答非所问。线上实测：用户问「目前这个数据库的信息包括哪些？」，
+        # 阶段仍停在 image_gen → 模型答非所问地给了方案卡，还多烧一轮。
+        if stage == SessionStage.IMAGE_GEN:
+            try:
+                _pending_img = await _find_pending_image_task(user_id, sid)
+            except Exception:
+                _pending_img = None
+            if not _pending_img:
+                stage = SessionStage.DIY_DESIGN
+                logger.info('[agent] 无待处理的生图任务，阶段退出 image_gen')
         incoming = stage
         # 此处早于 LLM 调用，拿不到本轮结构化信号，故仍用关键词做「上一轮已进入生图阶段
         # 且用户肯定」的快速标记（保守方向：只多标一次 image_confirmed，不触发生图）。
@@ -1573,6 +1599,11 @@ class ReActAgent:
         eff_confirmed = await mem_store.get_session_flag(user_id, sid, 'image_confirmed') == '1'
         eff_forced = await mem_store.get_session_flag(user_id, sid, 'image_forced') == '1'
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
+        # 本轮模型**自己**真的调了生图 → 同样标记「本会话已出过图」。否则下一轮只要 ui 不是
+        # plan_card 就会再补调一次；线上实测（2026-09-16）：用户随后问「数据库包括哪些」，
+        # 系统又白烧一次生图 API（image_forced 原先只在「补调成功」时置位，漏了这条路径）。
+        if eff_done:
+            await mem_store.set_session_flag(user_id, sid, 'image_forced', '1')
 
         if _img_declined:
             # 意图豁免：用户明确不要生图（模型信号 ∪ 关键词）→ 记**粘性**退出标记 img_optout

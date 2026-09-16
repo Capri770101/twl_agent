@@ -79,6 +79,17 @@ def test_claims_ignored_without_image_topic():
     assert not _claims_image_done(None)
 
 
+def test_claims_ignored_for_plain_generation_words():
+    """⚠️ 重要回归：早期版本用「提到图」+「提到生成」的宽松共现，把普通回复也误伤成
+    「谎称已出图」——线上实测用户问「目前这个数据库的信息包括哪些？」被白拦一轮、
+    多烧 30 秒重答。这里锁住「只认图词与完成态的**邻近**组合」。"""
+    assert not _claims_image_done('我已经生成了方案，共 11 枝玫瑰。')
+    assert not _claims_image_done('正在生成你的专属方案，稍等一下。')
+    assert not _claims_image_done('方案已生成，明细在卡片里。')
+    assert not _claims_image_done('这个方案是我根据你的预算生成的，可以再调。')
+    assert not _claims_image_done('数据库里包括商品、店铺、价格、库存这些字段。')
+
+
 # ── _needs_image_nudge ───────────────────────────────────────────────
 
 def test_nudge_fires_when_claiming_without_task():
