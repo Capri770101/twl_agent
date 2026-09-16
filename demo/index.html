@@ -639,6 +639,21 @@ function diyCard(p) {
     '</div></div></div>';
   return h;
 }
+/* 商品去重兜底：平台同款花束常在多家店铺各自上架，后端 `_align_products_with_reply`
+   已按「花名 + 价格」去重并与回复文案对齐；前端再保险一层，避免演示时出现重复卡片。 */
+function dedupeProds(list) {
+  const seen = new Set(), out = [];
+  for (const p of (list || [])) {
+    if (!p) continue;
+    const name = String(p.name || "").trim();
+    if (!name) continue;
+    const key = name + "|" + p.price;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+}
 function prodCard(p) {
   const img = (p.images && p.images[0]) || p.image || "";
   const tag = (p.tags && p.tags[0]) || "";
@@ -703,7 +718,7 @@ function renderResponse(res) {
   let imgs = "";
   if (plans.length) {
     const diy = plans.filter((p) => p && (p.diy === true || p.design));
-    const prods = plans.filter((p) => p && !(p.diy === true || p.design));
+    const prods = dedupeProds(plans.filter((p) => p && !(p.diy === true || p.design)));
     diy.forEach((p) => { payloads.push(diyCard(p)); });
     if (prods.length) {
       payloads.push('<div class="sect"><div class="sect-label">平台在售 · ' + prods.length + ' 款</div>' +

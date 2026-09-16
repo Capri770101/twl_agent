@@ -896,12 +896,13 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     tone = scene.get('meaning_tone', '') if scene else ''
     lo, hi = tier['range']
     est = f'{lo}-{hi} 元' if budget_num is None else f"约 {budget_num} 元（{tier['label']}档）"
-    effect_prompt = f"{style_label}风格花束，主花为{'、'.join(f['name'] for f in main) or '玫瑰'}，搭配{'、'.join(f['name'] for f in fillers) or '满天星'}与{'、'.join(f['name'] for f in foliage) or '尤加利'}，色调{'/'.join(color_scheme)}，{(packaging['name'] if packaging else '花束')}包装，背景干净柔和，摄影级静物，高级感"
-    # 单一花材：覆盖为纯色单花描述，避免 effect_prompt 残留「搭配满天星」等外搭措辞。
-    if single_flower and main:
-        sf_name = main[0]['name']
-        pk_name = packaging['name'] if packaging else '花束'
-        effect_prompt = f"{style_label}风格纯{sf_name}花束，仅使用{sf_name}一种花材，{pk_name}包装，色调统一，背景干净柔和，摄影级静物，高级感"
+    # 生图提示词：必须带**支数**（用户 2026-09-16 要求「效果图的花的数量也要保持一致」）。
+    # 统一走 _effect_prompt_from_design；单一花材的纯花描述也在其中处理，
+    # 避免此处再写一遍导致两处口径不一致。
+    effect_prompt = _effect_prompt_from_design(
+        {'main_flowers': main_flowers, 'fillers': filler_flowers,
+         'foliage': foliage_flowers, 'color_scheme': color_scheme},
+        style_label, packaging['name'] if packaging else '花束')
     occ_label = dims.get('occasion') or (scene['name'] if scene else '定制')
     notes = []
     if scene:
@@ -982,6 +983,79 @@ def _anchor_style(plan: dict) -> None:
     elif plan.get('substyle_id'):
         plan['substyle_id'] = None
         plan['substyle'] = None
+
+def _effect_prompt_from_design(design: dict, style_label: str = '韩式',
+                               packaging: str = '花束') -> str:
+    """按方案的**真实花材与支数**重建生图提示词（确定性生成，不允许 LLM 自由发挥）。
+
+    Args:
+        design: 方案 design 段（含 main_flowers / fillers / foliage / color_scheme）。
+        style_label: 风格中文名。
+        packaging: 包装中文名。
+
+    Returns:
+        供 qwen-image 使用的提示词字符串。
+
+    为什么（2026-09-16 用户反馈）：原实现只把**花名**写进提示词、不带支数，生图模型
+    自行发挥数量 → 效果图的花量与方案清单对不上（用户要求「效果图的花的数量也要保持
+    一致」）。这里把「花名 + 支数」+ 总数写死进提示词；且必须在 `_merge_plan` 的
+    **支数校正之后**调用，保证与最终清单完全一致。
+    """
+    def _fmt(items: Any) -> str:
+        parts: list[str] = []
+        for f in items or []:
+            if not isinstance(f, dict):
+                if f:
+                    parts.append(str(f))
+                continue
+            name = str(f.get('name') or '').strip()
+            if not name:
+                continue
+            qty = f.get('qty')
+            if isinstance(qty, (int, float)) and int(qty) > 0:
+                parts.append(f'{name} {int(qty)} 枝')
+            else:
+                parts.append(name)
+        return '、'.join(parts)
+
+    design = design or {}
+    main_raw = design.get('main_flowers') or []
+    main = _fmt(main_raw)
+    fillers = _fmt(design.get('fillers'))
+    foliage = _fmt(design.get('foliage'))
+    colors = '/'.join(design.get('color_scheme') or []) or '温柔粉'
+    pk = packaging or design.get('packaging') or '花束'
+    total = 0
+    for grp in ('main_flowers', 'fillers', 'foliage'):
+        for f in design.get(grp) or []:
+            if isinstance(f, dict):
+                q = f.get('qty')
+                if isinstance(q, (int, float)) and int(q) > 0:
+                    total += int(q)
+
+    # 单一花材：只描述一种花，避免残留「搭配满天星」等外搭措辞。
+    if main and not fillers and not foliage:
+        f0 = main_raw[0] if isinstance(main_raw[0], dict) else {}
+        nm = str(f0.get('name') or main).strip()
+        q = f0.get('qty')
+        qtext = f'共 {int(q)} 枝' if isinstance(q, (int, float)) and int(q) > 0 else ''
+        return (f'{style_label}风格纯{nm}花束，仅使用{nm}一种花材'
+                f'{("（" + qtext + "）") if qtext else ""}，{pk}包装，色调统一，'
+                f'背景干净柔和，摄影级静物，高级感')
+
+    segs: list[str] = []
+    if main:
+        segs.append(f'主花 {main}')
+    if fillers:
+        segs.append(f'配花 {fillers}')
+    if foliage:
+        segs.append(f'叶材 {foliage}')
+    qty_note = f'整束共 {total} 枝' if total else ''
+    detail = '；'.join(segs) or '花材随机搭配'
+    return (f'{style_label}风格花束，严格按下列花材与枝数插制'
+            f'（数量不要增减、花材不要替换）：{detail}。{qty_note}，'
+            f'色调{colors}，{pk}包装，背景干净柔和，摄影级静物，高级感')
+
 
 def _design_qty_map(design: dict) -> dict[str, int]:
     """方案里各花材的**真实支数**（authoritative），用于校正文字描述里的数量。"""
@@ -1088,7 +1162,8 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
         est = plan.get('estimated_price') or ''
         # 方案名也须同步：LLM 若起了「康乃馨花束」之类的名字，覆盖为纯该花材。
         plan['name'] = f"{style_label}·纯{sf_name}花束"
-        plan['effect_prompt'] = f"{style_label}风格纯{sf_name}花束，仅使用{sf_name}一种花材，{pk_name}包装，色调统一，背景干净柔和，摄影级静物，高级感"
+        # effect_prompt 不在此处设置：改由 _merge_plan 末尾「支数校正后」统一重建，
+        # 否则单一花材 / 普通花束两条路径各写一套，支数一改就对不上。
         plan['desc'] = f"为你设计了一份纯{sf_name}花束：{sf_name}×{qty}，寓意{meaning}。{('预算' + str(est) + '。') if est else ''}"
         pkg = {'name': pk_name, 'id': 'PK_BOX' if '礼盒' in pk_name else 'PK_BOUQUET'}
         plan['diy_steps'] = _build_diy_steps(plan['design']['main_flowers'], [], [], plan['design'].get('color_scheme') or [], pkg)
@@ -1111,6 +1186,13 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
         _d = plan.get('design') or {}
         if isinstance(_d.get('diy_steps'), list):
             _d['diy_steps'] = [_sync_flower_qty(str(s), _qmap) for s in _d['diy_steps']]
+        # 生图提示词也在此重建：支数必须取自**校正后的最终清单**。否则效果图会按
+        # LLM 早期写的数量出图，与卡片里的花材清单自相矛盾（用户 2026-09-16 反馈）。
+        plan['effect_prompt'] = _effect_prompt_from_design(
+            plan.get('design') or {},
+            plan.get('style') or '韩式',
+            (plan.get('design') or {}).get('packaging') or '花束',
+        )
     return plan
 
 # L2：在设计调用里**顺带**要求模型输出它读到的结构化需求（零额外 LLM 调用）。

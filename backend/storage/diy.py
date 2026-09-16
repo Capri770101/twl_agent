@@ -18,22 +18,42 @@ def _now() -> str:
 
 
 def _flower_rows(design: dict) -> list[dict[str, Any]]:
+    """把方案花材摊平成落库行。
+
+    ⚠️ 必须一并落 `qty`（支数）：效果图提示词要按真实支数重建，丢了支数就只能
+    退回「只写花名」，效果图花量会与方案清单对不上（2026-09-16 用户反馈）。
+    """
     rows: list[dict[str, Any]] = []
     for bucket, key in (('主花', 'main_flowers'), ('填充', 'fillers'), ('叶材', 'foliage')):
         for f in design.get(key) or []:
             if isinstance(f, dict):
-                rows.append({'bucket': bucket, 'name': f.get('name'), 'ratio': f.get('ratio')})
+                rows.append({'bucket': bucket, 'name': f.get('name'),
+                             'ratio': f.get('ratio'), 'qty': f.get('qty')})
             else:
-                rows.append({'bucket': bucket, 'name': f, 'ratio': None})
+                rows.append({'bucket': bucket, 'name': f, 'ratio': None, 'qty': None})
     return rows
+
+
+def _fmt_flower_qty(items: list[dict[str, Any]]) -> str:
+    """花材行 → 「花名 N 枝」；老数据没有支数时退化为只写花名。"""
+    out: list[str] = []
+    for f in items or []:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get('name') or '').strip()
+        if not name:
+            continue
+        qty = f.get('qty')
+        out.append(f'{name} {int(qty)} 枝' if isinstance(qty, (int, float)) and int(qty) > 0 else name)
+    return '、'.join(out)
 
 
 def _row_to_plan(row: Any) -> dict[str, Any]:
     flowers = json.loads(row['flowers']) if row['flowers'] else []
     design = {
-        'main_flowers': [{'name': f['name'], 'ratio': f.get('ratio')} for f in flowers if f.get('bucket') == '主花'],
-        'fillers': [{'name': f['name'], 'ratio': f.get('ratio')} for f in flowers if f.get('bucket') == '填充'],
-        'foliage': [{'name': f['name'], 'ratio': f.get('ratio')} for f in flowers if f.get('bucket') == '叶材'],
+        'main_flowers': [{'name': f['name'], 'ratio': f.get('ratio'), 'qty': f.get('qty')} for f in flowers if f.get('bucket') == '主花'],
+        'fillers': [{'name': f['name'], 'ratio': f.get('ratio'), 'qty': f.get('qty')} for f in flowers if f.get('bucket') == '填充'],
+        'foliage': [{'name': f['name'], 'ratio': f.get('ratio'), 'qty': f.get('qty')} for f in flowers if f.get('bucket') == '叶材'],
         'color_scheme': json.loads(row['color_scheme']) if row['color_scheme'] else [],
         'packaging': row['packaging'],
         'meaning': row['meaning'],
@@ -45,7 +65,27 @@ def _row_to_plan(row: Any) -> dict[str, Any]:
         'mood_tags': json.loads(row['mood_tags']) if row['mood_tags'] else [],
     }
     budget = row['budget']
-    effect_prompt = f"{row['style'] or '定制'}风格花束，主花为{', '.join(f['name'] for f in flowers if f.get('bucket') == '主花') or '玫瑰'}，搭配{', '.join(f['name'] for f in flowers if f.get('bucket') == '填充') or '满天星'}与{', '.join(f['name'] for f in flowers if f.get('bucket') == '叶材') or '尤加利'}，色调{'/'.join(design['color_scheme']) or '温柔粉'}，{row['packaging'] or '花束'}包装，背景干净柔和，摄影级静物，高级感"
+    # 生图提示词按**真实支数**重建（与 agent/tools.py::_effect_prompt_from_design 同口径），
+    # 保证 proven 方案再出效果图时花量与清单一致。老数据无 qty → 自动退化为只写花名。
+    _main_f = [f for f in flowers if f.get('bucket') == '主花']
+    _fill_f = [f for f in flowers if f.get('bucket') == '填充']
+    _fol_f = [f for f in flowers if f.get('bucket') == '叶材']
+    _total_qty = sum(int(f.get('qty') or 0) for f in flowers
+                     if isinstance(f.get('qty'), (int, float)))
+    _segs = []
+    if _main_f:
+        _segs.append('主花 ' + (_fmt_flower_qty(_main_f) or '玫瑰'))
+    if _fill_f:
+        _segs.append('配花 ' + (_fmt_flower_qty(_fill_f) or '满天星'))
+    if _fol_f:
+        _segs.append('叶材 ' + (_fmt_flower_qty(_fol_f) or '尤加利'))
+    effect_prompt = (
+        f"{row['style'] or '定制'}风格花束，严格按下列花材与枝数插制"
+        f"（数量不要增减、花材不要替换）：{'；'.join(_segs) or '花材随机搭配'}。"
+        f"{f'整束共 {_total_qty} 枝，' if _total_qty else ''}"
+        f"色调{'/'.join(design['color_scheme']) or '温柔粉'}，{row['packaging'] or '花束'}包装，"
+        f"背景干净柔和，摄影级静物，高级感"
+    )
     return {
         'plan_id': row['id'],
         'name': row['name'],

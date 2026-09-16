@@ -214,6 +214,40 @@ def _ensure_non_empty_reply(reply: str, ui: UIType) -> str:
     return _EMPTY_CARD_FALLBACK if ui in _CARD_UIS else _EMPTY_TEXT_FALLBACK
 
 
+def _align_card_data_with_reply(ui: UIType, data: dict, reply: str) -> dict:
+    """最终回复定型后，把**商品卡**与文案对齐（DIY 方案卡原样保留）。
+
+    Args:
+        ui: 本轮 UI 类型。
+        data: 卡片数据。
+        reply: 已定型的最终回复。
+
+    Returns:
+        对齐后的卡片数据；无需调整时原样返回。
+
+    为什么必须放在这里、而不是 ``_derive_ui`` 内部：``_derive_ui`` 在
+    ``respond_to_user`` 的 ``reply`` 覆盖 ``final_reply`` **之前**被调用，那一刻
+    回复里还没有商品名，按文案过滤会**静默失效**。线上实测（2026-09-16）：
+    文案推荐「感恩母亲 / 春风暖阳 / 温柔以待…」5 款，卡片却给了 8 款文案没提过的商品。
+    """
+    if ui != UIType.PLAN_CARD or not reply or not isinstance(data, dict):
+        return data
+    plans = data.get('plans')
+    if not isinstance(plans, list) or not plans:
+        return data
+    diy = [p for p in plans if isinstance(p, dict) and (p.get('diy') is True or p.get('design'))]
+    prods = [p for p in plans if isinstance(p, dict) and not (p.get('diy') is True or p.get('design'))]
+    if not prods:
+        return data
+    aligned = ReActAgent._align_products_with_reply(prods, reply)
+    if not aligned or aligned == prods:
+        return data
+    logger.info('[agent] 商品卡已与回复对齐：%d 款 → %d 款', len(prods), len(aligned))
+    out = dict(data)
+    out['plans'] = diy + aligned
+    return out
+
+
 # ── system prompt 模板 ──────────────────────────────────────────────────────
 # 文本统一放 agent/prompts/*.md（外置原因：prompt 是本项目改动最频繁的资产，
 # 内联在 _build_system 里时改一句话要动 Python、无法单独 diff 或做 A/B）。
@@ -1065,6 +1099,10 @@ class ReActAgent:
             respond_args, tool_log, incoming, message, final_reply, user_id, sid, location, new_msgs,
             session_req=req_acc,
         )
+        # 商品卡与**最终**回复对齐：必须在 final_reply 定型之后做——_post_process 内部
+        # 调 _derive_ui 时 reply 还没被 respond_to_user 覆盖，在那里按文案过滤会失效
+        # （线上实测：文案推 5 款、卡片给 8 款无关商品）。
+        data = _align_card_data_with_reply(ui, data, final_reply)
         # 排版兜底：删掉 LLM 回复里独立的分隔线行（--- / *** / ——），改为靠 prompt
         # 规则让其用数字编号分段；此处只做删除不做改写，不碰卡片数据。
         final_reply = _strip_separator_lines(final_reply)
@@ -1561,6 +1599,9 @@ class ReActAgent:
                     continue
                 entity = (tc.arguments or {}).get('entity')
                 if entity == 'plan':
+                    # ⚠️ 此处**不**做去重/文案对齐：_derive_ui 被调用时 reply 还没定型
+                    # （respond_to_user 的 reply 更晚才覆盖 final_reply），提前过滤+截断会把
+                    # 真正推荐的商品挤掉。统一交给 run() 末尾的 _align_card_data_with_reply。
                     return (UIType.PLAN_CARD, {'plans': rows})
                 if entity == 'shop':
                     return (UIType.SHOP_CARD, {'shops': rows})
@@ -1572,6 +1613,50 @@ class ReActAgent:
                 continue
             return render(result)
         return (UIType.TEXT, {})
+
+    # 商品卡展示上限：平台一次查询常回 20 行，全倒出来既啰嗦又把文案冲淡。
+    PRODUCT_CARD_LIMIT = 8
+
+    @classmethod
+    def _align_products_with_reply(cls, rows: list[Any], reply: str) -> list[dict[str, Any]]:
+        """把商品卡与回复文字对齐：去重 → 只留回复点名的 → 截断。
+
+        Args:
+            rows: `platform_db_query_entity(entity='plan')` 返回的原始行。
+            reply: 本轮最终回复文字（用于判断模型推荐了哪几款）。
+
+        Returns:
+            可直接渲染的商品行列表。
+
+        为什么（2026-09-16 线上实测）：平台 `products` 里同款花束会在多家店铺各自上架，
+        原始查询一次返回 20 行，其中「感恩母亲 ¥158」重复出现 6 次以上；而模型回复只
+        推荐了 4-5 款 → 卡片区「大片重复 + 与文案对不上」。规则：
+
+        1. 同「花名 + 价格」视为同一款，保留平台排序靠前的那条；
+        2. 回复里**点名**了若干款时只展示这些（模型已替用户筛过一轮）；若一个都没匹配上
+           （模型换了说法/用别名），退回去重后的全集——宁多勿漏，避免卡片空掉；
+        3. 最多 `PRODUCT_CARD_LIMIT` 条。
+        """
+        uniq: list[dict[str, Any]] = []
+        seen: set[tuple[str, Any]] = set()
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            name = str(r.get('name') or '').strip()
+            if not name:
+                continue
+            key = (name, r.get('price'))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(r)
+        if not uniq:
+            return []
+        if reply:
+            picked = [r for r in uniq if str(r.get('name') or '').strip() in reply]
+            if picked:
+                uniq = picked
+        return uniq[:cls.PRODUCT_CARD_LIMIT]
 
     def _extract_products(self, tool_log: list[ToolCallRecord]) -> list[dict[str, Any]]:
         """从本轮工具日志提取 platform_db_query_entity(entity=plan) 的成功结果，
@@ -1592,6 +1677,10 @@ class ReActAgent:
                 continue
             rows = result.get('data')
             if not isinstance(rows, list) or not rows:
+                continue
+            # 同样去重 + 截断：products 字段会直接展示给用户，不能带重复行。
+            rows = self._align_products_with_reply(rows, '')
+            if not rows:
                 continue
             products: list[dict[str, Any]] = []
             for r in rows:
