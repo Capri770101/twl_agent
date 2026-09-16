@@ -68,10 +68,18 @@ def visible_tool_specs() -> list[ToolSpec]:
         specs = [s for s in specs if OPS_TOOL_TAG not in s.tags]
     allowed = allowed_entities()
     if allowed:
-        specs = [
-            _narrow_entity_schema(s, allowed) if s.name == 'platform_db_query_entity' else s
-            for s in specs
-        ]
+        kept = [e for e in _PLATFORM_ENTITIES if e in allowed]
+        if not kept:
+            # 白名单里没有任何合法实体（配置写错，如 PLATFORM_ALLOWED_ENTITIES=none）
+            # → **fail-closed**：直接把查询工具下架。绝不能回退成「不限制」——
+            # 那会让体验实例的收窄静默失效，等于白配。
+            logger.warning('[toolkit] PLATFORM_ALLOWED_ENTITIES=%s 无合法实体，已下架平台查询工具', sorted(allowed))
+            specs = [s for s in specs if s.name != 'platform_db_query_entity']
+        else:
+            specs = [
+                _narrow_entity_schema(s, allowed) if s.name == 'platform_db_query_entity' else s
+                for s in specs
+            ]
     return specs
 
 

@@ -81,6 +81,13 @@ def test_registry_not_mutated(monkeypatch):
     assert 'shop' in original.description
 
 
+def test_invalid_allowlist_hides_query_tool(monkeypatch):
+    """白名单写错（没有任何合法实体）时必须 fail-closed：下架查询工具，
+    **不能**回退成「不限制」——那会让体验实例的收窄静默失效。"""
+    _set_allowed(monkeypatch, 'none')
+    assert all(s.name != 'platform_db_query_entity' for s in toolkit.visible_tool_specs())
+
+
 # ── 执行层兜底 ───────────────────────────────────────────────────────
 
 def test_query_rejects_disallowed_entity(monkeypatch):
