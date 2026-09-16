@@ -56,6 +56,9 @@ services:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./deploy/certs:/etc/nginx/certs:ro
       - ./deploy/webroot:/var/www/certbot:ro
+      # 客户体验演示页（纯静态，挂到 /usr/share/nginx/html/demo → 对外 /demo/）
+      # 改前端只需覆盖 ./demo/index.html，无需重建任何容器。
+      - ./demo:/usr/share/nginx/html/demo:ro
     depends_on:
       - agent
 
@@ -71,5 +74,52 @@ services:
     depends_on:
       - agent
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # 客户体验演示栈（可选，profile=demo）
+  #
+  #   docker compose --profile nginx --profile demo up -d --build
+  #
+  # 与生产**完全隔离**：独立数据库、独立容器、独立进程、独立 JWT 密钥。
+  # 演示流量不写生产库、不读生产用户数据（这是给客户临时体验用的沙箱）。
+  # 停止演示：docker compose --profile demo down   （数据卷 pgdata_demo 保留）
+  # ══════════════════════════════════════════════════════════════════════════
+  postgres-demo:
+    image: postgres:16-alpine
+    container_name: flora-postgres-demo
+    restart: unless-stopped
+    profiles: ["demo"]
+    environment:
+      POSTGRES_USER: flora
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD:?请在 .env 中设置 DEMO_POSTGRES_PASSWORD}
+      POSTGRES_DB: flora_demo
+    volumes:
+      - pgdata_demo:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flora -d flora_demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  agent-demo:
+    build: .
+    container_name: flora-agent-demo
+    restart: unless-stopped
+    profiles: ["demo"]
+    ports:
+      - "127.0.0.1:8010:8000"
+    env_file:
+      - .env.demo
+    volumes:
+      - ./data_demo:/app/data
+    depends_on:
+      postgres-demo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 volumes:
   pgdata:
+  pgdata_demo:

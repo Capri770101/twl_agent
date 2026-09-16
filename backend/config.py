@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     # 多实例部署时各实例独立计数（如需全局精确限流需换 Redis 后端）。
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 30
+    # 额外按**来源 IP** 限流（0 = 关闭）。
+    # 存在理由：user_id 是按平台身份签发的，公开演示页每次访问都会领到一个全新的匿名身份，
+    # 只按 user_id 限流等于没有上限。生产（单一可信接入方）保持 0 即可 —— 行为零变化。
+    RATE_LIMIT_IP_PER_MINUTE: int = 0
 
     # ── 检索缺口日志（Tier 1.3 观测：记录零结果/低分查询以发现知识库盲区）──
     # 默认关闭，避免每次检索都写盘 + 隐私面；运营观测盲区时再打开。

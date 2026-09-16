@@ -983,6 +983,47 @@ def _anchor_style(plan: dict) -> None:
         plan['substyle_id'] = None
         plan['substyle'] = None
 
+def _design_qty_map(design: dict) -> dict[str, int]:
+    """方案里各花材的**真实支数**（authoritative），用于校正文字描述里的数量。"""
+    out: dict[str, int] = {}
+    for grp in ('main_flowers', 'fillers', 'foliage'):
+        for f in design.get(grp) or []:
+            if not isinstance(f, dict):
+                continue
+            name = str(f.get('name') or '').strip()
+            qty = f.get('qty')
+            if name and isinstance(qty, (int, float)) and int(qty) > 0:
+                out[name] = int(qty)
+    return out
+
+
+def _sync_flower_qty(text: str, qty: dict[str, int]) -> str:
+    """把文字里「花名×N」/「N朵花名」的数量改写成方案的**真实支数**。
+
+    为什么需要：``desc`` / ``diy_steps`` 由 LLM 按**它自己**的支数写，而最终支数由
+    预算分配（``_alloc_stems``）决定。两者不一致时用户会看到自相矛盾的方案——
+    线上实测（2026-09-16）：描述写「粉色康乃馨×12 配洋桔梗×4 及尤加利叶×3」，
+    而花材清单是「康乃馨×3 枝、洋桔梗×2 枝」。
+
+    只改**已知花名**紧邻的数量，其他数字（预算金额、天数、温度、cm）一律不动。
+    """
+    if not text or not qty:
+        return text
+    names = sorted(qty, key=len, reverse=True)          # 长名优先，避免「玫瑰」吃掉「粉玫瑰」
+    alt = '|'.join(re.escape(n) for n in names)
+    text = re.sub(
+        r'(' + alt + r')\s*[×xX＊*]\s*(\d{1,3})',
+        lambda m: f'{m.group(1)}×{qty[m.group(1)]}',
+        text,
+    )
+    text = re.sub(
+        r'(\d{1,3})\s*[朵支枝]\s*([\u4e00-\u9fff]{0,2}?)(' + alt + r')',
+        lambda m: f'{m.group(2)}{m.group(3)}×{qty[m.group(3)]}',
+        text,
+    )
+    return text
+
+
 def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
     """用 LLM 生成的语义字段覆盖 baseline；缺字段回落 baseline，保证 schema 完整不崩。
 
@@ -1059,6 +1100,17 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
             fl['qty'] = int(_sc)
     _anchor_style(plan)
     plan = _enrich_plan_fees(plan)
+    # ===== 支数一致性校正 =====
+    # 最终支数已定（预算分配 / 单一花材硬约束都跑完了），此时把 LLM 写的文字里的
+    # 数量对齐到方案真实支数，避免「desc 说 ×12、花材清单说 ×3」这种自相矛盾。
+    _qmap = _design_qty_map(plan.get('design') or {})
+    if _qmap:
+        plan['desc'] = _sync_flower_qty(str(plan.get('desc') or ''), _qmap)
+        if isinstance(plan.get('diy_steps'), list):
+            plan['diy_steps'] = [_sync_flower_qty(str(s), _qmap) for s in plan['diy_steps']]
+        _d = plan.get('design') or {}
+        if isinstance(_d.get('diy_steps'), list):
+            _d['diy_steps'] = [_sync_flower_qty(str(s), _qmap) for s in _d['diy_steps']]
     return plan
 
 # L2：在设计调用里**顺带**要求模型输出它读到的结构化需求（零额外 LLM 调用）。

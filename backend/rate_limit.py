@@ -82,6 +82,9 @@ class FixedWindowLimiter:
 
 _limiter: FixedWindowLimiter | None = None
 _init_lock = threading.Lock()
+# 备用限流器（按自定义配额，如按 IP 的 `RATE_LIMIT_IP_PER_MINUTE`）。
+# 与主限流器分开计数，避免两条维度互相污染。
+_alt_limiters: dict[int, FixedWindowLimiter] = {}
 
 
 def _get_limiter() -> FixedWindowLimiter:
@@ -95,15 +98,29 @@ def _get_limiter() -> FixedWindowLimiter:
     return _limiter
 
 
-def check_rate_limit(key: str) -> tuple[bool, int]:
+def _get_alt_limiter(per_minute: int) -> FixedWindowLimiter:
+    """按指定配额取（或建）一个独立限流器。"""
+    with _init_lock:
+        lim = _alt_limiters.get(per_minute)
+        if lim is None:
+            lim = FixedWindowLimiter(per_minute, window_seconds=60.0)
+            _alt_limiters[per_minute] = lim
+            logger.info('[rate_limit] 已启用附加维度：%d 次/分钟', per_minute)
+        return lim
+
+
+def check_rate_limit(key: str, per_minute: int | None = None) -> tuple[bool, int]:
     """对指定维度做一次限流检查。
 
     Args:
         key: 限流维度标识。
+        per_minute: 自定义每分钟配额；None 时使用 ``settings.RATE_LIMIT_PER_MINUTE``。
 
     Returns:
         ``(是否允许, retry_after_seconds)``；未启用限流时一律放行 ``(True, 0)``。
     """
     if not settings.RATE_LIMIT_ENABLED:
         return True, 0
-    return _get_limiter().allow(key)
+    if per_minute is None:
+        return _get_limiter().allow(key)
+    return _get_alt_limiter(per_minute).allow(key)

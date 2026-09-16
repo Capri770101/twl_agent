@@ -458,6 +458,93 @@ def _platform_nudge_text(entity: str) -> str:
     )
 
 
+_CARD_TOOLS = ('generate_diy_plan', 'revise_diy_plan', 'show_plan_card')
+# 「方案类追问」——命中这些词的问句应按知识问答作答，不该被强制拉回出卡
+_PLAN_QUESTION_WORDS = (
+    '为什么', '为何', '怎么养', '如何养', '养护', '寓意', '花语', '有毒', '能吃',
+    '区别', '什么是', '什么意思', '能放多久', '几天', '怎么保存', '真的吗',
+)
+
+
+def _card_produced(tool_log: list[Any]) -> bool:
+    """本轮是否产出了「用户可看的方案/商品/店铺」证据。
+
+    用于区分「真的查了/真的生成了方案」与「只是把内容写进 reply 里」。
+    """
+    for tc in tool_log or []:
+        if getattr(tc, 'status', '') != 'ok':
+            continue
+        name = getattr(tc, 'name', '')
+        if name in _CARD_TOOLS:
+            return True
+        if name == 'platform_db_query_entity':
+            ent = str((getattr(tc, 'arguments', None) or {}).get('entity') or '')
+            if ent in ('plan', 'shop'):
+                return True
+    return False
+
+
+def _expresses_flower_need(message: str) -> bool:
+    """用户这句话里是否表达了花艺需求（收花人/场合/预算/颜色/风格/单一花材/支数任一）。
+
+    直接复用需求抽取器——它本来就是「用户想要一束花」的判定器，比另建关键词表可靠。
+    ⚠️ 不做 try/except 兜底：这里静默吞异常会**悄悄关掉整条防编造护栏**
+    （第一版就是因此失效——`extract_requirement` 是 run() 内的局部导入，模块级不存在）。
+    抽取器本身是纯正则、主链路每轮都在用，不存在比主链路更脆弱的可能。
+    """
+    text = (message or '').strip()
+    if not text:
+        return False
+    from agent.tools import extract_requirement
+    req = extract_requirement(text)
+    return bool(
+        req.recipient or req.occasion or req.style or req.colors
+        or req.budget_num or req.stem_count or req.single_flower
+    )
+
+
+def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool) -> bool:
+    """是否该拦下「只有文字、没有方案卡」的回复。
+
+    线上实测（2026-09-16，演示实例）：用户先说「送妈妈一束花，预算200」拿到方案卡，
+    再补「生日，粉色系，你决定就好」——模型**零工具调用**、3.7 秒直接写了两款"方案"
+    （其中「樱雾甜梦」在平台上根本不存在），用户拿不到卡片，也无法核验真伪。
+
+    判定刻意保守（误判要多花一轮 LLM）：
+      · 只在本会话**已有方案上下文**时才拦（`has_context`）——首次提问时用文字追问是合理的；
+      · 命中知识类问句（为什么/怎么养/花语…）不拦——那是真该用文字答；
+      · 必须这句话确实表达了花艺需求才拦。
+
+    Args:
+        message: 用户本轮原话。
+        tool_log: 本轮工具调用记录。
+        has_context: 本会话是否已有方案卡或已追问过一轮。
+
+    Returns:
+        需要注入「必须出卡」纠正时为 True。
+    """
+    if not has_context or _card_produced(tool_log):
+        return False
+    text = message or ''
+    if any(w in text for w in _PLAN_QUESTION_WORDS):
+        return False
+    return _expresses_flower_need(text)
+
+
+def _card_nudge_text() -> str:
+    """「只有文字没出卡」时注入的一次性纠正指令（只进本轮上下文，不落库）。"""
+    return (
+        '[系统校验未通过] 你刚才**只用文字描述了方案，并没有真的生成方案卡**。\n'
+        '本会话此前已经有过方案（或已追问过一轮），用户这句话表达的是花艺需求，'
+        '必须给出可点击的方案卡，不能只用文字描述：\n'
+        '· 要定制搭配 → 调用 generate_diy_plan；要在此基础上调整 → 调用 revise_diy_plan；\n'
+        '· 要平台在售的现成款 → 调用 platform_db_query_entity(source_id=..., entity="plan")；\n'
+        '· 拿到工具返回后，用 show_plan_card 输出卡片。\n'
+        '⚠️ reply 里的方案名 / 花材组合 / 支数 / 价格，都必须来自工具返回，'
+        '严禁凭记忆或想象编造（写不存在的商品名或错价是最严重的错误）。'
+    )
+
+
 _IMAGE_DECLINE_WORDS = (
     '不要生成', '不用生成', '别生成', '不生成', '不要出图', '不用出图', '别出图',
     '取消生图', '不要效果图', '不用效果图', '别效果图', '不要预览图', '不用预览图',
@@ -842,6 +929,17 @@ class ReActAgent:
         platform_facts = _platform_fact_hint(message)
         platform_sources = _platform_source_ids()
         _platform_nudge_left = 1  # 「未查证即作答」只纠正一次，避免与模型拉锯
+        # 「只有文字没出卡」的判定上下文。三条任一成立即算「该出卡了」：
+        #   ① 历史里已有方案卡；② 本会话已追问过一轮；③ **用户已经说过话（非首轮）**。
+        # ③ 是必需的兜底：实测模型在纯文字追问时**并不填 `missing`**，也不产出卡片，
+        #    于是 ② 永远落不上标记（2026-09-16 二次复现），只能按轮次兜住。
+        _card_nudge_left = 1
+        _prior_user_turns = sum(1 for m in history if str(m.get('role')) == 'user')
+        _has_plan_context = (
+            bool(current_plan)
+            or await mem_store.get_session_flag(user_id, sid, 'clarify_asked') == '1'
+            or _prior_user_turns >= 1
+        )
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
         # 只把 role/content 发给 LLM：ui/data 是本系统内部的卡片结构，既不是模型该读的
         # 内容，也不该出现在请求体里（此前原样透传，属无意义载荷）。
@@ -905,10 +1003,38 @@ class ReActAgent:
                             '[agent] 平台事实类提问未查询平台（entity=%s），已注入纠正并要求重答', platform_facts,
                         )
                         continue
+                    # 「只有文字、没有方案卡」→ 同样拦一次。
+                    # 线上实测（2026-09-16）：已有方案的会话里，用户补一句「生日，粉色系，你决定就好」，
+                    # 模型零工具调用直接写了两个方案（其中一个商品名平台上根本不存在）。
+                    if _card_nudge_left and _needs_card_nudge(message, tool_log, _has_plan_context):
+                        _card_nudge_left -= 1
+                        messages.append({'role': 'user', 'content': _card_nudge_text()})
+                        respond_args = None
+                        logger.warning('[agent] 本轮只产出文字、未生成方案卡，已注入纠正并要求重答')
+                        continue
                     break
                 continue
             else:
                 final_reply = getattr(msg, 'content', '') or ''
+                # ⚠️ 模型**一个工具都没调**、直接回一段文字，同样可能是「该出卡却只写文字」。
+                # 两条护栏在这里也必须生效——此前它们只守在 `respond_to_user` 分支里，
+                # 线上实测（2026-09-16）模型正是走了这条路径（零工具调用、4.5 秒回文字），
+                # 导致护栏形同虚设、还谎称「明细在卡片里」。
+                if (_platform_nudge_left and platform_facts and platform_sources
+                        and not _platform_queried(tool_log, platform_facts)):
+                    _platform_nudge_left -= 1
+                    messages.append({'role': 'assistant', 'content': final_reply})
+                    messages.append({'role': 'user', 'content': _platform_nudge_text(platform_facts)})
+                    final_reply = ''
+                    logger.warning('[agent] 未调工具即答平台事实（entity=%s），已注入纠正并要求重答', platform_facts)
+                    continue
+                if _card_nudge_left and _needs_card_nudge(message, tool_log, _has_plan_context):
+                    _card_nudge_left -= 1
+                    messages.append({'role': 'assistant', 'content': final_reply})
+                    messages.append({'role': 'user', 'content': _card_nudge_text()})
+                    final_reply = ''
+                    logger.warning('[agent] 未调工具且未出卡，已注入纠正并要求重答')
+                    continue
                 messages.append({'role': 'assistant', 'content': final_reply})
                 break
         else:
@@ -916,6 +1042,25 @@ class ReActAgent:
                 final_reply = final_reply or '我已经为你整理好相关结果啦，请查看下方卡片～'
             else:
                 final_reply = final_reply or '抱歉，我思考得太久啦，请简化需求或分步骤再问我～'
+        # ── 兜底出卡：纠正过一次后模型仍不肯出卡 → 用**规则引擎**确定性地补一张 ──
+        # 线上实测（2026-09-16）：模型连续两轮都只写文字，还谎称「明细在卡片里」。
+        # 与其让客户看到一张不存在的卡，不如给一张朴素但真实的方案卡（零 LLM 成本）。
+        if (_card_nudge_left == 0 and not _card_produced(tool_log)
+                and _needs_card_nudge(message, tool_log, _has_plan_context)):
+            try:
+                from agent.tools import _build_plan, extract_requirement
+                _dims = req_acc.to_legacy_dict() if req_acc is not None else extract_requirement(message).to_legacy_dict()
+                _fb = _build_plan(_dims or {})
+                respond_args = {
+                    'reply': '按你的要求配好了这束，细节都在卡片里，想调整随时说～',
+                    'ui': UIType.PLAN_CARD.value,
+                    'data': {'plans': [_fb]},
+                    'stage': SessionStage.VIEW_PLAN.value,
+                    'intent': 'design',
+                }
+                logger.warning('[agent] 模型未出卡，已用规则引擎兜底生成方案卡 plan_id=%s', _fb.get('plan_id'))
+            except Exception:
+                logger.exception('[agent] 兜底出卡失败（不影响主流程）')
         new_stage, ui, data, final_reply, llm_intent = await self._post_process(
             respond_args, tool_log, incoming, message, final_reply, user_id, sid, location, new_msgs,
             session_req=req_acc,
@@ -1145,6 +1290,14 @@ class ReActAgent:
             data = {}
             final_reply = _append_clarify(final_reply, _clarify)
             logger.info('[agent] L3 澄清追问 slots=%s（本轮不推方案卡）', _clarify)
+        elif (isinstance(respond_args, dict) and respond_args.get('missing')
+              and ui != UIType.PLAN_CARD):
+            # 模型**自己**用文字追问（没产出卡片）时同样要记「已追问过一次」。
+            # 否则「追问只做一次、第二次必须给方案」这条规则没有落点：线上实测
+            # （2026-09-16）模型第 1 轮纯文字追问没有留下标记 → 第 2 轮用户补齐后
+            # 模型既不追问也不出卡，改成用文字写了一段"凭想象"的方案。
+            await mem_store.set_session_flag(user_id, sid, 'clarify_asked', '1')
+            logger.info('[agent] 模型自报缺信息 %s，标记本会话已追问一次', respond_args.get('missing'))
 
         # ── 6. 方案即生图 ──
         diy_done = _diy_produced

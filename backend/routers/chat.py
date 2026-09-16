@@ -21,7 +21,7 @@ from backend.auth import current_user, current_user_info, require_user
 from backend.observability import record_call_start, record_call_end, record_tool_call
 from backend.rate_limit import check_rate_limit
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -50,17 +50,31 @@ async def _acquire_agent_slot() -> bool:
         return False
 
 
-def _enforce_rate_limit(user_id: str) -> None:
+def _client_ip(request: Request | None) -> str:
+    """取真实客户端 IP（nginx 已设 X-Real-IP；回落到连接地址）。"""
+    if request is None:
+        return 'unknown'
+    fwd = request.headers.get('x-real-ip') or ''
+    if fwd.strip():
+        return fwd.split(',')[0].strip()
+    return request.client.host if request.client else 'unknown'
+
+
+def _enforce_rate_limit(user_id: str, request: Request | None = None) -> None:
     """按用户维度做请求限流（进程内固定窗口）。
 
     超限抛 429，携带 Retry-After 供客户端退避。限流是**成本护栏**的一部分：
     与 token 日预算（agent/engine/budget.py）互补，防止单用户高频刷接口烧钱。
 
+    另可选按**来源 IP** 再限一道（`RATE_LIMIT_IP_PER_MINUTE` > 0 时生效）：
+    公开演示页每次访问都会领一个全新匿名身份，只按 user_id 限流挡不住刷量。
+
     Args:
         user_id: 已通过鉴权的调用方用户标识。
+        request: 用于取来源 IP（缺省则跳过 IP 维度）。
 
     Raises:
-        HTTPException: 当该用户在当前窗口内请求次数超限时抛出 429。
+        HTTPException: 当用户或 IP 在当前窗口内请求次数超限时抛出 429。
     """
     allowed, retry_after = check_rate_limit(f'chat:{user_id}')
     if not allowed:
@@ -69,6 +83,16 @@ def _enforce_rate_limit(user_id: str) -> None:
             detail=f'请求过于频繁，请 {retry_after} 秒后再试',
             headers={'Retry-After': str(retry_after)},
         )
+    if settings.RATE_LIMIT_ENABLED and settings.RATE_LIMIT_IP_PER_MINUTE > 0:
+        ip = _client_ip(request)
+        if ip != 'unknown':
+            allowed_ip, retry_ip = check_rate_limit(f'chat-ip:{ip}', per_minute=settings.RATE_LIMIT_IP_PER_MINUTE)
+            if not allowed_ip:
+                raise HTTPException(
+                    status_code=429,
+                    detail=f'当前网络请求过于频繁，请 {retry_ip} 秒后再试',
+                    headers={'Retry-After': str(retry_ip)},
+                )
 
 
 # 后台任务强引用：asyncio 只持有弱引用，不保存会被 GC 掉导致任务半途消失
@@ -158,12 +182,13 @@ class CreateConvRequest(BaseModel):
 @router.post('/chat')
 async def chat(
     req: ChatRequest,
+    request: Request,
     authenticated_user: str | None = Depends(current_user),
     user_info: Any = Depends(current_user_info),
 ) -> Any:
     """与智能体对话，返回结构化 UI 响应。"""
     require_user(req.user_id, authenticated_user)
-    _enforce_rate_limit(req.user_id)
+    _enforce_rate_limit(req.user_id, request)
     logger.info('chat user=%s msg=%s', req.user_id, req.message[:80])
 
     # ── 监控埋点：入口 ──
@@ -219,12 +244,13 @@ async def chat(
 @router.post('/chat/stream')
 async def chat_stream(
     req: ChatRequest,
+    request: Request,
     authenticated_user: str | None = Depends(current_user),
     user_info: Any = Depends(current_user_info),
 ) -> StreamingResponse:
     """SSE 流式对话端点。"""
     require_user(req.user_id, authenticated_user)
-    _enforce_rate_limit(req.user_id)
+    _enforce_rate_limit(req.user_id, request)
     logger.info('chat/stream user=%s msg=%s', req.user_id, req.message[:80])
 
     # ── 监控埋点：入口 ──
@@ -327,7 +353,7 @@ async def ui_contract() -> dict[str, Any]:
 
     供接入平台的前端 / AI 在对接时程序化对照自己实现了哪些组件，
     避免「智能体返回了结构化数据、前端却没组件渲染」的断层。
-    与 FRONTEND_CONTRACT.md、agent/engine/ui_protocol.py 保持一致。
+    与 docs/05-前端对接契约.md、agent/engine/ui_protocol.py 保持一致。
     """
     ui_types = [
         {
@@ -376,8 +402,16 @@ async def ui_contract() -> dict[str, Any]:
             'ui': UIType.IMAGE_TASK.value,
             'action_type': 'start_image_task',
             'required_capabilities': ['start_image_task'],
-            'render': '生图进度：展示生成中 + 按 poll 轮询 GET /tasks/{task_id}；成功后展示 result_url/image_url',
+            'render': ('生图进度：展示生成中 + 按 poll 轮询 GET /tasks/{task_id}；'
+                       "⚠️ 成功终态是 `done`（不是 `succeeded`），失败是 `failed`，"
+                       "进行中是 `processing`；成功后展示 result_url"),
             'example': {'task_id': 'task_img_0001', 'poll': '/tasks/task_img_0001', 'result_url': ''},
+            'poll_status_values': {
+                'processing': '生成中，继续轮询',
+                'done': '成功，取 result_url 展示',
+                'failed': '失败，读 error 字段并提示重试',
+                'not_found': '任务不存在或不属于当前用户',
+            },
         },
         {
             'ui': UIType.GREETING_CARD.value,
@@ -390,7 +424,7 @@ async def ui_contract() -> dict[str, Any]:
     return {
         'ui_types': ui_types,
         'required_components': ['text', 'dialog_options', 'plan_card', 'shop_card', 'order_card', 'pay_jump', 'image_task', 'greeting_card'],
-        'contract_doc': 'FRONTEND_CONTRACT.md',
+        'contract_doc': 'docs/05-前端对接契约.md',
         'schema_source': 'agent/engine/ui_protocol.py',
         'note': '本后端只产出结构化 ui/data/action，前端渲染由宿主平台负责。接入前请先实现上述组件，否则会出现“有数据无展示”。',
     }

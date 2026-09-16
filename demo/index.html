@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>你的专属花艺小助手 · 体验版</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   设计方向：花艺标本册（botanical atelier）
+   暖象牙纸底 · 墨绿主色 · 黄铜细线 · 衬线标题 + 无衬线正文
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --paper:#F5F1E9;
+  --paper-2:#FDFBF7;
+  --paper-3:#EFEAE0;
+  --ink:#1E1C19;
+  --ink-2:#5B554B;
+  --ink-3:#8E877B;
+  --moss:#2B4133;
+  --moss-2:#3D5A49;
+  --moss-3:#6B8574;
+  --brass:#A58449;
+  --brass-2:#C8AC79;
+  --line:#E4DCCE;
+  --line-2:#D3C8B4;
+  --warn:#9C6B2F;
+  --danger:#8E3B33;
+  --radius:14px;
+  --font-display:"Songti SC","Source Han Serif SC","Noto Serif CJK SC","STSong","SimSun",Georgia,serif;
+  --font-body:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Segoe UI",system-ui,sans-serif;
+  --font-num:Georgia,"Times New Roman",var(--font-body);
+  --shadow-s:0 1px 2px rgba(30,28,25,.04),0 2px 8px rgba(30,28,25,.04);
+  --shadow-m:0 2px 4px rgba(30,28,25,.05),0 12px 32px rgba(30,28,25,.07);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:var(--font-body);
+  color:var(--ink);
+  background:
+    radial-gradient(1200px 640px at 10% -10%,#FCF8F0 0%,transparent 58%),
+    radial-gradient(900px 520px at 104% -2%,#EFE8DB 0%,transparent 52%),
+    var(--paper);
+  -webkit-font-smoothing:antialiased;
+  line-height:1.7;
+  overflow:hidden;
+}
+/* 纸纹颗粒 */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.30;mix-blend-mode:multiply;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+}
+
+/* ── 布局骨架 ── */
+.app{
+  position:relative;z-index:1;
+  height:100dvh;
+  display:grid;
+  grid-template-rows:auto 1fr auto;
+  max-width:880px;margin:0 auto;
+  padding:0 20px;
+}
+
+/* ── 报头 ── */
+.masthead{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:20px 2px 16px;
+  border-bottom:1px solid var(--line-2);
+  position:relative;
+}
+.masthead::after{
+  content:"";position:absolute;left:0;right:0;bottom:-4px;height:1px;background:var(--line);
+}
+.brand{display:flex;align-items:center;gap:13px;min-width:0}
+.mark{flex:none;width:34px;height:34px}
+.mark path,.mark circle,.mark line{stroke:var(--moss);fill:none;stroke-width:1.25;stroke-linecap:round}
+.mark .fill{fill:var(--brass);stroke:none}
+.brand h1{
+  font-family:var(--font-display);
+  font-size:19px;font-weight:600;letter-spacing:.06em;line-height:1.2;
+}
+.brand p{
+  font-size:11px;color:var(--ink-3);letter-spacing:.22em;text-transform:uppercase;
+  margin-top:3px;font-family:var(--font-num);
+}
+.masthead-actions{display:flex;align-items:center;gap:10px;flex:none}
+.status{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:11.5px;color:var(--ink-2);letter-spacing:.06em;
+  padding:5px 11px;border:1px solid var(--line-2);border-radius:999px;background:var(--paper-2);
+  white-space:nowrap;
+}
+.status i{width:6px;height:6px;border-radius:50%;background:var(--moss-3);flex:none;transition:background .3s}
+.status.thinking i{background:var(--brass);animation:pulse 1.3s ease-in-out infinite}
+.status.err i{background:var(--danger)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
+.btn-ghost{
+  font:inherit;font-size:12px;letter-spacing:.06em;color:var(--ink-2);
+  background:none;border:1px solid var(--line-2);border-radius:999px;
+  padding:6px 14px;cursor:pointer;transition:.22s;
+}
+.btn-ghost:hover{color:var(--moss);border-color:var(--moss-3);background:var(--paper-2)}
+
+/* ── 对话区 ── */
+.stage{overflow-y:auto;overscroll-behavior:contain;padding:26px 2px 8px;scrollbar-width:thin}
+.stage::-webkit-scrollbar{width:7px}
+.stage::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:9px}
+.log{display:flex;flex-direction:column;gap:26px}
+
+/* 入场动画 */
+.rise{animation:rise .5s cubic-bezier(.2,.7,.3,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+/* 用户消息 */
+.msg-user{align-self:flex-end;max-width:min(76%,520px)}
+.msg-user .bubble{
+  background:var(--moss);color:#F3F1EA;
+  padding:12px 17px;border-radius:16px 16px 4px 16px;
+  font-size:15px;box-shadow:var(--shadow-s);white-space:pre-wrap;word-break:break-word;
+}
+
+/* 助手消息（无气泡 · 编辑排版） */
+.msg-bot{max-width:100%;padding-left:15px;border-left:2px solid var(--brass-2)}
+.msg-bot .who{
+  font-family:var(--font-num);font-size:10.5px;letter-spacing:.24em;text-transform:uppercase;
+  color:var(--brass);margin-bottom:8px;
+}
+.msg-bot .say{font-size:15.5px;color:var(--ink);white-space:pre-wrap;word-break:break-word}
+.msg-bot .say strong{font-weight:600}
+
+/* 系统提示 */
+.msg-note{align-self:center;font-size:12.5px;color:var(--ink-3);letter-spacing:.04em;text-align:center;max-width:80%}
+
+/* 思考中 */
+.thinking-line{display:flex;align-items:center;gap:11px;color:var(--ink-2);font-size:14px}
+.think-dots{display:inline-flex;gap:4px;flex:none}
+.think-dots i{width:5px;height:5px;border-radius:50%;background:var(--brass);animation:dot 1.25s ease-in-out infinite}
+.think-dots i:nth-child(2){animation-delay:.18s}
+.think-dots i:nth-child(3){animation-delay:.36s}
+@keyframes dot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+.think-elapsed{font-family:var(--font-num);font-size:11.5px;color:var(--ink-3);letter-spacing:.08em}
+
+/* ══ 方案卡（标本卡）══ */
+.card{
+  background:var(--paper-2);border:1px solid var(--line-2);border-radius:var(--radius);
+  box-shadow:var(--shadow-m);overflow:hidden;margin-top:16px;
+}
+.card-head{
+  padding:19px 22px 15px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,#FFFDFA,#FBF7EF);
+}
+.card-kicker{
+  font-family:var(--font-num);font-size:10px;letter-spacing:.26em;text-transform:uppercase;
+  color:var(--brass);margin-bottom:7px;
+}
+.card-title{font-family:var(--font-display);font-size:21px;font-weight:600;letter-spacing:.03em;line-height:1.35}
+.card-sub{font-size:12.5px;color:var(--ink-3);margin-top:7px}
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}
+.chip{
+  font-size:11.5px;color:var(--moss);background:#EDF1EC;border:1px solid #DCE4DB;
+  padding:3px 10px;border-radius:999px;letter-spacing:.03em;
+}
+.chip.brass{color:var(--warn);background:#F7F0E2;border-color:#E9DCC2}
+
+.card-body{padding:18px 22px 20px}
+.sect{margin-bottom:17px}
+.sect:last-child{margin-bottom:0}
+.sect-label{
+  font-family:var(--font-num);font-size:10px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--ink-3);margin-bottom:9px;display:flex;align-items:center;gap:9px;
+}
+.sect-label::after{content:"";flex:1;height:1px;background:var(--line)}
+
+/* 花材 */
+.fl{display:flex;flex-direction:column;gap:9px}
+.fl-row{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap}
+.fl-name{font-family:var(--font-display);font-size:16px;letter-spacing:.04em}
+.fl-qty{font-family:var(--font-num);font-size:13px;color:var(--brass);letter-spacing:.02em}
+.fl-lang{font-size:12px;color:var(--ink-3);flex:1;min-width:120px}
+.fl-sec{font-size:13px;color:var(--ink-2)}
+.fl-sec b{font-weight:500;color:var(--ink)}
+
+/* 色板 */
+.palette{display:flex;flex-wrap:wrap;gap:9px}
+.sw{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-2)}
+.sw i{
+  width:26px;height:15px;border-radius:3px;border:1px solid rgba(30,28,25,.14);
+  box-shadow:inset 0 -3px 6px rgba(0,0,0,.05);flex:none;
+}
+
+/* 引用式文本块 */
+.quote{
+  font-family:var(--font-display);font-size:15px;line-height:1.85;color:var(--moss);
+  border-left:2px solid var(--brass-2);padding:2px 0 2px 14px;letter-spacing:.02em;
+}
+.plain{font-size:14px;color:var(--ink-2);line-height:1.75}
+
+/* 折叠区 */
+details{border-top:1px solid var(--line);padding-top:13px;margin-top:15px}
+details summary{
+  cursor:pointer;list-style:none;font-size:12.5px;color:var(--moss);letter-spacing:.05em;
+  display:flex;align-items:center;gap:7px;user-select:none;
+}
+details summary::-webkit-details-marker{display:none}
+details summary::before{content:"+";font-family:var(--font-num);color:var(--brass);font-size:14px;width:10px}
+details[open] summary::before{content:"−"}
+details .inner{padding-top:12px}
+ol.steps{list-style:none;counter-reset:s;display:flex;flex-direction:column;gap:9px}
+ol.steps li{
+  counter-increment:s;position:relative;padding-left:26px;font-size:13.5px;color:var(--ink-2);line-height:1.7;
+}
+ol.steps li::before{
+  content:counter(s);position:absolute;left:0;top:1px;
+  font-family:var(--font-num);font-size:11px;color:var(--brass);
+  width:17px;height:17px;border:1px solid var(--line-2);border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+}
+
+/* 价格条 */
+.price-bar{
+  display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  border-top:1px solid var(--line-2);margin-top:18px;padding-top:16px;
+}
+.price-main{font-family:var(--font-num);font-size:27px;color:var(--moss);letter-spacing:.01em;line-height:1}
+.price-main small{font-size:12.5px;letter-spacing:.12em;color:var(--ink-3);margin-left:6px;font-family:var(--font-body)}
+.price-side{font-size:11.5px;color:var(--ink-3);text-align:right;line-height:1.65}
+.price-side b{font-family:var(--font-num);color:var(--ink-2);font-weight:500}
+
+/* 卡片动作 */
+.card-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}
+.act{
+  font:inherit;font-size:12.5px;letter-spacing:.05em;cursor:pointer;
+  padding:8px 16px;border-radius:999px;transition:.22s;border:1px solid var(--moss);
+  background:var(--moss);color:#F4F2EA;
+}
+.act:hover{background:var(--moss-2);border-color:var(--moss-2)}
+.act.ghost{background:none;color:var(--moss);border-color:var(--line-2)}
+.act.ghost:hover{background:#EDF1EC;border-color:var(--moss-3)}
+
+/* ══ 商品卡 ══ */
+.prods{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:13px;margin-top:16px}
+.prod{
+  background:var(--paper-2);border:1px solid var(--line-2);border-radius:12px;overflow:hidden;
+  display:flex;flex-direction:column;box-shadow:var(--shadow-s);cursor:pointer;transition:.24s;
+}
+.prod:hover{transform:translateY(-3px);box-shadow:var(--shadow-m);border-color:var(--brass-2)}
+.prod-img{aspect-ratio:4/3;background:var(--paper-3);overflow:hidden;position:relative}
+.prod-img img{width:100%;height:100%;object-fit:cover;display:block;transition:.5s}
+.prod:hover .prod-img img{transform:scale(1.05)}
+.prod-tag{
+  position:absolute;top:8px;left:8px;font-size:10.5px;letter-spacing:.08em;
+  background:rgba(43,65,51,.9);color:#F2F0E8;padding:3px 9px;border-radius:999px;
+}
+.prod-body{padding:11px 13px 13px;display:flex;flex-direction:column;gap:6px;flex:1}
+.prod-name{font-family:var(--font-display);font-size:15px;line-height:1.4}
+.prod-sub{font-size:11.5px;color:var(--ink-3);line-height:1.55;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.prod-foot{margin-top:auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding-top:6px}
+.prod-price{font-family:var(--font-num);font-size:19px;color:var(--moss)}
+.prod-price s{font-size:11.5px;color:var(--ink-3);margin-left:6px}
+.prod-meta{font-size:10.5px;color:var(--ink-3);font-family:var(--font-num);letter-spacing:.04em}
+
+/* ══ 店铺卡 ══ */
+.shops{display:flex;flex-direction:column;gap:11px;margin-top:16px}
+.shop{
+  background:var(--paper-2);border:1px solid var(--line-2);border-radius:12px;
+  padding:15px 17px;display:flex;gap:14px;align-items:flex-start;box-shadow:var(--shadow-s);
+}
+.shop-ava{
+  width:46px;height:46px;border-radius:9px;flex:none;object-fit:cover;
+  background:var(--paper-3);border:1px solid var(--line);
+}
+.shop-main{flex:1;min-width:0}
+.shop-name{font-family:var(--font-display);font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dot-open{
+  font-size:10.5px;letter-spacing:.06em;padding:2px 8px;border-radius:999px;
+  background:#E9F0E9;color:#3D6A4A;border:1px solid #D5E3D7;font-family:var(--font-body);
+}
+.dot-open.closed{background:#F3EDE6;color:#8A6B4A;border-color:#E7DACB}
+.shop-meta{font-size:12px;color:var(--ink-3);margin-top:6px;line-height:1.7}
+.shop-meta b{color:var(--ink-2);font-weight:500}
+
+/* ══ 效果图 ══ */
+/* 生成的图是 3:4 竖构图（768×1024）；按整栏宽度渲染会变成巨幅，故限宽并居中。 */
+.frame{
+  margin:16px auto 0;max-width:460px;border:1px solid var(--line-2);border-radius:var(--radius);
+  overflow:hidden;background:var(--paper-2);box-shadow:var(--shadow-m);
+}
+.frame-img{width:100%;display:block;opacity:0;transition:opacity .8s ease}
+.frame-img.on{opacity:1}
+.frame-pad{padding:22px}
+.frame-cap{
+  padding:11px 18px;border-top:1px solid var(--line);font-size:11.5px;color:var(--ink-3);
+  display:flex;justify-content:space-between;align-items:center;gap:10px;letter-spacing:.04em;
+}
+.frame-cap b{font-family:var(--font-num);color:var(--ink-2);font-weight:500}
+.shimmer{
+  aspect-ratio:3/4;border-radius:9px;
+  background:linear-gradient(100deg,#EFEAE0 20%,#F8F5EE 42%,#EFEAE0 64%);
+  background-size:220% 100%;animation:sh 1.6s linear infinite;
+}
+@keyframes sh{to{background-position:-220% 0}}
+
+/* ══ 欢迎区 ══ */
+.hero{padding:8px 2px 4px}
+.hero-kicker{
+  font-family:var(--font-num);font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;
+  color:var(--brass);margin-bottom:12px;
+}
+.hero h2{
+  font-family:var(--font-display);font-size:clamp(24px,4.6vw,33px);font-weight:600;
+  line-height:1.42;letter-spacing:.02em;max-width:19em;
+}
+.hero h2 em{font-style:normal;color:var(--moss);border-bottom:2px solid var(--brass-2);padding-bottom:2px}
+.hero p{font-size:14px;color:var(--ink-2);margin-top:15px;max-width:34em;line-height:1.85}
+.caps{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+.cap{
+  font-size:11.5px;color:var(--ink-2);background:var(--paper-2);border:1px solid var(--line);
+  padding:5px 12px;border-radius:999px;letter-spacing:.03em;
+}
+.examples{margin-top:28px}
+.examples .sect-label{margin-bottom:12px}
+.ex-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:10px}
+.ex{
+  text-align:left;font:inherit;font-size:13.5px;color:var(--ink);
+  background:var(--paper-2);border:1px solid var(--line-2);border-radius:11px;
+  padding:13px 15px;cursor:pointer;transition:.24s;line-height:1.55;
+  display:flex;flex-direction:column;gap:5px;
+}
+.ex:hover{border-color:var(--brass-2);background:#FFFDFA;transform:translateY(-2px);box-shadow:var(--shadow-s)}
+.ex span{font-size:11px;color:var(--ink-3);font-family:var(--font-num);letter-spacing:.1em}
+
+/* ── 输入区 ── */
+.composer{padding:14px 2px calc(18px + env(safe-area-inset-bottom));border-top:1px solid var(--line-2)}
+.chips-row{display:flex;gap:8px;overflow-x:auto;padding-bottom:11px;scrollbar-width:none}
+.chips-row::-webkit-scrollbar{display:none}
+.chip-btn{
+  font:inherit;font-size:12px;color:var(--ink-2);white-space:nowrap;cursor:pointer;
+  background:var(--paper-2);border:1px solid var(--line);border-radius:999px;padding:5px 13px;transition:.2s;
+}
+.chip-btn:hover{color:var(--moss);border-color:var(--moss-3);background:#EDF1EC}
+.input-row{display:flex;gap:10px;align-items:flex-end}
+.input-wrap{
+  flex:1;display:flex;align-items:flex-end;gap:8px;
+  background:var(--paper-2);border:1px solid var(--line-2);border-radius:16px;
+  padding:9px 14px;transition:.22s;box-shadow:var(--shadow-s);
+}
+.input-wrap:focus-within{border-color:var(--moss-3);box-shadow:0 0 0 3px rgba(107,133,116,.12)}
+textarea{
+  flex:1;font:inherit;font-size:15px;line-height:1.6;color:var(--ink);
+  border:none;background:none;outline:none;resize:none;max-height:132px;min-height:26px;padding:3px 0;
+}
+textarea::placeholder{color:var(--ink-3)}
+.send{
+  flex:none;width:42px;height:42px;border-radius:12px;border:1px solid var(--moss);
+  background:var(--moss);color:#F4F2EA;cursor:pointer;transition:.22s;
+  display:flex;align-items:center;justify-content:center;
+}
+.send:hover:not(:disabled){background:var(--moss-2);border-color:var(--moss-2)}
+.send:disabled{opacity:.35;cursor:not-allowed}
+.send svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.foot-note{
+  font-size:11px;color:var(--ink-3);text-align:center;margin-top:11px;letter-spacing:.05em;line-height:1.7;
+}
+.foot-note b{color:var(--brass);font-weight:400;letter-spacing:.16em;font-family:var(--font-display)}
+
+@media (max-width:600px){
+  .app{padding:0 14px}
+  .masthead{padding:15px 0 13px}
+  .brand h1{font-size:16.5px}
+  .status{display:none}
+  .stage{padding-top:20px}
+  .log{gap:22px}
+  .card-head,.card-body{padding-left:16px;padding-right:16px}
+  .msg-user{max-width:86%}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="masthead">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="13" r="3.4"/>
+        <path d="M16 9.6c0-3 1.6-5.2 4-6-.4 2.6-1.8 4.6-4 6z"/>
+        <path d="M16 9.6c0-3-1.6-5.2-4-6 .4 2.6 1.8 4.6 4 6z"/>
+        <path d="M12.7 14.8c-2.5-1.6-3.5-4-3.2-6.5 2.3 1.2 3.8 3.2 4.3 5.8z"/>
+        <path d="M19.3 14.8c2.5-1.6 3.5-4 3.2-6.5-2.3 1.2-3.8 3.2-4.3 5.8z"/>
+        <path d="M16 16.4V29"/>
+        <path d="M16 22.4c-2.4.4-4.2-.5-5.4-2.2 2-.5 3.8.2 5.4 2.2z"/>
+        <path d="M16 25.4c2.4.4 4.2-.5 5.4-2.2-2-.5-3.8.2-5.4 2.2z"/>
+        <circle class="fill" cx="16" cy="6.4" r="1.1"/>
+      </svg>
+      <div>
+        <h1>你的专属花艺小助手</h1>
+        <p>Floral Agent · Preview</p>
+      </div>
+    </div>
+    <div class="masthead-actions">
+      <span class="status" id="status"><i></i><span id="statusText">连接中…</span></span>
+      <button class="btn-ghost" id="resetBtn" type="button">新建会话</button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <div class="log" id="log" aria-live="polite"></div>
+  </main>
+
+  <footer class="composer">
+    <div class="chips-row" id="chips"></div>
+    <form class="input-row" id="form">
+      <div class="input-wrap">
+        <textarea id="input" rows="1" placeholder="说说你想送谁、什么场合、预算多少…" autocomplete="off"></textarea>
+      </div>
+      <button class="send" id="send" type="submit" aria-label="发送">
+        <svg viewBox="0 0 24 24"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+      </button>
+    </form>
+    <p class="foot-note">
+      体验版 · 会话数据仅存于演示沙箱，不进入生产系统 &nbsp;·&nbsp; <b>以花传情</b>
+    </p>
+  </footer>
+
+</div>
+
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════════
+   与后端的唯一约定（不要改路径）：
+     BASE 前缀 /demo-api/ → 由 nginx 反代到**演示专用**容器 flora-agent-demo
+     演示容器用独立数据库（flora_demo），与生产库完全隔离。
+   ═══════════════════════════════════════════════════════════════════ */
+const BASE = "/demo-api";
+const THINK_STAGES = [
+  "正在理解你的需求…",
+  "正在检索花材与寓意…",
+  "正在挑选配色与包装…",
+  "正在核算预算与支数…",
+  "正在斟酌文案…"
+];
+
+let token = null, userId = null, sessionId = null, busy = false;
+let thinkTimer = null, thinkIdx = 0, thinkStart = 0;
+
+const $ = (id) => document.getElementById(id);
+const log = $("log"), stage = $("stage"), input = $("input"), sendBtn = $("send");
+const statusEl = $("status"), statusText = $("statusText");
+
+/* ── 工具 ── */
+const esc = (s) => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function setStatus(kind, text) {
+  statusEl.className = "status" + (kind ? " " + kind : "");
+  statusText.textContent = text;
+}
+function scrollDown(force) {
+  const near = stage.scrollHeight - stage.scrollTop - stage.clientHeight < 220;
+  if (force || near) requestAnimationFrame(() => { stage.scrollTop = stage.scrollHeight; });
+}
+/* 相对资源（生图结果）也要打到演示容器，不能落到生产 */
+function assetUrl(u) {
+  if (!u) return "";
+  if (/^(https?:)?\/\//i.test(u) || u.startsWith("data:")) return u;
+  return BASE + (u.startsWith("/") ? u : "/" + u);
+}
+/* 色名 → 色值（取自知识库 agent/knowledge/colors.json，仅前端展示用） */
+const COLORS = {
+  "红":"#C81E27","正红":"#C81E27","暖红":"#D94F48","酒红":"#7B2D3B","粉":"#F4A7BB","浅粉":"#F9CDDB",
+  "复古粉":"#D98C9B","灰粉":"#C9A3A8","珊瑚粉":"#F08A79","粉白":"#F7DEE7","白":"#FBFBF8","奶白":"#F7F3E6",
+  "米白":"#F3EBDD","香槟":"#F0DCC0","暖奶油":"#F5E6C8","燕麦":"#E2D3B8","焦糖":"#B5793F","黄":"#F2C94C",
+  "亮黄":"#FFD23F","蜡黄":"#E8D05A","橙":"#F2994A","暖橙":"#F5A65B","金":"#C9A227","紫":"#8E7CC3",
+  "浅紫":"#C6B7E0","豆沙":"#B0746E","蓝":"#5B8DBE","浅蓝":"#A9CBEA","天蓝":"#84C2E8","灰蓝":"#8FA3B8",
+  "雾蓝":"#A9BCCD","绿":"#7BA05B","浅绿":"#BCD8A6","墨绿":"#2F4F3E","橄榄绿":"#8A9A5B","银灰":"#C3C8CD",
+  "黑":"#2B2B2B","灰绿":"#9AAE9B","单色":"#E8E4DC","灰调":"#B9B4AC","多彩混合":"#E4A0B7"
+};
+const hexOf = (n) => COLORS[String(n || "").trim()] || "#D8D2C6";
+
+/* ═══ 会话初始化 ═══ */
+let loginPromise = null;   // 登录去重：并发调用不能换出两个不同身份的 token
+async function ensureSession() {
+  if (token) return true;
+  if (loginPromise) return loginPromise;
+  loginPromise = (async () => {
+    setStatus("thinking", "连接中…");
+    try {
+      const r = await fetch(BASE + "/auth/anonymous", { method: "POST" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      token = d.access_token; userId = d.user_id;
+      setStatus("", "就绪");
+      return true;
+    } catch (e) {
+      setStatus("err", "连接失败");
+      note("无法连接演示服务（" + esc(e.message) + "）。请稍后刷新页面重试。");
+      return false;
+    } finally {
+      loginPromise = null;
+    }
+  })();
+  return loginPromise;
+}
+
+/* ═══ 消息渲染 ═══ */
+function botShell(innerHtml) {
+  const el = document.createElement("div");
+  el.className = "msg-bot rise";
+  el.innerHTML = '<div class="who">Floral Assistant</div>' + innerHtml;
+  log.appendChild(el); scrollDown(true);
+  return el;
+}
+function userMsg(text) {
+  const el = document.createElement("div");
+  el.className = "msg-user rise";
+  el.innerHTML = '<div class="bubble">' + esc(text) + "</div>";
+  log.appendChild(el); scrollDown(true);
+}
+function note(html) {
+  const el = document.createElement("div");
+  el.className = "msg-note rise";
+  el.innerHTML = html;
+  log.appendChild(el); scrollDown(true);
+}
+function thinkingBlock() {
+  const el = botShell(
+    '<div class="thinking-line"><span class="think-dots"><i></i><i></i><i></i></span>' +
+    '<span id="thinkText">' + THINK_STAGES[0] + '</span>' +
+    '<span class="think-elapsed" id="thinkClock">0s</span></div>'
+  );
+  thinkIdx = 0; thinkStart = Date.now();
+  const t = el.querySelector("#thinkText"), c = el.querySelector("#thinkClock");
+  thinkTimer = setInterval(() => {
+    const sec = Math.round((Date.now() - thinkStart) / 1000);
+    c.textContent = sec + "s";
+    const want = Math.min(Math.floor(sec / 5), THINK_STAGES.length - 1);
+    if (want !== thinkIdx) { thinkIdx = want; t.textContent = THINK_STAGES[want]; }
+  }, 500);
+  return el;
+}
+function stopThinking(el) {
+  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+  if (el && el.parentNode) el.remove();
+}
+
+/* ═══ 卡片渲染 ═══ */
+function flowerRow(f, sub) {
+  const lang = (f.flower_language || []).join(" · ");
+  return '<div class="fl-row">' +
+    '<span class="fl-name">' + esc(f.name) + '</span>' +
+    '<span class="fl-qty">×' + esc(f.qty) + (sub ? '' : ' 枝') + '</span>' +
+    (lang ? '<span class="fl-lang">' + esc(lang) + '</span>' : '') +
+    '</div>';
+}
+function diyCard(p) {
+  const d = p.design || {};
+  const main = d.main_flowers || [], fill = d.fillers || [], fol = d.foliage || [];
+  const pal = d.color_scheme || [];
+  const steps = p.diy_steps || d.diy_steps || [];
+  const money = p.estimated_price ? String(p.estimated_price) : (p.budget_num ? "约 " + p.budget_num + " 元" : "");
+  const fees = d.fees || {};
+
+  let h = '<div class="card rise"><div class="card-head">' +
+    '<div class="card-kicker">定制方案 · Bespoke</div>' +
+    '<div class="card-title">' + esc(p.name || "定制花束") + '</div>' +
+    (p.desc ? '<div class="card-sub">' + esc(p.desc) + '</div>' : '') +
+    '<div class="chips">' +
+      (p.occasion ? '<span class="chip">' + esc(p.occasion) + '</span>' : '') +
+      (p.recipient ? '<span class="chip">送' + esc(p.recipient) + '</span>' : '') +
+      (p.style ? '<span class="chip">' + esc(p.style) + '</span>' : '') +
+      (d.difficulty ? '<span class="chip">难度 ' + esc(d.difficulty) + '</span>' : '') +
+      (d.est_time ? '<span class="chip">约 ' + esc(d.est_time) + ' 分钟</span>' : '') +
+      (p.budget_tier ? '<span class="chip brass">' + esc(p.budget_tier) + '档</span>' : '') +
+    '</div></div><div class="card-body">';
+
+  if (main.length || fill.length || fol.length) {
+    h += '<div class="sect"><div class="sect-label">花材构成</div><div class="fl">';
+    main.forEach((f) => { h += flowerRow(f, false); });
+    const secs = [];
+    if (fill.length) secs.push(fill.map((f) => f.name + "×" + f.qty).join("、"));
+    if (fol.length) secs.push(fol.map((f) => f.name + "×" + f.qty).join("、"));
+    if (secs.length) {
+      h += '<div class="fl-row"><span class="fl-sec"><b>配材 · 叶材</b>　' + esc(secs.join("；")) + '</span></div>';
+    }
+    h += '</div></div>';
+  }
+  if (pal.length) {
+    h += '<div class="sect"><div class="sect-label">配色</div><div class="palette">';
+    pal.forEach((c) => { h += '<span class="sw"><i style="background:' + hexOf(c) + '"></i>' + esc(c) + '</span>'; });
+    h += '</div></div>';
+  }
+  if (d.packaging) {
+    h += '<div class="sect"><div class="sect-label">包装</div><div class="plain">' + esc(d.packaging) + '</div></div>';
+  }
+  if (d.meaning) {
+    h += '<div class="sect"><div class="sect-label">花语与祝福</div><div class="quote">' + esc(d.meaning) + '</div></div>';
+  }
+
+  const fold = (title, inner) => '<details><summary>' + title + '</summary><div class="inner">' + inner + '</div></details>';
+  if (steps.length) {
+    h += fold("制作步骤（" + steps.length + " 步）",
+      '<ol class="steps">' + steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol>");
+  }
+  const care = d.care_tips || p.care_tips;
+  if (care) h += fold("养护提示", '<div class="plain">' + esc(care) + '</div>');
+  if (d.caution) h += fold("注意事项", '<div class="plain">' + esc(d.caution) + '</div>');
+  if (fees.labor_fee != null || fees.stem_count) {
+    h += fold("费用与支数明细",
+      '<div class="plain">' + (fees.stem_count ? "含：" + esc(fees.stem_count) + "<br>" : "") +
+      (fees.labor_fee != null ? "人工费 " + esc(fees.labor_fee) + " 元" : "") +
+      (fees.decor_fee != null ? "，装饰费 " + esc(fees.decor_fee) + " 元" : "") +
+      (fees.note ? '<br><span style="color:var(--ink-3)">' + esc(fees.note) + "</span>" : "") +
+      "</div>");
+  }
+
+  h += '<div class="price-bar"><div class="price-main">' + esc(money) + '</div>' +
+    '<div class="price-side">参考报价 · 含手工与包装<br>实际以门店确认为准</div></div>';
+  h += '<div class="card-actions">' +
+    '<button class="act" data-say="出个效果图看看">生成效果图</button>' +
+    '<button class="act ghost" data-say="这个方案再改改，换个配色">换个配色</button>' +
+    '<button class="act ghost" data-say="再多给我几个方案">再看几个</button>' +
+    '</div></div></div>';
+  return h;
+}
+function prodCard(p) {
+  const img = (p.images && p.images[0]) || p.image || "";
+  const tag = (p.tags && p.tags[0]) || "";
+  const rating = p.rating ? "★ " + Number(p.rating).toFixed(1) : "";
+  const sales = p.sales ? "售 " + p.sales : "";
+  return '<div class="prod" data-say="介绍一下这款花：' + esc(p.name) + '">' +
+    '<div class="prod-img">' +
+      (img ? '<img loading="lazy" src="' + esc(img) + '" alt="">' : "") +
+      (tag ? '<span class="prod-tag">' + esc(tag) + '</span>' : "") +
+    '</div>' +
+    '<div class="prod-body">' +
+      '<div class="prod-name">' + esc(p.name || "花束") + '</div>' +
+      (p.subtitle ? '<div class="prod-sub">' + esc(p.subtitle) + '</div>' : "") +
+      '<div class="prod-foot"><span class="prod-price">¥' + esc(p.price) +
+        (p.original_price && p.original_price > p.price ? '<s>¥' + esc(p.original_price) + '</s>' : "") +
+      '</span><span class="prod-meta">' + esc([rating, sales].filter(Boolean).join(" · ")) + '</span></div>' +
+    '</div></div>';
+}
+function shopCard(s) {
+  const open = String(s.is_open_now) === "true" || s.status === "open";
+  const bits = [];
+  if (s.city) bits.push(esc(s.city));
+  if (s.business_hours) bits.push("营业 " + esc(s.business_hours));
+  if (s.delivery_time) bits.push(esc(s.delivery_time));
+  if (s.address) bits.push(esc(s.address));
+  const fee = Number(s.delivery_fee);
+  const min = Number(s.min_order_price);
+  const extra = (fee === 0 ? "免配送费" : (fee ? "配送费 " + fee + " 元" : "")) +
+                (min === 0 ? " · 无起送门槛" : (min ? " · 起送 " + min + " 元" : ""));
+  return '<div class="shop">' +
+    (s.avatar ? '<img class="shop-ava" loading="lazy" src="' + esc(s.avatar) + '" alt="">' : '<div class="shop-ava"></div>') +
+    '<div class="shop-main">' +
+      '<div class="shop-name">' + esc(s.name) +
+        '<span class="dot-open' + (open ? "" : " closed") + '">' + esc(s.open_status_text || (open ? "营业中" : "休息中")) + '</span>' +
+      '</div>' +
+      '<div class="shop-meta">' + bits.join(" · ") +
+        (s.rating ? '<br>评分 <b>' + Number(s.rating).toFixed(1) + '</b>' : "") +
+        (extra ? ' · ' + esc(extra) : "") +
+      '</div>' +
+    '</div></div>';
+}
+
+/* ═══ 响应装配 ═══ */
+function renderResponse(res) {
+  const ui = res.ui || "text";
+  const data = res.data || {};
+  const reply = (res.reply || "").trim();
+  const payloads = [];
+
+  // 文字部分
+  if (reply) payloads.push('<div class="say">' + esc(reply) + "</div>");
+
+  // 选项
+  if (ui === "dialog_options" && Array.isArray(data.options)) {
+    payloads.push('<div class="card-actions" style="margin-top:14px">' +
+      data.options.map((o) => '<button class="act ghost" data-say="' + esc(o.value || o.label) + '">' +
+        esc(o.label || o.value) + "</button>").join("") + "</div>");
+  }
+
+  // 方案 / 商品卡
+  const plans = Array.isArray(data.plans) ? data.plans : [];
+  let imgs = "";
+  if (plans.length) {
+    const diy = plans.filter((p) => p && (p.diy === true || p.design));
+    const prods = plans.filter((p) => p && !(p.diy === true || p.design));
+    diy.forEach((p) => { payloads.push(diyCard(p)); });
+    if (prods.length) {
+      payloads.push('<div class="sect"><div class="sect-label">平台在售 · ' + prods.length + ' 款</div>' +
+        '<div class="prods">' + prods.slice(0, 12).map(prodCard).join("") + "</div></div>");
+      if (prods.length > 12) {
+        payloads.push('<div class="plain" style="margin-top:10px;font-size:12.5px;color:var(--ink-3)">' +
+          "还有 " + (prods.length - 12) + " 款，可以说「预算再低一点」或「只要粉色系」帮你缩小范围。</div>");
+      }
+    }
+  }
+  // 店铺卡
+  const shops = Array.isArray(data.shops) ? data.shops : [];
+  if (shops.length) {
+    payloads.push('<div class="sect"><div class="sect-label">花店 · ' + shops.length + ' 家</div>' +
+      '<div class="shops">' + shops.map(shopCard).join("") + "</div></div>");
+  }
+  // 电子贺卡
+  if (ui === "greeting_card" && data.image_url) {
+    payloads.push(imageFrame(assetUrl(data.image_url), "电子贺卡", data.text || reply));
+  }
+  // 订单/支付（演示版不承接成交）
+  if (ui === "order_card" || ui === "pay_jump") {
+    payloads.push('<div class="plain" style="margin-top:12px;color:var(--ink-3)">' +
+      "（体验版仅演示方案设计，下单与支付请到正式小程序完成。）</div>");
+  }
+
+  if (!payloads.length) payloads.push('<div class="say">（本轮没有文字内容）</div>');
+  const box = botShell(payloads.join(""));
+
+  // 生图任务（DIY 方案卡常自动带 task_id；image_task 也走这里）
+  const taskId = data.task_id || (ui === "image_task" ? data.task_id : "");
+  if (taskId) {
+    const holder = document.createElement("div");
+    box.appendChild(holder); scrollDown();
+    pollTask(taskId, holder);
+  }
+}
+
+function imageFrame(src, label, caption) {
+  return '<div class="frame"><img class="frame-img" src="' + esc(src) + '" alt="' + esc(label) + '" ' +
+    'onload="this.classList.add(\'on\')">' +
+    '<div class="frame-cap"><span>' + esc(label) + '</span><b>' + esc(caption || "") + "</b></div></div>";
+}
+
+/* ═══ 生图轮询 ═══ */
+async function pollTask(taskId, holder) {
+  holder.innerHTML = '<div class="frame"><div class="frame-pad"><div class="shimmer"></div>' +
+    '<div class="plain" style="margin-top:14px;font-size:13px">正在生成效果图…<span class="think-elapsed" id="p' + esc(taskId) + '"></span></div>' +
+    '</div><div class="frame-cap"><span>效果图</span><b>qwen-image</b></div></div>';
+  const clock = holder.querySelector("#p" + taskId);
+  const t0 = Date.now();
+  for (let i = 0; i < 45; i++) {
+    await sleep(i === 0 ? 1500 : 3500);
+    if (clock) clock.textContent = "　" + Math.round((Date.now() - t0) / 1000) + "s";
+    let t;
+    try {
+      const r = await fetch(BASE + "/tasks/" + encodeURIComponent(taskId), {
+        headers: { Authorization: "Bearer " + token }
+      });
+      t = await r.json();
+    } catch (e) { continue; }
+    if (t.status === "done" || t.status === "succeeded") {
+      // ⚠️ 服务端终态是 'done'（见 backend/storage/tasks.py::_update_task）；
+      // 这里兼容 'succeeded' 只为容错，勿只认后者——曾因此让出图永远转圈。
+      const url = assetUrl(t.result_url || t.image_url || "");
+      holder.innerHTML = url
+        ? imageFrame(url, "效果图", "qwen-image-3.0")
+        : '<div class="plain">效果图已生成，但未返回地址。</div>';
+      scrollDown();
+      return;
+    }
+    if (t.status === "failed" || t.status === "not_found") {
+      holder.innerHTML = '<div class="plain" style="color:var(--danger);font-size:13px">' +
+        "效果图生成失败" + (t.error ? "：" + esc(t.error) : "，可以稍后再试一次。") + "</div>";
+      return;
+    }
+  }
+  holder.innerHTML = '<div class="plain" style="font-size:13px;color:var(--ink-3)">' +
+    "效果图还在生成中，稍后可以再问它一次。</div>";
+}
+
+/* ═══ 发送 ═══ */
+async function send(text) {
+  text = (text || "").trim();
+  if (!text || busy) return;
+
+  // ⚠️ busy 必须在 await 之前置位：ensureSession() 会发一次网络请求，
+  // 若在它之后再置位，用户在这段窗口里再点一次就会重复提交（实测可复现双发）。
+  busy = true; sendBtn.disabled = true;
+  if (!(await ensureSession())) {
+    busy = false; sendBtn.disabled = false;
+    return;
+  }
+
+  userMsg(text);
+  input.value = ""; autoGrow();
+  setStatus("thinking", "思考中…");
+  const th = thinkingBlock();
+
+  try {
+    const r = await fetch(BASE + "/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({ user_id: userId, message: text, session_id: sessionId })
+    });
+    stopThinking(th);
+
+    if (r.status === 429) {
+      const ra = r.headers.get("Retry-After");
+      setStatus("err", "请求过快");
+      note("请求有点密集，请等 " + esc(ra || "几十") + " 秒再试 🙏");
+      return;
+    }
+    if (r.status === 401) { token = null; setStatus("err", "会话过期"); note("会话已过期，请点右上角「新建会话」。"); return; }
+    if (!r.ok) {
+      setStatus("err", "生成失败");
+      let detail = "HTTP " + r.status;
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch (e) {}
+      note("这一轮没走通（" + esc(detail) + "）。可以换个说法再问一次。");
+      return;
+    }
+    const res = await r.json();
+    if (res.session_id) sessionId = res.session_id;
+    renderResponse(res);
+    setStatus("", "就绪");
+  } catch (e) {
+    stopThinking(th);
+    setStatus("err", "网络异常");
+    note("网络中断了（" + esc(e.message) + "）。如果刚才是长回答，稍等片刻再问一次。");
+  } finally {
+    busy = false; sendBtn.disabled = false;
+    scrollDown();
+  }
+}
+
+/* ═══ 输入框 ═══ */
+function autoGrow() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 132) + "px";
+}
+input.addEventListener("input", autoGrow);
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault(); send(input.value);
+  }
+});
+$("form").addEventListener("submit", (e) => { e.preventDefault(); send(input.value); });
+
+/* 卡片内按钮 / 快捷词 → 都当作一次用户发送 */
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-say]");
+  if (!t) return;
+  e.preventDefault();
+  send(t.getAttribute("data-say"));
+});
+
+/* ═══ 开场 ═══ */
+const EXAMPLES = [
+  ["送妈妈一束花，预算200", "长按可改预算"],
+  ["女朋友生日，想要浪漫一点", "年轻客群常见需求"],
+  ["有哪些店铺可以送花？", "查真实在营商户"],
+  ["帮我设计一束白绿色系的花", "指定色系定制"],
+  ["老师节日快乐，预算300", "节日场景"],
+  ["手头不太宽裕，想表达心意", "口语化预算理解"]
+];
+const CHIPS = ["预算200送妈妈", "女朋友生日·浪漫", "有哪些店铺？", "白绿色系定制", "出个效果图"];
+
+function renderWelcome() {
+  const caps = ["多轮追问", "42 种花材知识库", "真实在售商品", "真实营业店铺", "效果图生成", "预算保底毛利"];
+  log.innerHTML =
+    '<div class="hero rise">' +
+      '<div class="hero-kicker">Botanical Atelier</div>' +
+      '<h2>告诉它你想送谁、什么场合、预算多少 ——<br>它会现场为你<em>设计一束花</em>。</h2>' +
+      '<p>不只是报个价：每一枝花的选择、背后的寓意、包装的做法、养护的要点，都会讲清楚。信息不够时它会先问你，不会硬编。</p>' +
+      '<div class="caps">' + caps.map((c) => '<span class="cap">' + c + "</span>").join("") + "</div>" +
+      '<div class="examples"><div class="sect-label">试试这些</div><div class="ex-grid">' +
+        EXAMPLES.map((x) => '<button class="ex" data-say="' + esc(x[0]) + '">' + esc(x[0]) +
+          "<span>" + esc(x[1]) + "</span></button>").join("") +
+      "</div></div>" +
+    "</div>";
+  $("chips").innerHTML = CHIPS.map((c) => '<button class="chip-btn" data-say="' + esc(c) + '">' + esc(c) + "</button>").join("");
+}
+
+/* 新建会话：换一个匿名身份 + 清空上下文 */
+async function resetSession() {
+  if (busy) return;
+  stopThinking();
+  token = null; userId = null; sessionId = null;
+  renderWelcome();
+  await ensureSession();
+  input.focus();
+}
+$("resetBtn").addEventListener("click", resetSession);
+
+/* 启动 */
+renderWelcome();
+ensureSession();
+</script>
+</body>
+</html>

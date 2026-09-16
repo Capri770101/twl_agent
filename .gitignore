@@ -5,6 +5,8 @@ __pycache__/
 .env
 .env.*
 data/
+# 演示栈（profile=demo）运行时产物：演示独立库数据卷 + 演示生成图，不入库
+data_demo/
 *.db
 deploy/certs/
 .workbuddy/
