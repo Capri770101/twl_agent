@@ -664,6 +664,102 @@ def _card_nudge_text() -> str:
     )
 
 
+# ── 生图声明护栏（2026-09-16）────────────────────────────────────────────
+# 线上实测（演示实例，连续两轮）：用户说「出个效果图」→ 模型**零工具调用**、2.6 秒回
+# 「效果图任务已提交（AI 生成中，通常几十秒到几分钟）」；用户追问「图呢？」→ 又回
+# 「这张是按「星河长明」的花材构成生成的参考图」。**全程没有任何生图任务**，
+# 用户在等一张根本不存在的图。与「未查证即作答」同类：光靠 prompt 不够，必须确定性拦截。
+_IMAGE_DONE_WORDS = ('已提交', '生成中', '已生成', '生成好了', '已就绪', '已出图', '参考图', '效果图已')
+# 如实说明失败的字眼 → 不算「声称已出图」
+_IMAGE_FAIL_WORDS = ('没有生成', '未生成', '无法生成', '生成失败', '没能生成', '还未生成', '尚未生成')
+
+_IMAGE_UNVERIFIED_REPLY = (
+    '抱歉，这条效果图**并没有真的生成成功**——我这边没有拿到生图任务，刚才的说法不准确。\n'
+    '要我再试一次吗？直接说「用这个方案出一张效果图」就行。'
+)
+
+
+def _image_task_created(tool_log: list[Any]) -> bool:
+    """本轮是否**真的**提交了生图任务（必须拿到 task_id，光调用不算）。
+
+    Args:
+        tool_log: 本轮工具调用记录。
+
+    Returns:
+        有成功且带 task_id 的 generate_effect_image 调用时为 True。
+    """
+    for tc in tool_log or []:
+        if getattr(tc, 'status', '') != 'ok' or getattr(tc, 'name', '') != 'generate_effect_image':
+            continue
+        try:
+            result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+        if isinstance(result, dict) and result.get('task_id'):
+            return True
+    return False
+
+
+def _claims_image_done(reply: str) -> bool:
+    """回复是否在**声称**效果图已提交/已生成（而不是如实说明失败）。
+
+    必须与 :func:`_image_task_created` 配对使用：声称了却没有任务 = 编造。
+
+    Args:
+        reply: 本轮回复文本。
+
+    Returns:
+        看起来在声称已出图时返回 True。
+    """
+    text = reply or ''
+    if not text or not _img_mentioned(text):
+        return False
+    if any(w in text for w in _IMAGE_FAIL_WORDS):
+        return False
+    return any(w in text for w in _IMAGE_DONE_WORDS)
+
+
+def _needs_image_nudge(tool_log: list[Any], reply: str) -> bool:
+    """是否该拦下「谎称效果图已生成/已提交」的回复。
+
+    Returns:
+        没有生图任务却在声称已出图时为 True。
+    """
+    return not _image_task_created(tool_log) and _claims_image_done(reply)
+
+
+def _image_nudge_text() -> str:
+    """「没有生图任务却声称已生成」时注入的一次性纠正指令（只进本轮上下文，不落库）。"""
+    return (
+        '[系统校验未通过] 你刚才声称效果图「已提交 / 已生成 / 生成中」，但**本轮并没有任何真实的'
+        '生图任务**——用户会去找一张根本不存在的图，这是最严重的错误。\n'
+        '现在请二选一：\n'
+        '· 用户确实想要效果图 → 调用 generate_effect_image(plan="latest_diy")，'
+        '拿到返回的 task_id 之后再如实告知「已提交，生成中」；\n'
+        '· 生图不可用（如未找到可生图的方案）→ **如实说明**原因，并给出替代建议。\n'
+        '⚠️ 没有 task_id 就绝不能说任务或图的存在，也不要描述一张「已生成的图」长什么样。'
+    )
+
+
+def _finalize_image_claim(reply: str, tool_log: list[Any]) -> str:
+    """兜底：谎称已出图但本轮无生图任务 → 整段换成如实说明。
+
+    放在清理链最后。护栏已先拦一次让模型自己改；仍不改就必须确定性兜底——
+    让用户去找一张不存在的图，比回复难看严重得多。
+
+    Args:
+        reply: 清理链处理后的回复。
+        tool_log: 本轮工具调用记录。
+
+    Returns:
+        可能被替换为如实说明的回复。
+    """
+    if _image_task_created(tool_log) or not _claims_image_done(reply):
+        return reply
+    logger.warning('[agent] 回复谎称已生成效果图但本轮无生图任务，已替换为如实说明')
+    return _IMAGE_UNVERIFIED_REPLY
+
+
 _IMAGE_DECLINE_WORDS = (
     '不要生成', '不用生成', '别生成', '不生成', '不要出图', '不用出图', '别出图',
     '取消生图', '不要效果图', '不用效果图', '别效果图', '不要预览图', '不用预览图',
@@ -1053,6 +1149,7 @@ class ReActAgent:
         # ③ 是必需的兜底：实测模型在纯文字追问时**并不填 `missing`**，也不产出卡片，
         #    于是 ② 永远落不上标记（2026-09-16 二次复现），只能按轮次兜住。
         _card_nudge_left = 1
+        _image_nudge_left = 1  # 「谎称已生成效果图」也只纠正一次
         _prior_user_turns = sum(1 for m in history if str(m.get('role')) == 'user')
         _has_plan_context = (
             bool(current_plan)
@@ -1133,6 +1230,14 @@ class ReActAgent:
                         respond_args = None
                         logger.warning('[agent] 本轮只产出文字、未生成方案卡，已注入纠正并要求重答')
                         continue
+                    # 「谎称已生成效果图」→ 同样拦一次（没有 task_id 就不能说图的存在）。
+                    if _image_nudge_left and _needs_image_nudge(
+                            tool_log, str((respond_args or {}).get('reply') or final_reply or '')):
+                        _image_nudge_left -= 1
+                        messages.append({'role': 'user', 'content': _image_nudge_text()})
+                        respond_args = None
+                        logger.warning('[agent] 未提交生图任务却声称已出图，已注入纠正并要求重答')
+                        continue
                     break
                 continue
             else:
@@ -1155,6 +1260,14 @@ class ReActAgent:
                     messages.append({'role': 'user', 'content': _card_nudge_text()})
                     final_reply = ''
                     logger.warning('[agent] 未调工具且未出卡，已注入纠正并要求重答')
+                    continue
+                # 「谎称已生成效果图」在这条路径同样成立（实测正是这条路：零工具调用直接回文字）。
+                if _image_nudge_left and _needs_image_nudge(tool_log, final_reply):
+                    _image_nudge_left -= 1
+                    messages.append({'role': 'assistant', 'content': final_reply})
+                    messages.append({'role': 'user', 'content': _image_nudge_text()})
+                    final_reply = ''
+                    logger.warning('[agent] 未提交生图任务却声称已出图，已注入纠正并要求重答')
                     continue
                 messages.append({'role': 'assistant', 'content': final_reply})
                 break
@@ -1205,6 +1318,9 @@ class ReActAgent:
         # 体验版（不承接下单）兜底：回复里若提到交易，补一句边界说明。
         if not _shop_entity_enabled():
             final_reply = _demo_trade_note(final_reply)
+        # 生图声明兜底：护栏纠正后仍谎称已出图 → 整段换成如实说明
+        # （用户不该被引导去找一张不存在的图）。
+        final_reply = _finalize_image_claim(final_reply, tool_log)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
