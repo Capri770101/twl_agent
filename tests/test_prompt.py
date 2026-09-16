@@ -15,21 +15,28 @@ from agent.agent import ReActAgent
 # prompt 中必须存在的关键段 —— 删任何一个都会造成可观察的行为退化
 REQUIRED_SECTIONS = [
     '## 核心原则',
-    '## 工具调用指南',
-    '### 场景1',
-    '### 场景2',
-    '### 场景3',
-    '### 场景4',
-    '### 场景5',
-    '### 场景6',
-    '### 场景7',
-    '### 场景8',
-    '### 场景9',
+    '## 怎么选工具',
+    '## 必须守住的事',
     '## 核心工具速览',
     '## respond_to_user 参数说明',
     '## 回复格式',
     '## 隐私与内部信息',
 ]
+
+
+@pytest.mark.parametrize('leak', [
+    'open_status_text', 'is_open_now', 'ownerShopId', 'subMchId', 'shop_id',
+    'delivery_fee', 'min_order_price', 'business_hours', 'ratingCount',
+])
+def test_prompt_has_no_platform_field_identifiers(leak: str) -> None:
+    """prompt 里不应出现平台原始字段名 —— 它们会诱导模型向用户复述数据结构。
+
+    背景（Capri 2026-09-16 要求）：不能让模型把数据库内容（表名/字段名/结构）全盘托出。
+    旧版 `base.md` 的场景 6 里逐条列着 `open_status_text` / `is_open_now` /
+    `delivery_fee` / `min_order_price` 等字段标识符，等于把结构递到模型嘴边。
+    去脚本化的同时把这些标识符一并清掉，只保留**业务含义**（营业状态 / 配送费 / 起送价…）。
+    """
+    assert leak not in _prompt(), f'prompt 里出现了平台原始字段名：{leak}'
 
 
 def _prompt(**kwargs) -> str:

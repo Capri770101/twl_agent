@@ -77,6 +77,33 @@ _INTERNAL_TERM_SUBS = (
     (re.compile(r'\bsource_id\b', re.I), '数据源'),
 )
 
+# 数据库结构 / 表名 / 字段名 / SQL → 中性说法。
+#
+# Capri 2026-09-16 要求：「不能把数据库的内容如数据表等信息全盘托出」。
+# prompt 已硬约束（见 base.md 隐私段），但 prompt 是软约束——这里再兜一层**确定性**替换，
+# 只兜「明显是库内标识」的词：内部表名、平台原始字段名、SQL、连接串、迁移文件。
+# 业务词（商品 / 店铺 / 价格 / 营业时间）不受影响，用户该看到的结论照常给。
+_DB_SCHEMA_SUBS = (
+    # 内部表名（模型若复述表结构会命中）
+    (re.compile(r'\b(?:products|shops|orders|categories|banners|coupons|feedback|members|stats'
+                r'|messages|sessions|diy_plans|image_tasks|user_preferences|proven_plans)\b', re.I),
+     '平台数据'),
+    # 平台原始字段名（驼峰 / 下划线两种写法）
+    (re.compile(r'\b(?:ownerShopId|planId|shopId|productId|categoryId|flowerMeaning|subMchId'
+                r'|profitSharingRatio|originalPrice|businessHours|minOrderPrice|deliveryFee'
+                r'|deliveryTime|monthSales|shelfLife|ratingCount|openStatusText|isOpenNow'
+                r'|owner_shop_id|shop_id|plan_id|product_id|category_id|flower_meaning'
+                r'|original_price|business_hours|min_order_price|delivery_fee|delivery_time'
+                r'|month_sales|shelf_life|rating_count|open_status_text|is_open_now)\b'),
+     '相关字段'),
+    # SQL 语句：整句抹掉，避免泄露查询语义
+    (re.compile(r'\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b[^。！？\n]*', re.I), ''),
+    # 连接串 / 迁移文件
+    (re.compile(r'(?:postgres(?:ql)?|mysql|redis)://\S+', re.I), '(内部地址)'),
+    (re.compile(r'\bPLATFORM_(?:DB|API)_[A-Z0-9_]+\b'), '平台数据源'),
+    (re.compile(r'\b\d{3}_[a-z_]+\.sql\b|\bmigrations\b', re.I), '内部资料'),
+)
+
 # 整行看起来就是工具的原始返回（JSON 对象 / 数组）：正常花艺回复不会出现。
 # 对应「不要把数据库查询结果输出到前端」的兜底——只删独立数据行，不碰正文。
 _RAW_PAYLOAD_LINE = re.compile(r'^\s*[\{\[].*[\}\]]\s*$')
@@ -103,9 +130,18 @@ def _strip_internal_leak(text: str) -> str:
     out = '\n'.join(kept)
     for pat, repl in _INTERNAL_TERM_SUBS:
         out = pat.sub(repl, out)
+    # 数据库结构兜底：表名 / 字段名 / SQL / 连接串 → 中性说法
+    # （Capri 要求：不能把数据库内容全盘托出；prompt 是软约束，这里确定性收口）
+    schema_hit = False
+    for pat, repl in _DB_SCHEMA_SUBS:
+        out, _n = pat.subn(repl, out)
+        if _n:
+            schema_hit = True
     out = re.sub(r'\n{3,}', '\n\n', out).strip('\n')
     if dropped_payload:
         logger.warning('[agent] 回复中出现原始数据行，已移除（隐私兜底）')
+    if schema_hit:
+        logger.warning('[agent] 回复中出现数据库结构相关标识，已替换为中性说法（隐私兜底）')
     return out
 
 
