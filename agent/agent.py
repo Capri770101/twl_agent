@@ -840,6 +840,101 @@ def _finalize_image_claim(reply: str, tool_log: list[Any]) -> str:
     return _IMAGE_UNVERIFIED_REPLY
 
 
+# ── 内部独白泄漏护栏 ──────────────────────────────────────────────────────
+# 线上实测（2026-09-17，演示实例）：寒暄类消息（「谢谢你」「我心情不太好」）会返回模型的
+# **内部独白**而不是面向用户的话：
+#   「用户说"谢谢你"，这是一个感谢/告别的话语。我需要判断意图：… 我应该用
+#     respond_to_user 工具，纯文字回复」—— 结尾还带出工具参数残片 {"reply"
+# ui 判定是 text（看起来"通过"），但用户会直接看到推理过程和工具名 —— 第一印象级缺陷。
+# 10 条用例里复现 2 次：低频但真实，且光靠 prompt 拦不住（本项目反复验证过）。
+#
+# 判据刻意分强弱两档，避免误伤正常回复：
+#   · 强信号（命中一条即判定）：工具名、工具参数的 JSON 残片 —— 它们本来就不该出现在回复里；
+#   · 元叙述信号（需命中 ≥2 条）：「用户说…」「我需要判断意图」「我应该用…」这类
+#     模型对自己说话的口吻 —— 正常花艺回复不会出现，单条可能是巧合，两条基本确定。
+_REASONING_TOOL_NAMES = (
+    'respond_to_user', 'show_plan_card', 'show_options', 'generate_diy_plan',
+    'revise_diy_plan', 'generate_effect_image', 'retrieve_knowledge',
+    'platform_db_query_entity', 'search_history', 'get_user_profile',
+    'save_user_profile', 'save_memory', 'suggest_greetings', 'render_greeting_card',
+)
+# 工具参数的 JSON 残片：可能带前括号，也可能是被截断后剩下的键值对（实测末尾就是 {"reply 这种半截）。
+_REASONING_PAYLOAD_LEAK = re.compile(
+    r'[{[]\s*"(?:reply|ui|data|stage|intent)"|"(?:reply|ui|data|stage|intent)"\s*:'
+)
+
+_REASONING_META_MARKERS = (
+    '用户说', '用户问', '用户想', '用户希望', '用户表示', '用户的意思是',
+    '我需要判断', '判断意图', '意图：', '我应该用', '我应该调用', '应该调用',
+    '不需要调用任何工具', '不属于任何意图', 'chitchat',
+)
+
+_REASONING_FALLBACK_TEXT = '抱歉，刚才没说清楚 😅 想聊花、想要方案或者问养护，随时跟我讲～'
+_REASONING_FALLBACK_CARD = '方案已经配好了，具体细节都在下面的卡片里，想调整哪部分随时跟我说～'
+
+
+def _looks_like_reasoning_leak(reply: str) -> bool:
+    """回复是否把**模型的内部独白**当成了给用户的话。
+
+    Args:
+        reply: 本轮回复文本。
+
+    Returns:
+        判定为内部独白泄漏时为 True。
+    """
+    text = reply or ''
+    if not text:
+        return False
+    if any(t in text for t in _REASONING_TOOL_NAMES):
+        return True
+    if _REASONING_PAYLOAD_LEAK.search(text):
+        return True
+    return sum(1 for m in _REASONING_META_MARKERS if m in text) >= 2
+
+
+def _needs_reasoning_nudge(reply: str) -> bool:
+    """是否该拦下「把内部独白当回复」的这一轮。
+
+    Args:
+        reply: 本轮回复文本。
+
+    Returns:
+        需要注入纠正时为 True。
+    """
+    return _looks_like_reasoning_leak(reply)
+
+
+def _reasoning_nudge_text() -> str:
+    """「回复里出现内部独白」时注入的一次性纠正指令（只进本轮上下文，不落库）。"""
+    return (
+        '[系统校验未通过] 你刚才发出去的内容**不是给用户看的回复**，而是你自己在分析该怎么做'
+        '——里面出现了「用户说…」「我需要判断意图」「我应该调用某个工具」这类内部推理，'
+        '甚至带出了工具名和参数格式。用户看到会以为你在自言自语，这是严重的体验缺陷。\n'
+        '现在请重新给出**真正面向用户**的那句话：\n'
+        '· 只写用户该看到的内容（回答 / 追问 / 说明），保持自然口语；\n'
+        '· 绝不写分析过程、意图判断、工具名、参数或任何 JSON。'
+    )
+
+
+def _finalize_reasoning_leak(reply: str, ui: Any) -> str:
+    """兜底：纠正后回复仍是内部独白 → 整段换成面向用户的通用回复。
+
+    放在清理链末尾。护栏已先拦一次让模型自己改；仍不改就必须确定性兜底 ——
+    让用户读一段"我该怎么回答"的独白，比回复平淡严重得多。
+
+    Args:
+        reply: 清理链处理后的回复。
+        ui: 本轮产出类型（卡片场景给对应的兜底文案）。
+
+    Returns:
+        可能被替换的回复。
+    """
+    if not _looks_like_reasoning_leak(reply):
+        return reply
+    logger.warning('[agent] 回复仍是内部独白，已替换为面向用户的兜底文案')
+    return _REASONING_FALLBACK_CARD if ui in _CARD_UIS else _REASONING_FALLBACK_TEXT
+
+
 _IMAGE_DECLINE_WORDS = (
     '不要生成', '不用生成', '别生成', '不生成', '不要出图', '不用出图', '别出图',
     '取消生图', '不要效果图', '不用效果图', '别效果图', '不要预览图', '不用预览图',
@@ -1249,6 +1344,7 @@ class ReActAgent:
         #    于是 ② 永远落不上标记（2026-09-16 二次复现），只能按轮次兜住。
         _card_nudge_left = 1
         _image_nudge_left = 1  # 「谎称已生成效果图」也只纠正一次
+        _reasoning_nudge_left = 1  # 「把内部独白当回复」同样只纠正一次
         _prior_user_turns = sum(1 for m in history if str(m.get('role')) == 'user')
         _has_plan_context = (
             bool(current_plan)
@@ -1337,6 +1433,15 @@ class ReActAgent:
                         respond_args = None
                         logger.warning('[agent] 未提交生图任务却声称已出图，已注入纠正并要求重答')
                         continue
+                    # 「把内部独白当回复」→ 同样拦一次。实测这条路径（零工具调用直接回文字）
+                    # 正是泄漏高发处：模型把"我该怎么答"的推理当成了回复。
+                    if _reasoning_nudge_left and _needs_reasoning_nudge(
+                            str((respond_args or {}).get('reply') or final_reply or '')):
+                        _reasoning_nudge_left -= 1
+                        messages.append({'role': 'user', 'content': _reasoning_nudge_text()})
+                        respond_args = None
+                        logger.warning('[agent] 回复里出现内部独白，已注入纠正并要求重答')
+                        continue
                     break
                 continue
             else:
@@ -1367,6 +1472,14 @@ class ReActAgent:
                     messages.append({'role': 'user', 'content': _image_nudge_text()})
                     final_reply = ''
                     logger.warning('[agent] 未提交生图任务却声称已出图，已注入纠正并要求重答')
+                    continue
+                # 「把内部独白当回复」在这条路径尤其常见（寒暄类消息最容易触发）。
+                if _reasoning_nudge_left and _needs_reasoning_nudge(final_reply):
+                    _reasoning_nudge_left -= 1
+                    messages.append({'role': 'assistant', 'content': final_reply})
+                    messages.append({'role': 'user', 'content': _reasoning_nudge_text()})
+                    final_reply = ''
+                    logger.warning('[agent] 回复里出现内部独白，已注入纠正并要求重答')
                     continue
                 messages.append({'role': 'assistant', 'content': final_reply})
                 break
@@ -1420,6 +1533,9 @@ class ReActAgent:
         # 生图声明兜底：护栏纠正后仍谎称已出图 → 整段换成如实说明
         # （用户不该被引导去找一张不存在的图）。
         final_reply = _finalize_image_claim(final_reply, tool_log)
+        # 内部独白兜底：纠正后仍是「我该怎么回答」的推理 → 整段换成面向用户的话
+        # （用户读到模型的自我分析，比回复平淡严重得多）。
+        final_reply = _finalize_reasoning_leak(final_reply, ui)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
