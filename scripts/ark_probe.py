@@ -78,6 +78,49 @@ def chat(key: str, model: str, prompt: str = '只回复两个字：收到', max_
     return ok, payload
 
 
+def vision_probe(key: str, model: str, max_tokens: int = 96) -> tuple[bool, dict]:
+    """用一张内置生成的 128×128 双色图，验证模型的**多模态视觉**能力。
+
+    为什么要单独测（2026-09-17 实测）：豆包不少模型原生支持图片输入，
+    ⚠️ 但**图片有最小尺寸要求（14px）** —— 用太小的图会报
+    `InvalidParameter: Image dimensions are too small`，极易被误判成「该模型不支持图片」。
+    生成的图是「左红右蓝」，结论可客观核对，不必依赖模型的主观描述。
+
+    Args:
+        key: Ark API Key。
+        model: 模型 ID。
+        max_tokens: 回复上限（视觉请求的 prompt_tokens 包含图片，本身就不小）。
+
+    Returns:
+        (是否成功, 原始响应体)；成功时 body 形如 OpenAI chat 响应。
+    """
+    import base64
+    import io
+
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return False, {'error': {'code': 'NoPillow', 'message': '需要 Pillow 生成测试图（pip install pillow）'}}
+
+    img = Image.new('RGB', (128, 128), (220, 30, 30))
+    ImageDraw.Draw(img).rectangle([64, 0, 127, 127], fill=(30, 60, 220))
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+
+    return _post(key, '/chat/completions', {
+        'model': model,
+        'messages': [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': '这张图里有几种颜色？分别在哪个位置？'},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{b64}'}},
+            ],
+        }],
+        'max_tokens': max_tokens,
+    }, timeout=120)
+
+
 def list_open_models(key: str) -> list[str]:
     """返回**已开通**的对话模型 ID 列表（探测请求不计费）。"""
     models = _get(key, '/models').get('data', [])
@@ -100,6 +143,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description='火山方舟（豆包）连通性检查')
     ap.add_argument('--call', metavar='MODEL', help='真实调用该模型一次（产生费用）')
     ap.add_argument('--list', action='store_true', help='扫描并列出已开通的对话模型')
+    ap.add_argument('--vision', metavar='MODEL', help='用内置测试图验证该模型的多模态视觉能力（产生费用）')
     args = ap.parse_args()
     key = _key()
 
@@ -117,6 +161,21 @@ def main() -> int:
         else:
             err = d.get('error') or {}
             print(f'✗ 调用失败 [{err.get("code")}] {err.get("message", "")[:200]}')
+            return 1
+        return 0
+
+    if args.vision:
+        print(f'视觉能力测试：{args.vision} …（会计费，prompt 含图片）')
+        ok, d = vision_probe(key, args.vision)
+        if ok and not (isinstance(d, dict) and d.get('error')):
+            content = (d.get('choices') or [{}])[0].get('message', {}).get('content', '')
+            print('✓ 支持图片输入（多模态可用）')
+            print(f'  reply = {str(content)[:200]!r}')
+            print(f'  usage = {d.get("usage")}')
+        else:
+            err = (d.get('error') or {}) if isinstance(d, dict) else {}
+            print(f'✗ 失败 [{err.get("code")}] {str(err.get("message", ""))[:200]}')
+            print('  提示：若报 Image dimensions are too small，是图片尺寸问题，不是模型不支持。')
             return 1
         return 0
 
