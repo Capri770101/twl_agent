@@ -1286,10 +1286,81 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
         return baseline
 
 def _shop_scope_rule(shop_id: str) -> str:
-    """店铺锁定场景下的原料约束文案（用户从某家店铺进入时注入设计/改版 prompt）。"""
-    return (f'本次方案必须在店铺 {shop_id} 内完成：主花、配材、叶材与包装只能选用该店铺在售的花材与商品，'
-            f'禁止使用该店没有的花材。若还不知道该店在售清单，先调用 '
-            f'platform_db_query_entity(entity="plan", shop_id="{shop_id}") 查询该店在售花材/商品，再据此设计。')
+    """店铺锁定场景下的原料约束文案（用户从某家店铺进入时注入设计/改版 prompt）。
+
+    为什么重写（2026-09-17 线上实测）：原实现只让模型「自己去查该店在售花材」，
+    结果模型**根本不查**（锁店 s001 的一轮里工具只有 generate_diy_plan /
+    generate_effect_image，却用上了该店没有的「勿忘我」）；而且那句话本身把模型
+    引向查 entity="plan" —— 商品不是花材，查回来也提取不出用料。
+    现在改为**代码先把该店可提供花材查好**，把清单直接写进约束里，模型无需再查。
+    """
+    from agent.shop_materials import available_materials
+
+    mats = available_materials(shop_id)
+    if mats:
+        listing = '、'.join(sorted(mats))
+        return (f'本方案面向店铺 {shop_id}，该店在售商品用到的花材有：{listing}。'
+                f'**优先从这份清单里选花材**，这样客户拿到方案就能在这家店配齐。'
+                f'如果为了让效果更贴合需求，确实需要清单之外的花材，也可以用——'
+                f'系统会自动标注哪些原料该店暂时没有，你照实说明即可，不要谎称该店能提供。')
+    if mats is not None:
+        # 查到了、但该店商品里提取不出任何花材 → 不要硬编清单，也别让模型乱承诺
+        return (f'本方案面向店铺 {shop_id}。该店在售商品里没有可识别的花材用料信息，'
+                f'请按通用花材正常设计，但**不要声称这些原料一定能在该店买到**。')
+    # 查询失败 / 未配置数据源 → 结论未知，退回「不要编造」的弱约束
+    return (f'本方案面向店铺 {shop_id}。请按通用花材正常设计，'
+            f'但**不要声称这些原料一定能在该店买到**。')
+
+
+def annotate_shop_materials(plan: dict, shop_id: str = '') -> dict:
+    """按该店可提供花材，标注方案里哪些原料该店暂时没有。
+
+    Capri 2026-09-17 决定：缺料**不自动替换**（硬换会破坏设计意图），只如实标注。
+    因此这里只做标注，不改变 `design` 的花材选择：
+    - 每种用料加 ``in_shop`` 布尔；
+    - 方案顶层加 ``unavailable_materials``（该店没有的原料名列表），供模型在
+      回复里如实说明、也供前端展示。
+
+    ⚠️ 用 :func:`agent.shop_materials.available_materials` 的返回值区分三种情况：
+    集合非空 = 有清单可判定；**None = 查询失败（未知）→ 一律不标注**，
+    不能把「查不到」说成「该店没有」。
+
+    Args:
+        plan: 已生成的方案 dict（会被就地补充字段）。
+        shop_id: 店铺 ID；留空时回退方案自带的 ``shop_id``。
+
+    Returns:
+        同一个 plan 对象（补充标注后）。
+    """
+    sid = str(shop_id or plan.get('shop_id') or '').strip()
+    if not sid or not isinstance(plan, dict):
+        return plan
+    from agent.shop_materials import available_materials, materials_in_text
+
+    mats = available_materials(sid)
+    if not mats:
+        return plan
+    design = plan.get('design')
+    if not isinstance(design, dict):
+        return plan
+    missing: list[str] = []
+    for key in ('main_flowers', 'fillers', 'foliage'):
+        for f in design.get(key) or []:
+            if not isinstance(f, dict):
+                continue
+            name = str(f.get('name') or '').strip()
+            if not name:
+                continue
+            hit = materials_in_text(name)
+            # 知识库认识这个名字就按交集判；不认识（新花材）退回子串匹配
+            ok = bool(hit & mats) if hit else any(a in name or name in a for a in mats)
+            f['in_shop'] = ok
+            if not ok:
+                missing.append(name)
+    if missing:
+        plan['unavailable_materials'] = list(dict.fromkeys(missing))
+        logger.info('[design] 方案用料 %d 项该店(%s)暂无：%s', len(missing), sid, '、'.join(missing))
+    return plan
 
 
 def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: FlowerRequirement | None = None) -> dict:
@@ -1297,9 +1368,11 @@ def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: F
 
     链路：RAG 检索知识库 → DeepSeek 生成语义化方案 → 规则引擎 _build_plan 补全结构/兜底。
     返回可供 UI 渲染、生图与下单承接的结构化 dict。
-    shop_id 非空时方案原料限定在该店铺在售范围内。
+    shop_id 非空时，方案会带上「哪些原料该店暂时没有」的标注（见
+    :func:`annotate_shop_materials`）——**保留花材本身，只标注，不自动替换**。
     """
-    return design_with_llm(requirements, shop_id=shop_id, session_requirement=session_requirement)
+    plan = design_with_llm(requirements, shop_id=shop_id, session_requirement=session_requirement)
+    return annotate_shop_materials(plan, shop_id)
 
 def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     """语义化改版：RAG 检索 + DeepSeek 基于已有方案与反馈调整，规则引擎兜底。

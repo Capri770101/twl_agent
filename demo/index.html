@@ -180,6 +180,8 @@ body::before{
 .fl-lang{font-size:12px;color:var(--ink-3);flex:1;min-width:120px}
 .fl-sec{font-size:13px;color:var(--ink-2)}
 .fl-sec b{font-weight:500;color:var(--ink)}
+.fl-out{font-size:11px;color:#9A5B33;background:#F3E3D2;border-radius:3px;padding:1px 6px;letter-spacing:.02em}
+.fl-warn{margin-top:9px;font-size:12px;line-height:1.65;color:#8A5A34;background:#F7ECDF;border-left:2px solid #C08A55;padding:7px 10px;border-radius:0 4px 4px 0}
 
 /* 色板 */
 .palette{display:flex;flex-wrap:wrap;gap:9px}
@@ -563,8 +565,12 @@ function stopThinking(el) {
 /* ═══ 卡片渲染 ═══ */
 function flowerRow(f, sub) {
   const lang = (f.flower_language || []).join(" · ");
+  // in_shop === false 由后端标注（锁店场景下该店铺暂时没有这种原料）。
+  // 缺料只标注不改方案 —— 客户需要知道哪样得自己想办法。
+  const out = f.in_shop === false ? '<span class="fl-out">该店暂无</span>' : '';
   return '<div class="fl-row">' +
     '<span class="fl-name">' + esc(f.name) + '</span>' +
+    out +
     '<span class="fl-qty">×' + esc(f.qty) + (sub ? '' : ' 枝') + '</span>' +
     (lang ? '<span class="fl-lang">' + esc(lang) + '</span>' : '') +
     '</div>';
@@ -593,11 +599,19 @@ function diyCard(p) {
   if (main.length || fill.length || fol.length) {
     h += '<div class="sect"><div class="sect-label">花材构成</div><div class="fl">';
     main.forEach((f) => { h += flowerRow(f, false); });
+    // 配材/叶材是挤在一行里展示的，缺料就写在名字后面（主花走 flowerRow 的行内标签）。
+    // 不能只标主花：缺料完全可能落在配材/叶材上（如尤加利），漏标会让客户以为能配齐。
+    const nm = (f) => (f && f.in_shop === false ? f.name + "（该店暂无）" : f.name);
     const secs = [];
-    if (fill.length) secs.push(fill.map((f) => f.name + "×" + f.qty).join("、"));
-    if (fol.length) secs.push(fol.map((f) => f.name + "×" + f.qty).join("、"));
+    if (fill.length) secs.push(fill.map((f) => nm(f) + "×" + f.qty).join("、"));
+    if (fol.length) secs.push(fol.map((f) => nm(f) + "×" + f.qty).join("、"));
     if (secs.length) {
       h += '<div class="fl-row"><span class="fl-sec"><b>配材 · 叶材</b>　' + esc(secs.join("；")) + '</span></div>';
+    }
+    const miss = p.unavailable_materials || [];
+    if (miss.length) {
+      h += '<div class="fl-warn">该店暂时没有：' + esc(miss.join("、")) +
+        '　·　方案里保留了这几样，下单前建议先跟门店确认现货，或让门店用相近花材替代</div>';
     }
     h += '</div></div>';
   }
