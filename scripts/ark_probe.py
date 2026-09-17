@@ -66,11 +66,16 @@ def _get(key: str, path: str) -> dict:
 
 
 def chat(key: str, model: str, prompt: str = '只回复两个字：收到', max_tokens: int = 16) -> tuple[bool, dict]:
-    return _post(key, '/chat/completions', {
+    """调一次 chat。⚠️ 判定必须**同时看 HTTP 状态与 body**：方舟出错时可能给 HTTP 200
+    但 body 里是 `{"error": {...}}`，只看状态码会把失败误判成「已开通」。"""
+    ok, payload = _post(key, '/chat/completions', {
         'model': model,
         'messages': [{'role': 'user', 'content': prompt}],
         'max_tokens': max_tokens,
     }, timeout=90)
+    if ok and isinstance(payload, dict) and payload.get('error'):
+        return False, payload
+    return ok, payload
 
 
 def list_open_models(key: str) -> list[str]:
