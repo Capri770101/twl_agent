@@ -21,10 +21,13 @@
 3. 底部说明读的是 **``plan.note``**（``pl.note || pr.reason``）——顶层 ``note`` 页面并不读，
    官网 demo 自己的顶层 ``note`` 其实从未显示过。
 
-定价承诺（对页面既有宣传的延续，不可破）：**售价 ≥ 花材成本 × MIN_MARGIN(1.35)**（≈26% 毛利）。
-本模块用**我们自己的真实价目表**（花材 ``unit_price`` + 人工/装饰/包装）计算，而不是 demo 那种
-「6.5 元/枝」的笼统估值；当配置本身压不进预算时，如实抬高到保底线并给出 ``pricing.warning``
-（页面会用强调色渲染该提示）。
+定价口径（2026-09-18 变更，Capri 拍板）：**报价 = 花材零售额 + 基础费（包装与手工）**。
+花材单价取自 `agent/pricing`（从平台在售商品反推的**零售价**），所以本模块
+**不再叠加任何「成本 × 加价率」的保底** —— 那等于对零售价二次加价（实测会把
+195 元的方案抬到 201 元、直接顶破预算）。「不亏本」这个原始目标已由
+「直接采用平台在售价」自动达成（平台商家本来就是按这个价在卖）。
+
+当配置本身压不进用户预算时，如实给出 ``pricing.warning``（页面用强调色渲染）。
 """
 from __future__ import annotations
 
@@ -50,7 +53,6 @@ PAGE_TIERS: tuple[tuple[float, str, float], ...] = (
     (float('inf'), '高定礼遇', 2.5),
 )
 
-MIN_MARGIN = 1.35      # 对外承诺的最低加价率（售价 ≥ 花材成本 × 1.35）
 ROUND_STEP = 10        # 报价取整到 10 元
 MAX_PALETTE = 4        # 页面色板最多展示 4 个色块
 
@@ -217,22 +219,22 @@ def _language_text(plan: dict, design: dict) -> str:
     return str(design.get('meaning') or '').strip() or '以花传情'
 
 
-def compute_pricing(plan: dict, *, min_margin: float = MIN_MARGIN) -> dict[str, Any]:
+def compute_pricing(plan: dict) -> dict[str, Any]:
     """按页面口径计算定价。
 
     ⚠️ **口径变更（2026-09-18 定价改造，必读）**：
     ``unit_price`` 过去是代码里写死的「花材成本参考价」（12/28/60），
     现在改为**从平台在售商品反推的零售价**（见 :mod:`agent.pricing`）。
-    因此这里**不能再对材料额乘 ``min_margin``** —— 那等于给零售价再加一次毛利，
-    实测会把一束 195 元的方案抬到 201 元、直接顶破用户预算（页面上表现为
-    「预算 200 却提示超预算」）。
+    因此这里**不再叠加任何「成本 × 加价率」的保底**（原为 ×1.35）—— 那等于给零售价
+    再加一次毛利，实测会把一束 195 元的方案抬到 201 元、直接顶破用户预算
+    （页面上表现为「预算 200 却提示超预算」）。
     保底的含义随之改为：**报价不低于花材自身的零售金额**（即不打折卖花材），
     而「不亏本」这个原始目标已由「直接采用平台在售价」自动达成
     —— 平台商家本来就是按这个价在卖。
+    （Capri 2026-09-18 确认：不再保留 1.35 的对外承诺。）
 
     Args:
         plan: ``_build_plan`` 产出的方案（含 ``design`` 与 ``budget_breakdown``）。
-        min_margin: 保留参数以兼容调用方；**当前不再参与计算**（见上）。
 
     Returns:
         页面 ``pricing`` 字段。
@@ -331,13 +333,7 @@ def build_client_payload(text: str, parsed: dict[str, Any] | None = None, *, not
     parsed = parsed or {}
     plan = design_plan(text, parsed)
     design = plan.get('design') or {}
-    try:  # 允许部署方按自己的毛利要求调整（默认 1.35）
-        from backend.config import settings
-
-        min_margin = float(getattr(settings, 'AGENT_PAGE_MIN_MARGIN', MIN_MARGIN) or MIN_MARGIN)
-    except Exception:  # noqa: BLE001
-        min_margin = MIN_MARGIN
-    pricing = compute_pricing(plan, min_margin=min_margin)
+    pricing = compute_pricing(plan)
     label, _ratio = page_tier(pricing['suggested'])
 
     req = extract_requirement(' '.join(filter(None, [

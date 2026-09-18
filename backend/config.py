@@ -210,8 +210,10 @@ class Settings(BaseSettings):
     AGENT_PAGE_ENABLED: bool = True
     AGENT_PAGE_TIMEOUT: float = 5.0    # 适配层计算总超时（秒）；超时后页面会自动降级回自己的 demo
     AGENT_PAGE_MAX_INPUT: int = 200    # 输入截断长度，防超长文本刷量
-    # 对外承诺的最低加价率：售价 ≥ 花材成本 × 该值（页面宣传「保底毛利」，不要低于 1.35）
-    AGENT_PAGE_MIN_MARGIN: float = 1.35
+    # ⚠️ AGENT_PAGE_MIN_MARGIN（原「售价 ≥ 花材成本 ×1.35 保底」）已于 2026-09-18 移除：
+    # 花材单价改为「从平台在售商品反推的零售价」后，再乘加价率等于对零售价二次加价，
+    # 会把方案顶出用户预算（实测 195 元方案被抬到 201 元）。保底改由
+    # 「直接采用平台在售价」保证 —— Capri 已确认不再保留该承诺。
 
     # ── CORS ──
     ALLOWED_ORIGINS: str = "*"

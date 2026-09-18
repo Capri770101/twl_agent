@@ -1,10 +1,10 @@
-"""官网演示页适配层回归门：契约字段、色值表、定价承诺（保底毛利）。
+"""官网演示页适配层回归门：契约字段、色值表、定价口径。
 
-这些断言对应页面渲染层的硬要求（读 `main.js` 得出）与对外宣传的定价承诺，
+这些断言对应页面渲染层的硬要求（读 `main.js` 得出）与对外报价口径，
 改动适配层时被打回，说明有东西会直接显示错：
 - 色板缺 `hex` → 页面色块变成透明；
 - 花名自带支数 → 页面显示「康乃馨 ×11 ×11」；
-- 售价 < 花材成本 × 1.35 → 页面宣传的「保底毛利」被破。
+- 页面报价与方案总价不一致 → 用户在两处看到两个价。
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.client_payload import (
-    MIN_MARGIN,
     build_client_payload,
     build_flowers,
     color_map,
