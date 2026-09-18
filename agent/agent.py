@@ -24,9 +24,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from string import Template
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
-from agent.engine.llm import call_llm
+from agent.engine.llm import call_llm, call_llm_stream
 from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
@@ -931,6 +932,85 @@ def _looks_like_reasoning_leak(reply: str) -> bool:
     return sum(1 for m in _REASONING_META_MARKERS if m in text) >= 2
 
 
+# 「过程说明」粗筛特征（**仅用于流式推送前**，比 _looks_like_reasoning_leak 更宽松）。
+#
+# 为什么需要单独一套：流式是**边收边推**，等发现是独白再回滚已经晚了 ——
+# 实测模型在工具轮会先自言自语几十字再调工具，头部缓冲（40 字）根本不够。
+# 所以在**推送前**先用这份更宽松的特征表粗筛：命中就本轮不再推。
+#
+# 误判代价很低（只是不推流式，最终 reply 照常通过清理链给出），
+# 所以这里刻意"宁可少推，不可漏推"——与最终护栏 _looks_like_reasoning_leak
+# 的保守策略（需 ≥2 条元叙述）正好相反。
+_PROCESS_NARRATION_MARKERS = (
+    '用户说', '用户问', '用户想', '用户希望', '用户表示',
+    '我注意到', '我意识到', '我需要判断', '我需要先', '我需要确认',
+    '我应该', '应该调用', '判断意图', '意图：', '让我先', '我先查',
+    'chitchat', '不属于任何意图',
+)
+
+
+def _has_process_narration(text: str) -> bool:
+    """文本是否像模型的「过程说明」（流式推送前的粗筛）。
+
+    Args:
+        text: 已累计的流式内容。
+
+    Returns:
+        命中任一过程说明特征时为 True。
+    """
+    return any(m in (text or '') for m in _PROCESS_NARRATION_MARKERS)
+
+
+def _extract_partial_json_string(raw: str, key: str) -> str:
+    """从**可能尚未闭合**的 JSON 文本里，尽力提取某个字符串字段的当前值。
+
+    为什么需要（2026-09-18 审计 P0-1 的关键发现）：flora 的最终回复**不走 LLM 的
+    `content`**，而是通过终结工具（`respond_to_user` / `show_plan_card`）的 **JSON 参数
+    `reply`** 传回来的 —— 实测三轮 LLM 调用的 `content` 全是 0 字、`tool_calls` 全是 1 个。
+    所以要做真流式，就必须边收参数边把 `reply` 的值解析出来。
+
+    容错优先于精确：解析到哪算哪，调用方据此**增量推送**；最终仍以 `done` 事件里
+    经清理链处理过的完整 `reply` 为准，所以这里允许"少解析"（不会解析出错误内容，
+    最坏情况是推得慢一点）。
+
+    Args:
+        raw: 正在累积的 JSON 字符串（可能被截断在任意位置）。
+        key: 要提取的字段名，如 ``reply``。
+
+    Returns:
+        已能确定的部分值；字段还没出现 / 不是字符串时返回空串。
+    """
+    marker = f'"{key}"'
+    i = raw.find(marker)
+    if i < 0:
+        return ''
+    j = raw.find(':', i + len(marker))
+    if j < 0:
+        return ''
+    k = j + 1
+    while k < len(raw) and raw[k] in ' \t\r\n':
+        k += 1
+    if k >= len(raw) or raw[k] != '"':
+        return ''
+    k += 1
+    out: list[str] = []
+    while k < len(raw):
+        ch = raw[k]
+        if ch == '\\':
+            if k + 1 >= len(raw):
+                break                      # 转义符还没收全，等下一个 chunk
+            nxt = raw[k + 1]
+            mapped = {'n': '\n', 't': '\t', 'r': '\r', '"': '"', '\\': '\\', '/': '/'}.get(nxt)
+            out.append(nxt if mapped is None else mapped)
+            k += 2
+            continue
+        if ch == '"':
+            break                          # 字符串正常结束
+        out.append(ch)
+        k += 1
+    return ''.join(out)
+
+
 def _needs_reasoning_nudge(reply: str) -> bool:
     """是否该拦下「把内部独白当回复」的这一轮。
 
@@ -1264,9 +1344,13 @@ class ReActAgent:
 
         事件类型：
         - {"event": "tool_call", "name": "...", "status": "ok/error"}
-        - {"event": "text", "content": "..."}  — 逐句输出最终回复
+        - {"event": "text_delta", "content": "..."}   — 最终回复**逐字**推送（打字机效果）
+        - {"event": "text_rollback"}                  — 撤回上面已推的文字（那段不是给用户看的）
+        - {"event": "text", "content": "..."}         — 兼容旧契约的整段文字
         - {"event": "card", "ui": "...", "data": {...}}  — 结构化卡片
-        - {"event": "done", "session_id": "..."}
+        - {"event": "done", "session_id", "reply", "ui", "data", "ai_generated", "content_disclosure"}
+          — ⚠️ **以这里的 `reply` 为准**：流式推的是模型原始输出，这里是清理链处理后的最终版
+          （危险标签已转义、独白已替换、卡片要点可能已追加）。
         - {"event": "error", "message": "..."}
         """
         try:
@@ -1285,7 +1369,19 @@ class ReActAgent:
                         loop.run_in_executor(_AGENT_EXECUTOR, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title))),
                         timeout=settings.request_timeout,
                     )
-                    await queue.put({'event': 'done', 'session_id': result.session_id})
+                    # done 事件带**经清理链处理过**的完整结果：流式期间推的是模型原始
+                    # content，清理链可能做了危险标签转义 / 独白替换 / 追加卡片要点，
+                    # 接入方应在 done 时用它覆盖已推的文字（2026-09-18 审计 P0-1）。
+                    # ⚠️ 全部用 getattr 兜底：result 若是替身对象/异常路径可能缺字段，
+                    # 而这里一旦抛异常就会退化成 error 事件，前端连 done 都收不到。
+                    _ui = getattr(result, 'ui', None)
+                    await queue.put({
+                        'event': 'done',
+                        'session_id': getattr(result, 'session_id', '') or '',
+                        'reply': getattr(result, 'reply', '') or '',
+                        'ui': getattr(_ui, 'value', 'text') if _ui is not None else 'text',
+                        'data': getattr(result, 'data', None) or {},
+                    })
                 except asyncio.TimeoutError:
                     logger.warning('[agent] 流式对话超时（%.0fs）', settings.request_timeout)
                     await queue.put({'event': 'error', 'message': '处理超时，请简化问题后重试'})
@@ -1399,6 +1495,7 @@ class ReActAgent:
         tool_log: list[ToolCallRecord] = []
         respond_args: dict[str, Any] | None = None
         final_reply = ''
+        _any_pushed = False     # 本轮是否已通过真流式逐字推过文字（决定末尾要不要整段兜底）
         new_msgs: list[dict[str, Any]] = [{'role': 'user', 'content': message}]
         for turn in range(1, settings.max_iterations + 1):
             _remaining = _deadline - time.perf_counter()
@@ -1408,15 +1505,23 @@ class ReActAgent:
                 break
             logger.info('[agent] ReAct 第 %d/%d 轮 阶段=%s', turn, settings.max_iterations, stage.value)
             try:
-                # 按本轮剩余预算收紧单次 LLM 超时，避免「8 轮 × 3 重试 × 120s」把整轮拖长
-                resp = call_llm(messages, tools=to_openai_tools(), timeout=min(settings.llm_timeout, _remaining))
+                # 按本轮剩余预算收紧单次 LLM 超时，避免「8 轮 × 3 重试 × 120s」把整轮拖长。
+                # 有 on_event（SSE 场景）时走**流式**：最终回复逐字推给用户，不再干等
+                # （2026-09-18 外部安全审计 P0-1）；无 on_event（非流式 /chat）保持同步调用。
+                if on_event is not None:
+                    msg = self._stream_llm(messages, on_event, _remaining)
+                    _any_pushed = _any_pushed or bool(getattr(msg, '_pushed', False))
+                else:
+                    resp = call_llm(messages, tools=to_openai_tools(), timeout=min(settings.llm_timeout, _remaining))
+                    msg = resp.choices[0].message
             except Exception as exc:
                 # 安全：原始异常只落服务端日志（含完整 traceback），绝不回显给用户，避免泄露
                 # endpoint / 模型 ID / 密钥前缀 / 内部堆栈等敏感信息（K-1 修复）。
                 logger.exception('[agent] LLM 调用失败')
                 final_reply = '抱歉，我这边服务暂时开小差了，请稍后再试一次～'
                 break
-            msg = resp.choices[0].message
+            # 注意：`msg` 已在上面两个分支里分别赋值（流式 / 非流式），此处**不能**再写
+            # `msg = resp.choices[0].message` —— 流式分支里没有 `resp`，会 UnboundLocalError。
             tool_calls = self._parse_tool_calls(msg)
             if tool_calls:
                 assistant_msg = {'role': 'assistant', 'content': getattr(msg, 'content', '') or '', 'tool_calls': [{'id': tc['id'], 'type': 'function', 'function': {'name': tc['name'], 'arguments': json.dumps(tc['arguments'], ensure_ascii=False)}} for tc in tool_calls]}
@@ -1586,17 +1691,12 @@ class ReActAgent:
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info('[agent] 完成 阶段=%s ui=%s 耗时=%.0fms', new_stage.value, ui.value, elapsed)
         if on_event:
-            import re as _re
-            parts = _re.split('([。！？\\n])', final_reply or '')
-            buf = ''
-            for seg in parts:
-                buf += seg
-                if seg in ('。', '！', '？', '\n') or len(buf) > 20:
-                    on_event({'event': 'text', 'content': buf})
-                    buf = ''
-                    time.sleep(0.03)
-            if buf:
-                on_event({'event': 'text', 'content': buf})
+            # 真流式（`_stream_llm` 逐字推 `text_delta`）已经推过，就不再重复推；
+            # 只有**一次都没推过**时才退回整段推一次 `text`（兼容非流式路径 / 全部被拦的情况）。
+            # ⚠️ 原实现是「把整段按句切碎 + sleep(0.03) 假装在流式」—— 那正是审计说的
+            # 「90 秒只推 2 个整段」的伪流式，现已由真 token 流取代（2026-09-18 P0-1）。
+            if not _any_pushed:
+                on_event({'event': 'text', 'content': final_reply or ''})
             if ui and ui.value != 'text':
                 on_event({'event': 'card', 'ui': ui.value, 'data': data})
         action_type = {
@@ -1964,6 +2064,121 @@ class ReActAgent:
         # 经 A/B 实测（2026-09-11）移除后工具选择无退化，输入字符 -29.6%。
         # generate_tool_manual() 保留在 toolkit.py，作为「provider 不支持 function calling」时的文本兜底。
         return '\n\n'.join(parts)
+
+    @staticmethod
+    def _stream_llm(messages: list[dict[str, Any]], on_event: Callable[[dict], None],
+                    remaining: float) -> Any:
+        """流式调用 LLM，把**面向用户的文字**实时推给前端。
+
+        为什么（2026-09-18 外部安全审计 P0-1）：单轮 25–92s，用户全程只看到转圈。
+        SSE 此前只推「工具开始/结束 + 最终整段」，90 秒也就 2 个整段，观感极差。
+
+        ⚠️ 关键坑（本次实测发现，必须处理）：**模型在工具轮会先输出一大段"自言自语"
+        再调工具**，例如「我注意到工具要求必须提供 source_id 参数，但我没有这个信息。
+        …让他们选择。」——这段 content 不是给用户看的。若边收边推，等于把内部独白
+        **实时直播**给用户，比现在（被 `_finalize_reasoning_leak` 拦下）更糟。
+
+        因此设了三层保护（全部带回滚）：
+        1. **头部缓冲** `_HEAD_BUFFER` 个字符后才开始推：纯回复轮只是推迟几十字，
+           工具轮的构思文字则有机会在推送前先撞上 `tool_calls` 被整段丢弃；
+        2. **遇到 `tool_calls`** → 丢弃已缓冲内容；若已经推过则发 `text_rollback` 让前端撤回；
+        3. **独白实时检测** → 累计内容命中 `_looks_like_reasoning_leak` 即停止推送并回滚。
+
+        最终以 `done` 事件里**经清理链处理过**的 `reply` 为准（接入方应在 done 时覆盖）。
+
+        Args:
+            messages: 本轮 LLM 上下文。
+            on_event: SSE 事件回调。
+            remaining: 本轮剩余时间预算（秒）。
+
+        Returns:
+            与 ``resp.choices[0].message`` 等价的对象（``content`` + ``tool_calls``）。
+        """
+        _HEAD_BUFFER = 40
+        stream = call_llm_stream(messages, tools=to_openai_tools(),
+                                 timeout=min(settings.llm_timeout, remaining))
+        content_buf = ''
+        pushed = False          # 是否已向用户推送过
+        push_enabled = True     # 命中独白/工具轮后置 False
+        saw_tool_call = False
+        tc_acc: dict[int, dict[str, str]] = {}
+        _reply_pushed = 0       # 终结工具 reply 参数已推送的字符数（增量推送用）
+
+        for _n_chunks, chunk in enumerate(stream, 1):
+            choices = getattr(chunk, 'choices', None)
+            if not choices:
+                continue
+            delta = getattr(choices[0], 'delta', None)
+            if delta is None:
+                continue
+
+            tcs = getattr(delta, 'tool_calls', None)
+            if tcs:
+                if not saw_tool_call:
+                    saw_tool_call = True
+                    content_buf = ''            # 工具轮的 content 是构思，丢弃
+                    push_enabled = False
+                    if pushed:
+                        on_event({'event': 'text_rollback'})
+                        pushed = False
+                for t in tcs:
+                    idx = getattr(t, 'index', 0) or 0
+                    slot = tc_acc.setdefault(idx, {'id': '', 'name': '', 'arguments': ''})
+                    if getattr(t, 'id', None):
+                        slot['id'] = t.id
+                    fn = getattr(t, 'function', None)
+                    if fn is not None:
+                        if getattr(fn, 'name', None):
+                            slot['name'] = fn.name
+                        if getattr(fn, 'arguments', None):
+                            slot['arguments'] += fn.arguments
+                # 终结工具的 `reply` 参数就是最终回复 —— 边收边推。
+                # ⚠️ 这是真流式的**主战场**：实测模型最终回复的 content 为 0 字，
+                # 全部文字都在 `respond_to_user` / `show_plan_card` 的 JSON 参数里。
+                _slot = tc_acc.get(0)
+                if _slot and _slot['name'] in ('respond_to_user', 'show_plan_card'):
+                    _cur = _extract_partial_json_string(_slot['arguments'], 'reply')
+                    if len(_cur) > _reply_pushed and not _has_process_narration(_cur):
+                        on_event({'event': 'text_delta', 'content': _cur[_reply_pushed:]})
+                        _reply_pushed = len(_cur)
+                        pushed = True
+                continue
+
+            text = getattr(delta, 'content', None)
+            if not text or not push_enabled:
+                continue
+            content_buf += text
+            # 推送**之前**先粗筛「过程说明 / 内部独白」：命中就本轮不再推。
+            # ⚠️ 必须在推送前判——等推出去再回滚，用户已经看到那段自言自语了
+            # （实测：模型工具轮的自言自语可达几十字，超过头部缓冲）。
+            if _has_process_narration(content_buf):
+                if pushed:
+                    on_event({'event': 'text_rollback'})
+                    pushed = False
+                push_enabled = False
+                logger.warning('[agent] 流式推送前检测到过程说明/独白，本轮停止推送')
+                continue
+            if not pushed and len(content_buf) >= _HEAD_BUFFER:
+                pushed = True
+                on_event({'event': 'text_delta', 'content': content_buf})
+            elif pushed:
+                on_event({'event': 'text_delta', 'content': text})
+
+        logger.info('[agent] 流式调用结束：chunks=%d content=%d字 pushed=%s tools=%d',
+                    _n_chunks, len(content_buf), pushed, len(tc_acc))
+        calls = None
+        if tc_acc:
+            calls = [
+                SimpleNamespace(
+                    id=v['id'] or f'call_{i}',
+                    type='function',
+                    function=SimpleNamespace(name=v['name'], arguments=v['arguments'] or '{}'),
+                )
+                for i, v in sorted(tc_acc.items())
+            ]
+        # `_pushed` 供主循环判断"是否已逐字推过"：已推过就不再走伪流式整段推，
+        # 否则用户会看到同一段文字出现两遍。
+        return SimpleNamespace(content=content_buf, tool_calls=calls, _pushed=pushed)
 
     @staticmethod
     def _parse_tool_calls(msg: Any) -> list[dict[str, Any]]:

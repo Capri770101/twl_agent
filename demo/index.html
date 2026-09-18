@@ -833,30 +833,98 @@ async function send(text) {
   const th = thinkingBlock();
 
   try {
-    const r = await fetch(BASE + "/chat", {
+    // 走流式：最终回复逐字推到屏幕上（2026-09-18 审计 P0-1）。
+    // 事件：tool_call(状态) / text_delta(逐字) / text_rollback(撤回非用户内容) / done(最终版) / error
+    const r = await fetch(BASE + "/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
       body: JSON.stringify({ user_id: userId, message: text, session_id: sessionId })
     });
-    stopThinking(th);
 
     if (r.status === 429) {
+      stopThinking(th);
       const ra = r.headers.get("Retry-After");
       setStatus("err", "请求过快");
       note("请求有点密集，请等 " + esc(ra || "几十") + " 秒再试 🙏");
       return;
     }
-    if (r.status === 401) { token = null; setStatus("err", "会话过期"); note("会话已过期，请点右上角「新建会话」。"); return; }
+    if (r.status === 401) { stopThinking(th); token = null; setStatus("err", "会话过期"); note("会话已过期，请点右上角「新建会话」。"); return; }
     if (!r.ok) {
+      stopThinking(th);
       setStatus("err", "生成失败");
       let detail = "HTTP " + r.status;
       try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch (e) {}
       note("这一轮没走通（" + esc(detail) + "）。可以换个说法再问一次。");
       return;
     }
-    const res = await r.json();
-    if (res.session_id) sessionId = res.session_id;
-    renderResponse(res);
+
+    const reader = r.body.getReader();
+    const dec = new TextDecoder("utf-8");
+    let buf = "", streamEl = null, streamBody = null, streamText = "", settled = false;
+
+    // 出现第一段真文字时撤掉"思考中"，开一个实时气泡。
+    // 结构与 renderResponse 保持一致（内容包在 .say 里，换行交给 CSS），
+    // 否则会把 botShell 的 "Floral Assistant" 头部一起覆盖掉。
+    function ensureStreamEl() {
+      if (streamEl) return streamEl;
+      stopThinking(th);
+      streamEl = botShell('<div class="say"></div>');
+      streamBody = streamEl.querySelector(".say");
+      return streamEl;
+    }
+    function dropStreamEl() {
+      if (streamEl) { streamEl.remove(); }
+      streamEl = null; streamBody = null; streamText = "";
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const blocks = buf.split("\n\n");
+      buf = blocks.pop();
+      for (const block of blocks) {
+        if (!block.trim()) continue;
+        let ev = "message", raw = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) ev = line.slice(6).trim();
+          else if (line.startsWith("data:")) raw += line.slice(5).trim();
+        }
+        let p = {};
+        try { p = JSON.parse(raw); } catch (e) { continue; }
+
+        if (ev === "tool_call") {
+          setStatus("thinking", p.status === "ok" ? "整理结果…" : "思考中…");
+        } else if (ev === "text_delta") {
+          streamText += (p.content || "");
+          ensureStreamEl();
+          streamBody.innerHTML = esc(streamText);
+          scrollDown();
+        } else if (ev === "text_rollback") {
+          // 后端判定这段不是给用户看的（工具轮的过程说明 / 内部独白），撤回
+          dropStreamEl();
+          setStatus("thinking", "思考中…");
+        } else if (ev === "done") {
+          settled = true;
+          if (p.session_id) sessionId = p.session_id;
+          stopThinking(th);
+          // ⚠️ 以 done 的 reply 为准：流式推的是模型原始输出，这里是清理链处理后的最终版
+          // （危险标签已转义、独白已替换、卡片要点可能已追加）。
+          if (p.ui === "text" && streamBody) {
+            streamBody.innerHTML = esc(p.reply || "");
+            streamEl = null; streamBody = null;
+          } else {
+            dropStreamEl();
+            renderResponse(p);
+          }
+        } else if (ev === "error") {
+          stopThinking(th);
+          setStatus("err", "生成失败");
+          note(esc(p.message || "处理失败了，请重试一次"));
+        }
+      }
+    }
+    if (!settled) { dropStreamEl(); stopThinking(th); note("连接提前结束了，可以再问一次。"); }
     setStatus("", "就绪");
   } catch (e) {
     stopThinking(th);
