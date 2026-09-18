@@ -68,3 +68,102 @@ def test_price_not_zero_is_the_actual_regression() -> None:
     p = _build_plan({'recipient': '母亲', 'occasion': '祝寿', 'budget': '300'})
     cents = round((p.get('price') or 0) * 100)
     assert cents > 0, '复现了 0 元加购事故'
+
+
+# ══ 价格与明细的「重算同步」（2026-09-18 端到端实测发现的分叉） ══════════════
+# 背景：`price` / `price_text` / `estimated_price` 原本只在 _build_plan 里写一次，
+# 而 `budget_breakdown` 在 LLM 语义路径上会被重算 4 次（_merge_plan ×3 +
+# _enrich_plan_fees ×1）。模型换过花材后，明细按新花材算、顶层价格却停在 baseline。
+# 演示环境实测分叉：**明细合计 547 元，而 price = 258 元**。
+# 危害方向很坏：price 是给下游结算用的 → **按便宜的价扣款、按真实的单备货**。
+
+def _breakdown_sum(plan: dict) -> int:
+    """明细逐项求和（用户和店家会当场这么对账）。"""
+    return sum(int(round(it.get('amount') or 0))
+               for it in (plan.get('budget_breakdown') or {}).get('items') or [])
+
+
+@pytest.mark.parametrize('dims', DIMS_CASES)
+def test_breakdown_items_sum_equals_total(dims: dict) -> None:
+    """明细加起来必须等于合计 —— 对不上会被当成"这家不靠谱"。"""
+    p = _build_plan(dims)
+    assert _breakdown_sum(p) == p['budget_breakdown']['total_estimate']
+
+
+def _llm_plan_with_pricier_flowers() -> dict:
+    """模拟 LLM 换上一批更贵的花材（这是分叉的触发条件）。"""
+    return {
+        'name': '法式·紫韵浪漫生日花束',
+        'design': {
+            'main_flowers': [{'name': '香槟玫瑰'}, {'name': '绣球'}, {'name': '唐菖蒲'}],
+            'fillers': [{'name': '洋桔梗'}, {'name': '六出花'}, {'name': '澳梅'}],
+            'foliage': [{'name': '银叶菊'}],
+            'color_scheme': ['香槟', '浅紫'],
+            'packaging': '礼盒花',
+        },
+    }
+
+
+def test_llm_merge_keeps_price_in_sync_with_breakdown() -> None:
+    """LLM 换过花材重算明细后，顶层价格必须跟着走（回归实测的分叉）。"""
+    from agent.tools import _merge_plan
+
+    baseline = _build_plan({'recipient': '恋人', 'occasion': '生日', 'budget': '300'})
+    merged = _merge_plan(baseline, _llm_plan_with_pricier_flowers())
+
+    total = merged['budget_breakdown']['total_estimate']
+    assert merged['price'] == total, (
+        f"价格与明细分叉：price={merged['price']}、明细合计={total}")
+    assert _breakdown_sum(merged) == merged['price'], '明细求和与合计对不上'
+    assert merged['price_text'] == merged['estimated_price']
+
+
+def test_enrich_fees_syncs_price() -> None:
+    """单测收口点本身：_enrich_plan_fees 重算明细后必须写回价格。"""
+    from agent.tools import _enrich_plan_fees
+
+    p = _build_plan({'recipient': '恋人', 'occasion': '生日', 'budget': '300'})
+    p['design'].update(_llm_plan_with_pricier_flowers()['design'])
+    p['price'] = 1  # 人为制造"旧值"（模拟 baseline 残留）
+    out = _enrich_plan_fees(p)
+    assert out['price'] == out['budget_breakdown']['total_estimate']
+    assert out['price'] != 1, '重算后价格没有收口，仍停在旧值'
+
+
+def test_llm_cannot_override_deterministic_price_fields() -> None:
+    """价格与档位是**系统算的**，模型不得改写。
+
+    模型曾按用户预算写出与实际用料不符的价（用户说 300、它写 317），
+    而真实明细是另一个数 —— 三者打架时用户只会认为系统不靠谱。
+    """
+    from agent.tools import _merge_plan
+
+    baseline = _build_plan({'recipient': '母亲', 'occasion': '祝寿', 'budget': '300'})
+    merged = _merge_plan(baseline, {
+        'estimated_price': '约 8888 元（顶级档）',
+        'budget_tier': '顶级档',
+        **_llm_plan_with_pricier_flowers(),
+    })
+    assert '8888' not in merged['estimated_price'], '模型改写了展示价格'
+    assert merged['estimated_price'] == merged['price_text']
+    assert merged['budget_tier'] != '顶级档', '模型改写了预算档位'
+    assert merged['price'] == merged['budget_breakdown']['total_estimate']
+
+
+def test_copy_text_total_matches_breakdown_after_merge() -> None:
+    """端到端一致性：清单里写的合计，必须等于清单里逐条明细的和。
+
+    这条是用户视角的最终防线 —— 清单是拿给店家看的，账对不上当场露馅。
+    """
+    from agent.tools import _merge_plan, annotate_shop_materials, build_plan_copy_text
+
+    baseline = _build_plan({'recipient': '恋人', 'occasion': '生日', 'budget': '300'})
+    merged = annotate_shop_materials(
+        _merge_plan(baseline, _llm_plan_with_pricier_flowers()), '')
+    text = build_plan_copy_text(merged)
+
+    lines = [ln for ln in text.split('\n') if ln.startswith('· ') and '——' in ln]
+    listed = sum(int(ln.rsplit('——', 1)[1].strip().split(' ')[0]) for ln in lines)
+    assert listed == merged['price'], (
+        f'清单自身对不上账：明细 {listed} 元、合计 {merged["price"]} 元')
+    assert f"合计约 {merged['price']} 元" in text

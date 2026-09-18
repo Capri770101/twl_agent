@@ -739,6 +739,9 @@ def _enrich_plan_fees(plan: dict) -> dict:
     pkg_name = d.get('packaging') or '花束'
     pkg = {'name': pkg_name, 'id': 'PK_BOX' if '礼盒' in pkg_name else 'PK_BOUQUET'}
     plan['budget_breakdown'] = _build_budget_breakdown(main, fillers, foliage, pkg, tier, plan.get('budget_num'), plan.get('stem_count'))
+    # 明细重算 → 顶层价格必须跟着收口。这里是 LLM 合并链路的**最后一道**重算，
+    # 漏了这步就会出现「明细 547 元、卡片与下游只认 258 元」（见 _sync_plan_price）。
+    _sync_plan_price(plan, tier.get('label', ''))
     return plan
 
 def _alloc_stems(tier: dict, main: list[dict], fillers: list[dict], foliage: list[dict], budget_num: int | None=None, stem_count: int | None=None) -> dict[str, int]:
@@ -868,6 +871,43 @@ def _build_budget_breakdown(main: list[dict], fillers: list[dict], foliage: list
     total = round(main_cost + filler_cost + foliage_cost + pkg_material + labor_fee + decor_fee)
     items = [{'item': '主花', 'detail': '、'.join(f"{m['name']}×{stems.get(m['name'], 1)}" for m in main) or '无', 'amount': round(main_cost)}, {'item': '配材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in fillers) or '无', 'amount': round(filler_cost)}, {'item': '叶材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in foliage) or '无', 'amount': round(foliage_cost)}, {'item': '包装材料', 'detail': packaging['name'] if packaging else '花束', 'amount': pkg_material}, {'item': '装饰费', 'detail': f'含丝带/贺卡/点缀（{decor_fee} 元/束，按预算档标准）', 'amount': decor_fee}, {'item': '人工费', 'detail': f'含修剪、去刺、扎制、定型（{labor_fee} 元/束，按预算档标准）', 'amount': labor_fee}]
     return {'total_estimate': total, 'currency': 'CNY', 'items': items, 'fees': {'labor': labor_fee, 'labor_standard': '按预算档收取：入门档 15 元 / 精致档 25 元 / 高级档 40 元（含修剪、去刺、扎制、定型）', 'decor': decor_fee, 'decor_standard': '按预算档收取：入门档 10 元 / 精致档 18 元 / 高级档 30 元（含丝带、贺卡、点缀饰材）', 'note': '花材费用按支数计，人工与装饰费为门店统一标准，下单前请以门店确认为准。'}, 'note': '以上为按花材档位做的估算，实际价格以门店/供应商为准。'}
+
+def _sync_plan_price(plan: dict, tier_label: str = '') -> dict:
+    """把顶层价格字段与最终的 ``budget_breakdown`` 对齐（价格的**单一真相源**）。
+
+    为什么需要（2026-09-18 实测发现）：``price`` / ``price_text`` / ``estimated_price``
+    原本只在 :func:`_build_plan` 里写一次，而 ``budget_breakdown`` 在 LLM 语义路径上
+    会被**重算 4 次**（``_merge_plan`` ×3 + :func:`_enrich_plan_fees` ×1）。
+    模型换过花材后，明细按新花材重算，顶层价格却还停在 baseline ——
+    实测分叉到「明细合计 547 元、顶层只认 258 元」。
+    这是 2026-09-18「DIY 补数值价格」修复留下的缺口：补了字段，但没管重算同步。
+
+    ⚠️ 危害方向：``price`` 是给下游结算用的，**分叉意味着按便宜的价扣款、
+    按真实的单备货**。所以任何重算明细的地方都必须回到这里收口。
+
+    ⚠️ 单位是「元」；平台商品卡返回的 price 单位是「分」，接入方务必按字段区分。
+
+    Args:
+        plan: 方案 dict（会被就地写入 price / price_unit / price_text / estimated_price）。
+        tier_label: 预算档标签；留空则按 ``budget_num`` 现算。
+
+    Returns:
+        同一个 plan 对象。
+    """
+    if not isinstance(plan, dict):
+        return plan
+    total = (plan.get('budget_breakdown') or {}).get('total_estimate')
+    if total is None:
+        return plan
+    total = int(total)
+    label = tier_label or _get_tier(plan.get('budget_num'), None).get('label', '')
+    plan['price'] = total
+    plan['price_unit'] = 'CNY'
+    # 文案与数值**同口径**：不能出现「文案说 300、扣款 205」
+    plan['price_text'] = f'约 {total} 元（{label}档）' if label else f'约 {total} 元'
+    plan['estimated_price'] = plan['price_text']
+    return plan
+
 
 def _suitable_for(recipient: str, occasion: str) -> list[str]:
     """规则兜底：由收礼人/场合推导适宜人群标签（模块二卡片字段）。"""
@@ -1012,15 +1052,9 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     # `budget_breakdown.total_estimate`，**没有顶层数值字段**。接入方按平台商品卡惯例取
     # `plan['price']` 得到 undefined，前端 `Math.round((e.price||0)*100)` 算出 0
     # → 一束约 300 元的花束以 **0 元**进购物车并跳结算页（下游真实事故）。
-    # 现在补 `price`（数值）+ `price_text`（展示文案）+ `price_unit`，并让
-    # `estimated_price` 与数值**同口径**，避免"文案一个数、扣款另一个数"。
-    # ⚠️ 单位是「元」；平台商品卡返回的 price 单位是「分」，接入方务必按字段名/单位文档区分。
-    _bb_total = (plan.get('budget_breakdown') or {}).get('total_estimate')
-    if _bb_total is not None:
-        plan['price'] = int(_bb_total)
-        plan['price_unit'] = 'CNY'
-        plan['price_text'] = f"约 {int(_bb_total)} 元（{tier['label']}档）"
-        plan['estimated_price'] = plan['price_text']
+    # 现在统一走 _sync_plan_price：数值 + 展示文案 + 单位一次写齐，
+    # 且**任何重算 budget_breakdown 的地方都要回到它收口**（否则两者会分叉）。
+    _sync_plan_price(plan, tier['label'])
     # 打标：供 _merge_plan 强制单一花材 / 明确支数（LLM 输出不得违背用户显式要求）。
     if single_flower:
         plan['_single_flower'] = single_flower
@@ -1197,7 +1231,10 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
     plan = copy.deepcopy(baseline)
     if not isinstance(llm_plan, dict):
         return plan
-    for key in ('name', 'style', 'recipient', 'occasion', 'scene', 'desc', 'effect_prompt', 'estimated_price', 'budget_tier'):
+    # ⚠️ `estimated_price` / `budget_tier` 不在此列：价格与档位是**确定性字段**，
+    # 由 _sync_plan_price 按最终明细统一写死，不能让模型自由发挥
+    # （模型曾按用户预算写出与实际用料不符的价，导致「文案一个价、明细另一个价」）。
+    for key in ('name', 'style', 'recipient', 'occasion', 'scene', 'desc', 'effect_prompt'):
         if llm_plan.get(key) not in (None, '', []):
             plan[key] = llm_plan[key]
     ld = llm_plan.get('design')
