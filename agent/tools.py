@@ -115,6 +115,16 @@ _COLOR_KW = {'红': '红', '粉': '粉', '白': '白', '香槟': '香槟', '紫'
 _MOOD_KW = {'温柔': '温柔', '温馨': '温馨', '浪漫': '浪漫', '清新': '清新', '热烈': '热烈', '活泼': '活泼', '高级': '高级', '素雅': '素雅', '优雅': '优雅', '莫兰迪': '素雅', '马卡龙': '清新', '小清新': '清新', '轻奢': '高级', '低调': '素雅', '治愈': '治愈', '安静': '素雅', '甜美': '甜美', '氛围感': '优雅', '高级感': '高级'}
 _BUDGET_ORAL = {'一两百': 150, '一二百': 150, '小几百': 200, '两三百': 250, '二三百': 250, '三四百': 350, '三五百': 400, '五六百': 550, '七八百': 750, '千把块': 1000, '一千': 1000, '一两千': 1500, '两三千': 2500}
 
+# 金额数量级单位：用户常说「预算5万」「三千左右」。丢掉单位会差 3~4 个数量级
+# （实测「预算5万」曾被解析成 5 元），所以数字模式必须把它一起捕获。
+_MAGNITUDE_UNITS: dict[str, float] = {
+    '万': 1e4, '萬': 1e4, 'w': 1e4, 'W': 1e4,
+    '千': 1e3, 'k': 1e3, 'K': 1e3,
+    '百': 1e2,
+}
+# 「金额数字」模式：阿拉伯数字（可带小数）+ 可选数量级单位。两处 group：数字 / 单位。
+_AMOUNT_PAT = r'(\d{1,6}(?:\.\d{1,2})?)\s*([万千百wWkK])?'
+
 def _build_scene_map() -> dict[str, str]:
     m: dict[str, str] = {}
     for s in query_knowledge('scene', '')['results']:
@@ -321,6 +331,11 @@ def _extract_budget(text: str) -> tuple[str | None, float | None, float | None, 
 
     精确金额与旧 _extract 的 dims['budget'] 保持一致（如「两三百」→ 250），
     区间按 ±20% 推导，供检索时做软过滤。
+
+    ⚠️ **必须识别数量级单位（万 / 千 / 百 / w / k）**。线上实测（2026-09-18）：
+    「预算5万」被解析成 **5 元**、「1.5万」被解析成 **1 元**（旧正则 `\\d{1,5}` 只抓数字、
+    把「万」直接丢掉），「三万」「五千」这类中文写法**完全抽不到**。
+    金额差 4 个数量级会让方案档位、报价、预算校验全错。
     """
     anchor: str | None = None
     for oral, num in _BUDGET_ORAL.items():
@@ -328,16 +343,33 @@ def _extract_budget(text: str) -> tuple[str | None, float | None, float | None, 
             text = text.replace(oral, f' {num} ')
             anchor = oral
             break
+
     # 必须有明确的价格信号才算预算：货币单位 / 预算 / 价格 / 「X元左右」。
     # 仅紧跟 朵/支/束 的数字（如「11 朵」）一律不当预算，避免把数量误判成金额。
-    m = (re.search(r'(\d{1,5})\s*(?:元|块|块钱|rmb|¥|刀)', text)
-         or re.search(r'预算\s*(\d{1,5})', text)
-         or re.search(r'价格\s*(\d{1,5})', text)
-         or re.search(r'(\d{1,5})\s*元左右', text))
-    if not m:
-        return (anchor, None, None, None)
-    num = float(m.group(1))
-    return (anchor, num, round(num * 0.8), round(num * 1.2))
+    for pat in (
+        re.compile(_AMOUNT_PAT + r'\s*(?:元|块|块钱|rmb|¥|刀)', re.I),
+        re.compile(r'(?:预算|价格)\s*' + _AMOUNT_PAT),
+        re.compile(_AMOUNT_PAT + r'\s*(?:预算|价格)'),   # 「5w预算」这类后置写法
+        re.compile(_AMOUNT_PAT + r'\s*元左右'),
+    ):
+        m = pat.search(text)
+        if m:
+            num = float(m.group(1)) * _MAGNITUDE_UNITS.get(m.group(2) or '', 1.0)
+            return (anchor, num, round(num * 0.8), round(num * 1.2))
+
+    # 中文数字 + 数量级：「三百元」「预算三万」—— 阿拉伯正则抓不到。
+    # ⚠️ 必须带**价格信号**才认（货币单位或「预算/价格」），否则「两万朵玫瑰」会被当成预算。
+    for pat in (
+        re.compile(r'([一二两三四五六七八九十]{1,3})\s*([万千百])\s*(?:元|块|块钱)'),
+        re.compile(r'(?:预算|价格)\s*([一二两三四五六七八九十]{1,3})\s*([万千百])'),
+    ):
+        cm = pat.search(text)
+        if cm:
+            base = _cn_to_int(cm.group(1))
+            if base:
+                num = float(base) * _MAGNITUDE_UNITS[cm.group(2)]
+                return (anchor, num, round(num * 0.8), round(num * 1.2))
+    return (anchor, None, None, None)
 
 _CN_DIGIT = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
 
@@ -553,10 +585,13 @@ def merge_requirement(req: FlowerRequirement, llm_req: dict | None) -> FlowerReq
     raw_budget = llm_req.get('budget')
     num = _safe_float(raw_budget)
     if num is None and raw_budget is not None:
-        # 模型常写成「约200元」「200 左右」→ 从字符串里取第一个数字
-        m = re.search(r'(\d{2,5})', str(raw_budget))
-        num = float(m.group(1)) if m else None
-    if num is not None and 20 <= num <= 10000:
+        # 模型常写成「约200元」「200 左右」「5万」→ 取数字并识别数量级单位
+        m = re.search(_AMOUNT_PAT, str(raw_budget))
+        if m:
+            num = float(m.group(1)) * _MAGNITUDE_UNITS.get(m.group(2) or '', 1.0)
+    # 上限 100000（原为 10000）：用户明确说「预算5万」时不该被静默丢弃 —— 丢弃后模型会
+    # 退化成默认档位，报价与用户预期完全不符。下限 20 保留（防「1 块钱」这类噪音）。
+    if num is not None and 20 <= num <= 100000:
         out.budget_num = num
         out.budget_min = round(num * 0.8)
         out.budget_max = round(num * 1.2)
@@ -745,6 +780,32 @@ def _alloc_stems(tier: dict, main: list[dict], fillers: list[dict], foliage: lis
         for i, f in enumerate(side_pool):
             stems[f] = per_side + (1 if i < side_total % len(side_pool) else 0)
     return stems
+
+# DIY 步骤条数上限。规则引擎固定生成 6 步；模型输出不受控，需要钳制。
+_DIY_STEPS_MAX = 10
+
+
+def _cap_steps(steps: Any) -> list[str]:
+    """清洗并限制 DIY 步骤条数。
+
+    Args:
+        steps: 模型给出的步骤（可能是任意类型）。
+
+    Returns:
+        去掉空项后的字符串列表，最多 ``_DIY_STEPS_MAX`` 条。
+
+    为什么需要：步骤条数完全由 LLM 生成、**不可控** —— 审计报告（2026-09-18）提到
+    「制作步骤 146 步」，对用户毫无意义（没人会照做 146 步）。规则引擎固定 6 步，
+    这里把模型输出对齐到同一量级。原本是直接把模型数组原样塞进方案。
+    """
+    if not isinstance(steps, list):
+        return []
+    out = [str(s).strip() for s in steps if str(s).strip()]
+    if len(out) > _DIY_STEPS_MAX:
+        logger.warning('[tools] DIY 步骤 %d 条超出上限 %d，已截断', len(out), _DIY_STEPS_MAX)
+        out = out[:_DIY_STEPS_MAX]
+    return out
+
 
 def _build_diy_steps(main: list[dict], fillers: list[dict], foliage: list[dict], color_scheme: list[str], packaging: dict | None) -> list[str]:
     """生成可照做的分步插花指引（基于本方案实际花材/数量/包装）。"""
@@ -1153,7 +1214,7 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
             pk_name = ld.get('packaging') or plan.get('design', {}).get('packaging') or '花束'
             pkg = {'name': pk_name, 'id': 'PK_BOX' if '礼盒' in pk_name else 'PK_BOUQUET'}
             if ld.get('diy_steps') not in (None, '', []):
-                plan['diy_steps'] = ld['diy_steps']
+                plan['diy_steps'] = _cap_steps(ld['diy_steps'])
             else:
                 plan['diy_steps'] = _build_diy_steps(real_main, real_fill, real_foli, ld.get('color_scheme') or [], pkg)
             if ld.get('budget_breakdown') not in (None, '', []):

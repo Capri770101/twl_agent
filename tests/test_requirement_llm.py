@@ -111,7 +111,11 @@ def test_merge_budget_and_stem_validation() -> None:
     m1 = merge_requirement(req, {'budget': '约200元'})     # 宽容解析字符串金额
     assert m1.budget_num == 200 and m1.budget_min == 160 and m1.budget_max == 240
     assert merge_requirement(req, {'budget': 5}).budget_num is None        # 太低 → 丢弃
-    assert merge_requirement(req, {'budget': 99999}).budget_num is None    # 太高 → 丢弃
+    # 上限 **100000**（原 10000）：用户明确说「预算5万」时不该被静默丢弃 ——
+    # 丢弃后模型会退化成默认档位，报价与用户预期完全不符（2026-09-18 修复）。
+    assert merge_requirement(req, {'budget': 50000}).budget_num == 50000
+    assert merge_requirement(req, {'budget': 1000000}).budget_num is None  # 仍越界 → 丢弃
+    assert merge_requirement(req, {'budget': '约5万'}).budget_num == 50000  # 中文数量级
     assert merge_requirement(req, {'budget': '没提'}).budget_num is None
     assert merge_requirement(req, {'stem_count': '十一'}).stem_count == 11  # 中文数字
     assert merge_requirement(req, {'stem_count': -3}).stem_count is None

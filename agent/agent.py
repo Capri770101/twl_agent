@@ -2405,10 +2405,34 @@ class ReActAgent:
         if not uniq:
             return []
         if reply:
-            picked = [r for r in uniq if str(r.get('name') or '').strip() in reply]
+            picked = [r for r in uniq if cls._name_mentioned(str(r.get('name') or ''), reply)]
             if picked:
                 uniq = picked
         return uniq[:cls.PRODUCT_CARD_LIMIT]
+
+    @staticmethod
+    def _name_mentioned(name: str, reply: str) -> bool:
+        """回复里是否提到了这一款（含平台名的「主名」形态）。
+
+        Args:
+            name: 平台商品名（可能是「主名·副名」结构）。
+            reply: 本轮回复文字。
+
+        Returns:
+            判定为「提到了」时为 True。
+
+        为什么要主名匹配（2026-09-18 实测复现）：平台商品名多为「主名·副名」
+        （如「感恩母亲·康乃馨花束」），而模型写文案时惯用**简称**（「感恩母亲」）——
+        只认全名会把该款误剔除，表现为**「文案说 5 款、卡片只渲染 4 张」**。
+        反过来「宁多勿漏」：主名命中即算（多显示一张卡远好于文案与卡片对不上）。
+        """
+        full = (name or '').strip()
+        if not full:
+            return False
+        if full in reply:
+            return True
+        main = re.split(r'[·\-|｜]', full)[0].strip()
+        return len(main) >= 2 and main in reply
 
     def _extract_products(self, tool_log: list[ToolCallRecord]) -> list[dict[str, Any]]:
         """从本轮工具日志提取 platform_db_query_entity(entity=plan) 的成功结果，

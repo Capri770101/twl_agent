@@ -348,6 +348,47 @@ def _keyword_hits(row: dict[str, Any], tokens: list[str]) -> int:
     return sum(1 for t in tokens if t in haystack)
 
 
+# 常见颜色字（用于识别「白绿」这类连写色词并拆单字）
+_COLOR_CHARS = frozenset('红橙黄绿青蓝紫粉白黑灰棕褐金银')
+
+
+def _token_levels(tokens: list[str]) -> list[list[str]]:
+    """把词元按「字面放宽层级」展开：原形 → 去「系」→ 去「色」→ 色词拆单字。
+
+    Args:
+        tokens: :func:`_split_keywords` 拆出的词元。
+
+    Returns:
+        逐级放宽的词元列表（首项是原形；无变化时不重复追加）。
+
+    为什么需要（2026-09-18 线上实测）：中文色彩词的**使用形式不统一** ——
+    用户/模型说「粉色系」「香槟色」，而商品文案里写「粉色」「香槟」。整词匹配会**零命中**，
+    于是放宽成「全量」，表现出来就是审计说的**「色系检索不过滤」**
+    （查「粉色系」拿到「随机花瓶一个」这类无关商品）。逐级去后缀能精准得多：
+    `粉色系 → 粉色 → 粉`、`香槟色 → 香槟`、`白绿色系 → 白绿色 → 白绿 → 白 + 绿`。
+    """
+    levels = [list(tokens)]
+    lv = [t[:-1] if t.endswith('系') and len(t) > 2 else t for t in levels[-1]]
+    if lv != levels[-1]:
+        levels.append(lv)
+    lv = [t[:-1] if t.endswith('色') and len(t) > 1 else t for t in levels[-1]]
+    if lv != levels[-1]:
+        levels.append(lv)
+    # 末级：纯颜色字组成的词拆成单字（「白绿」→「白」「绿」）—— 商品文案常把两种颜色
+    # **分开写**（「白色百合配绿叶」），连写形式会零命中。OR 匹配下任一命中即算，
+    # 再按命中数排序，精度损失可接受。
+    split: list[str] = []
+    for t in levels[-1]:
+        if len(t) >= 2 and all(ch in _COLOR_CHARS for ch in t):
+            split.extend(t)
+        else:
+            split.append(t)
+    split = list(dict.fromkeys(split))
+    if split != levels[-1]:
+        levels.append(split)
+    return levels
+
+
 def fetch_entity(
     source_id: str,
     entity: str,
@@ -394,19 +435,22 @@ def fetch_entity(
     mode = 'all'
 
     if tokens:
-        scored: list[tuple[int, dict[str, Any]]] = []
-        for raw in rows:
-            row = normalize_row(entity, raw)
-            if not _match_scope(row, entity, shop_id, row_id or ''):
-                continue
-            hits = _keyword_hits(row, tokens)
-            if hits:
-                scored.append((hits, row))
-        if scored:
-            # 命中词元多的排前面：「妈妈 康乃馨」里命中「康乃馨」的比只命中「妈妈」的更相关
-            scored.sort(key=lambda item: -item[0])
-            mode = 'exact' if scored[0][0] == len(tokens) else 'partial'
-            out = [row for _, row in scored[:cap]]
+        # 逐级放宽字面：原形 → 去「系」→ 去「色」。第一级命中就不用更松的（保精准）。
+        for level, level_tokens in enumerate(_token_levels(tokens)):
+            scored: list[tuple[int, dict[str, Any]]] = []
+            for raw in rows:
+                row = normalize_row(entity, raw)
+                if not _match_scope(row, entity, shop_id, row_id or ''):
+                    continue
+                hits = _keyword_hits(row, level_tokens)
+                if hits:
+                    scored.append((hits, row))
+            if scored:
+                # 命中词元多的排前面：「妈妈 康乃馨」里命中「康乃馨」的比只命中「妈妈」的更相关
+                scored.sort(key=lambda item: -item[0])
+                mode = 'exact' if (level == 0 and scored[0][0] == len(tokens)) else 'partial'
+                out = [row for _, row in scored[:cap]]
+                break
 
     if not out:
         # 无关键词，或关键词零命中 → 扫全量（仍守 shop_id / row_id 硬约束）。
