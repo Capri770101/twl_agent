@@ -218,46 +218,56 @@ def _language_text(plan: dict, design: dict) -> str:
 
 
 def compute_pricing(plan: dict, *, min_margin: float = MIN_MARGIN) -> dict[str, Any]:
-    """按页面口径计算定价，并保证「售价 ≥ 花材成本 × min_margin」。
+    """按页面口径计算定价。
+
+    ⚠️ **口径变更（2026-09-18 定价改造，必读）**：
+    ``unit_price`` 过去是代码里写死的「花材成本参考价」（12/28/60），
+    现在改为**从平台在售商品反推的零售价**（见 :mod:`agent.pricing`）。
+    因此这里**不能再对材料额乘 ``min_margin``** —— 那等于给零售价再加一次毛利，
+    实测会把一束 195 元的方案抬到 201 元、直接顶破用户预算（页面上表现为
+    「预算 200 却提示超预算」）。
+    保底的含义随之改为：**报价不低于花材自身的零售金额**（即不打折卖花材），
+    而「不亏本」这个原始目标已由「直接采用平台在售价」自动达成
+    —— 平台商家本来就是按这个价在卖。
 
     Args:
         plan: ``_build_plan`` 产出的方案（含 ``design`` 与 ``budget_breakdown``）。
-        min_margin: 最低加价率（对外承诺 1.35 ≈ 26% 毛利）。
+        min_margin: 保留参数以兼容调用方；**当前不再参与计算**（见上）。
 
     Returns:
-        页面 ``pricing`` 字段。``warning`` 仅在「为保毛利抬价」或「预算压不住配置」时给出。
+        页面 ``pricing`` 字段。
     """
     design = plan.get('design') or {}
     breakdown = plan.get('budget_breakdown') or {}
     cost = material_cost(design)
     stems = total_stems(design)
     quoted = int(breakdown.get('total_estimate') or 0)
-    floor = int(math.ceil(cost * min_margin / ROUND_STEP) * ROUND_STEP) if cost else 0
+    floor = int(math.ceil(cost / ROUND_STEP) * ROUND_STEP) if cost else 0
     suggested = max(quoted, floor)
-    margin = suggested - cost
-    margin_rate = round(margin / suggested * 100) if suggested else 0
+    material = max(0, suggested - cost)          # 包装、手工与基础服务部分
+    material_rate = round(material / suggested * 100) if suggested else 0
 
     budget = plan.get('budget_num')
     budget = int(budget) if isinstance(budget, (int, float)) and budget else 0
 
     warning: str | None = None
     if quoted and floor and quoted < floor:
-        # 我们的报价低于保底线 → 抬到保底价（不能对外承诺「保底毛利」却报亏本价）
-        warning = f'为保证毛利，已按保底售价 {suggested} 元测算（花材成本 {cost} 元）。'
+        # 报价低于花材零售合计 → 抬到花材价（不能把花材本身打折卖）
+        warning = f'已按花材零售价 {suggested} 元测算（花材 {cost} 元）。'
     elif budget and suggested > budget:
-        warning = (f'当前预算偏低：按标准配置建议售价 {suggested} 元（花材成本 {cost} 元），'
-                   f'否则毛利无法覆盖人工与损耗。')
+        warning = (f'当前预算偏低：按标准配置建议售价 {suggested} 元（花材 {cost} 元 + '
+                   f'包装与手工 {material} 元）。')
 
     reason = (
-        f'{stems} 枝花材，花材成本约 {cost} 元，建议售价 {suggested} 元'
-        f'（毛利约 {margin} 元，毛利率 {margin_rate}%）。'
-        '价格含人工、装饰与包装，按门店标准收取，实际以门店确认为准。'
+        f'{stems} 枝花材约 {cost} 元，加包装与手工 {material} 元，'
+        f'建议售价 {suggested} 元（其中包装与手工占 {material_rate}%）。'
+        '价格按平台在售价推算，实际以门店确认为准。'
     )
     return {
         'suggested': suggested,
         'materialCost': cost,
-        'margin': margin,
-        'marginRate': margin_rate,
+        'margin': material,
+        'marginRate': material_rate,
         'stems': stems,
         'withinBudget': (suggested <= budget) if budget else None,
         'warning': warning,

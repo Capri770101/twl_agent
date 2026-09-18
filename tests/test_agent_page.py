@@ -77,28 +77,44 @@ def test_material_cost_and_stems():
     plan = design_plan('送给妈妈一束花，预算200')
     design = plan['design']
     assert total_stems(design) > 0
-    assert material_cost(design) == sum(
+    # material_cost 是 int() 截断，且单价现在是小数（如 4.3）→ 用 int 包一层再比
+    assert material_cost(design) == int(sum(
         (f.get('qty') or 0) * (f.get('unit_price') or 0)
         for key in ('main_flowers', 'fillers', 'foliage')
         for f in (design.get(key) or [])
-    )
+    ))
 
 
-# ── 定价承诺：售价 ≥ 花材成本 × MIN_MARGIN ──
+# ── 定价口径（2026-09-18 变更）────────────────────────────────────────────
+# `unit_price` 已从「代码里写死的成本参考价」改为「平台在售零售价」（agent/pricing）。
+# 所以**不再对材料额乘 MIN_MARGIN** —— 那等于对零售价二次加价，实测会把一束
+# 195 元的方案抬到 201 元、直接顶破用户预算。
+# 保底含义改为：报价不低于花材自身零售额（不把花材打折卖）。
 
-def test_pricing_keeps_floor_margin():
-    for text in (
-        '送给妈妈一束花，预算100',
-        '送给妈妈一束花，预算200',
-        '女朋友生日花束，预算500',
-        '开业花篮 预算1000',
-        '随便来一束好看的花',
-    ):
+PRICING_CASES = (
+    '送给妈妈一束花，预算100',
+    '送给妈妈一束花，预算200',
+    '女朋友生日花束，预算500',
+    '开业花篮 预算1000',
+    '随便来一束好看的花',
+)
+
+
+def test_pricing_never_below_material_cost():
+    """保底：报价不得低于花材零售合计。"""
+    for text in PRICING_CASES:
         pricing = compute_pricing(design_plan(text))
-        assert pricing['suggested'] >= pricing['materialCost'] * MIN_MARGIN - 0.01, text
-        assert pricing['marginRate'] >= 26, text
-        assert pricing['stems'] > 0
-        assert pricing['margin'] == pricing['suggested'] - pricing['materialCost']
+        assert pricing['suggested'] >= pricing['materialCost'], text
+        assert pricing['stems'] > 0, text
+        assert pricing['margin'] == pricing['suggested'] - pricing['materialCost'], text
+
+
+def test_pricing_matches_plan_total():
+    """页面报价必须与方案总价严格一致 —— 两处口径分叉会让用户看到两个价。"""
+    for text in PRICING_CASES:
+        plan = design_plan(text)
+        pricing = compute_pricing(plan)
+        assert pricing['suggested'] == plan['budget_breakdown']['total_estimate'], text
 
 
 def test_pricing_warns_when_budget_too_low():

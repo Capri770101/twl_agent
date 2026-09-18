@@ -647,11 +647,17 @@ function diyCard(p) {
   const care = d.care_tips || p.care_tips;
   if (care) h += fold("养护提示", '<div class="plain">' + esc(care) + '</div>');
   if (d.caution) h += fold("注意事项", '<div class="plain">' + esc(d.caution) + '</div>');
-  if (fees.labor_fee != null || fees.stem_count) {
+  /* 费用结构（2026-09-18 定价改造）：单支价改为从平台在售商品反推，
+     费用也从「人工费 + 装饰费」两项合并为「包装与手工」（基础费）一项 ——
+     两者本来就是同一笔钱，分开列只会与单支价重复计算。
+     兼容旧字段：labor_fee / decor_fee 若还在（历史会话缓存的方案），合并展示。 */
+  const baseFee = fees.base_fee != null ? fees.base_fee
+    : ((fees.labor_fee != null || fees.decor_fee != null)
+      ? (Number(fees.labor_fee || 0) + Number(fees.decor_fee || 0)) : null);
+  if (baseFee != null || fees.stem_count) {
     h += fold("费用与支数明细",
       '<div class="plain">' + (fees.stem_count ? "含：" + esc(fees.stem_count) + "<br>" : "") +
-      (fees.labor_fee != null ? "人工费 " + esc(fees.labor_fee) + " 元" : "") +
-      (fees.decor_fee != null ? "，装饰费 " + esc(fees.decor_fee) + " 元" : "") +
+      (baseFee != null ? "包装与手工 " + esc(baseFee) + " 元" : "") +
       (fees.note ? '<br><span style="color:var(--ink-3)">' + esc(fees.note) + "</span>" : "") +
       "</div>");
   }

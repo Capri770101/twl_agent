@@ -93,15 +93,15 @@ def test_total_matches_price(dims: dict) -> None:
     assert f"合计约 {p['price']} 元" in p['copy_text']
 
 
-def test_fee_items_merged_into_one_line(plan: dict) -> None:
-    """人工费/装饰费合并为一行。
+def test_base_fee_listed_as_one_line(plan: dict) -> None:
+    """「包装与手工」（基础费）单独一行、只报金额。
 
-    它们的 ``detail`` 是**给用户看的收费依据**（「含丝带/贺卡/点缀（14 元/束，
-    按预算档标准）」），出现在给店家的清单里又长又无关 ——
-    店家只关心「花材 + 包装 + 一共多少钱」。
+    旧结构里人工费与装饰费是两项，且 detail 带一长串收费依据
+    （「含丝带/贺卡/点缀（14 元/束，按预算档标准）」），给店家的清单又长又无关。
+    2026-09-18 定价改造（两段式：基础费 + 边际单价）后合并为「包装与手工」一项。
     """
     text = plan['copy_text']
-    assert '人工与装饰费 ——' in text
+    assert '包装与手工 ——' in text
     assert '按预算档标准' not in text
     assert '· 人工费' not in text
 
@@ -112,7 +112,8 @@ def test_omits_zero_amount_items(plan: dict) -> None:
                     'single_flower': '红玫瑰'})
     text = single['copy_text']
     assert '：无 —— 0 元' not in text
-    assert '0 元' not in text
+    # 逐行判断，不能用全文子串（「150 元」里也含「0 元」，会误报）
+    assert not [ln for ln in text.split('\n') if ln.strip().endswith('—— 0 元')]
 
 
 # ── 3. 不误导 / 合规 ─────────────────────────────────────────────────────
