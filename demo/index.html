@@ -239,6 +239,18 @@ ol.steps li::before{
 .act:hover{background:var(--moss-2);border-color:var(--moss-2)}
 .act.ghost{background:none;color:var(--moss);border-color:var(--line-2)}
 .act.ghost:hover{background:#EDF1EC;border-color:var(--moss-3)}
+.act.ok{background:var(--moss-2);border-color:var(--moss-2)}
+
+/* 成交区：定制款没有线上 SKU，把用料清单复制给店家是当前唯一的成交出口。
+   所以它不是「顺手的辅助按钮」，而是单独一块、带一句说明为什么要复制。 */
+.deal{margin-top:16px;padding:14px;border:1px dashed var(--moss-3);border-radius:12px;background:#F7F9F5}
+.deal-hint{margin-top:9px;font-size:12px;line-height:1.6;color:var(--ink-3)}
+.copy-payload{
+  margin:10px 0 0;padding:10px 12px;border:1px solid var(--line-2);border-radius:8px;
+  background:#FBFAF6;font-family:inherit;font-size:12px;line-height:1.75;color:var(--ink-2);
+  white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto;user-select:all;
+}
+.copy-payload[hidden]{display:none}
 
 /* ══ 商品卡 ══ */
 .prods{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:13px;margin-top:16px}
@@ -646,6 +658,19 @@ function diyCard(p) {
 
   h += '<div class="price-bar"><div class="price-main">' + esc(money) + '</div>' +
     '<div class="price-side">参考报价 · 含手工与包装<br>实际以门店确认为准</div></div>';
+  /* 成交出口：平台没有定制 SKU，不能承诺线上下单（会变成假承诺）。
+     如实说明「复制发给店家」，把断裂的最后一环用最轻的方式接上。
+     copy_text 由后端随方案下发（agent/tools.py::build_plan_copy_text），
+     缺字段就不显示 —— 不在这里另拼一份，避免两处口径漂移。 */
+  if (p.copy_text) {
+    h += '<div class="deal">' +
+      '<button class="act" data-copy="1">复制用料清单</button>' +
+      '<div class="deal-hint">定制款平台暂不支持线上下单 —— 复制这份清单发给花店，即可沟通报价与配送。' +
+      (p.unavailable_materials && p.unavailable_materials.length ? '清单已标注该店暂无的原料。' : '') +
+      '</div>' +
+      '<pre class="copy-payload" hidden>' + esc(p.copy_text) + '</pre>' +
+      '</div>';
+  }
   h += '<div class="card-actions">' +
     '<button class="act" data-say="出个效果图看看">生成效果图</button>' +
     '<button class="act ghost" data-say="这个方案再改改，换个配色">换个配色</button>' +
@@ -949,8 +974,46 @@ input.addEventListener("keydown", (e) => {
 });
 $("form").addEventListener("submit", (e) => { e.preventDefault(); send(input.value); });
 
+/* 「复制用料清单」—— DIY 的成交出口。
+   ⚠️ 必须有降级路径：Clipboard API 只在安全上下文（https / localhost）可用，
+   演示页可能被嵌进 iframe 或跑在 http 上，此时 navigator.clipboard 直接 reject。
+   兜底 = execCommand；再失败就把清单摊开让用户手动选中 —— 绝不静默失败。 */
+async function copyPayload(btn) {
+  const card = btn.closest(".card");
+  const src = card ? card.querySelector(".copy-payload") : null;
+  const text = src ? src.textContent : "";
+  if (!text) return;
+  const prev = btn.textContent;
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (err) { ok = false; }
+  if (!ok) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (err) { ok = false; }
+  }
+  if (!ok && src) src.hidden = false;
+  btn.textContent = ok ? "已复制" : "请手动复制下方清单";
+  btn.classList.toggle("ok", ok);
+  setTimeout(() => { btn.textContent = prev; btn.classList.remove("ok"); }, 2400);
+}
+
 /* 卡片内按钮 / 快捷词 → 都当作一次用户发送 */
 document.addEventListener("click", (e) => {
+  const c = e.target.closest("[data-copy]");
+  if (c) { e.preventDefault(); copyPayload(c); return; }
   const t = e.target.closest("[data-say]");
   if (!t) return;
   e.preventDefault();

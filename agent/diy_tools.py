@@ -56,12 +56,16 @@ async def generate_diy_plan(requirements: str, shop_id: str='', _context: dict |
 
 @register_tool(name='revise_diy_plan', description='基于已有方案 + 自然语言反馈，调整出下一版花艺方案：可调预算（便宜点/高档）、改风格、改色系、移除指定花材（不要X/去掉X）。返回带 version 与 parent_id 的可追溯新方案。改版会继承原方案的店铺限定，原料不会跳出该店在售范围。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '上一版方案 JSON 或含 JSON 的文本'}, 'feedback': {'type': 'string', 'description': '用户反馈，如 便宜点/换成红玫瑰/不要康乃馨/颜色再大胆'}}, 'required': ['plan', 'feedback']}, inject_context=True, tags=['diy'])
 async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) -> str:
-    from agent.tools import annotate_shop_materials, revise_with_llm
+    from agent.tools import annotate_shop_materials, build_plan_copy_text, revise_with_llm
 
     ctx_shop = str((_context or {}).get('shop_id') or '').strip()
     new_plan = revise_with_llm(plan, feedback, shop_id=ctx_shop)
     # 改版同样要标注店铺可获得性（原料可能被换掉，标注必须跟着重算）
     new_plan = annotate_shop_materials(new_plan, ctx_shop)
+    # 「复制用料清单」文本必须跟着重算：改版换过花材/预算后，旧清单就错了。
+    # 位置必须在 annotate 之后 —— 它依赖最新的 unavailable_materials。
+    if isinstance(new_plan, dict):
+        new_plan['copy_text'] = build_plan_copy_text(new_plan)
     await _store_diy_plan(new_plan, _context)
     return json.dumps(new_plan, ensure_ascii=False)
 

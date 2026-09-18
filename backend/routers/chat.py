@@ -379,8 +379,20 @@ async def ui_contract() -> dict[str, Any]:
             'ui': UIType.PLAN_CARD.value,
             'action_type': 'show_plan',
             'required_capabilities': ['show_plan_page'],
-            'render': '方案卡片列表：名称/价格/描述/效果图 + 确认、修改按钮',
-            'example': {'plans': [{'plan_id': 'P001', 'name': '生日玫瑰花束', 'price': 199.0, 'desc': '红玫瑰+满天星', 'effect_image_url': '', 'merchant_name': '向阳花艺'}]},
+            'render': ('方案卡片列表：名称/价格/描述/效果图 + 确认、修改按钮。'
+                       '定制方案（diy=true）另带 copy_text —— **建议在卡片上加一个「复制用料清单」按钮**：'
+                       '平台没有定制 SKU，用户拿这份清单去找花店沟通是当前的成交通道；'
+                       '缺少该字段时不要自行拼接（口径可能与卡片不一致）。'),
+            'example': {'plans': [{
+                'plan_id': 'P001', 'name': '生日玫瑰花束', 'price': 199.0, 'price_unit': 'CNY',
+                'price_text': '约 199 元（精致档）', 'desc': '红玫瑰+满天星',
+                'effect_image_url': '', 'merchant_name': '向阳花艺',
+                'diy': True,
+                'copy_text': '【定制花束需求单】\n方案：韩式·生日花束\n对象：女朋友｜场合：生日\n'
+                             '配色：粉/白｜包装：礼盒花\n\n费用参考\n· 主花：红玫瑰×11 —— 110 元\n'
+                             '合计约 199 元（按平台在售价估算，实际以门店报价为准）',
+                'unavailable_materials': [],
+            }]},
         },
         {
             'ui': UIType.SHOP_CARD.value,

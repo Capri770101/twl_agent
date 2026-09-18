@@ -1438,6 +1438,118 @@ def annotate_shop_materials(plan: dict, shop_id: str = '') -> dict:
     return plan
 
 
+# 「复制用料清单」文本长度上限：异常 plan 不应生成撑爆剪贴板/消息的文本。
+_COPY_TEXT_MAX = 2000
+
+
+def build_plan_copy_text(plan: dict) -> str:
+    """把 DIY 方案渲染成一份「可直接发给店家的用料需求清单」纯文本。
+
+    为什么需要（Capri 2026-09-18 拍板：先做 DIY 的轻量成交通口）：
+    平台没有定制 SKU，方案生成完就断了 —— 用户拿不到任何**可执行**的东西，
+    商家也永远看不到这个需求。在「定制需求单」接口落地（待平台方）之前，
+    「复制一份清单去找店家沟通」是让 DIY 从**体验价值**变成**商业价值**的唯一出口。
+
+    设计取舍：
+    - **纯文本而非结构化**：用户要的是能直接粘进微信/客服窗口的内容，
+      JSON 对用户无意义；接入方也只需一个复制按钮，不必理解内部字段。
+    - **复用 ``budget_breakdown``**：明细口径与卡片**完全一致**，
+      避免出现「清单一个价、卡片另一个价」。
+    - **只新增字段**：结果写入 ``plan['copy_text']``，不改动任何既有字段，
+      前端不渲染它也不会有副作用。
+
+    ⚠️ 必须在本方案的缺料标注（:func:`annotate_shop_materials`）**之后**调用，
+    否则 ``unavailable_materials`` 还不是最新值，清单会漏掉「该店暂无」的提醒。
+
+    Args:
+        plan: 已定型的方案 dict。
+
+    Returns:
+        纯文本清单；plan 无效时返回空字符串（调用方据此跳过「复制」入口）。
+    """
+
+    def _s(value: Any, default: str = '') -> str:
+        return str(value).strip() if value not in (None, '') else default
+
+    if not isinstance(plan, dict) or not plan:
+        return ''
+    design = plan.get('design') if isinstance(plan.get('design'), dict) else {}
+    lines = ['【定制花束需求单】', f"方案：{_s(plan.get('name'), '定制花束')}"]
+
+    head: list[str] = []
+    if _s(plan.get('recipient')):
+        head.append(f"对象：{_s(plan['recipient'])}")
+    if _s(plan.get('occasion')):
+        head.append(f"场合：{_s(plan['occasion'])}")
+    style = _s(plan.get('substyle')) or _s(plan.get('style'))
+    # 方案名通常已含风格（「韩式甜美·生日花束」）→ 不重复输出
+    if style and style not in _s(plan.get('name')):
+        head.append(f'风格：{style}')
+    if head:
+        lines.append('｜'.join(head))
+
+    mid: list[str] = []
+    colors = design.get('color_scheme') or []
+    if colors:
+        mid.append('配色：' + '/'.join(_s(c) for c in colors if _s(c)))
+    if _s(design.get('packaging')):
+        mid.append('包装：' + _s(design['packaging']))
+    if mid:
+        lines.append('｜'.join(mid))
+
+    fees = design.get('fees') if isinstance(design.get('fees'), dict) else {}
+    if _s(fees.get('stem_count')):
+        lines.append(f"用料：{_s(fees['stem_count'])}")
+
+    breakdown = plan.get('budget_breakdown') if isinstance(plan.get('budget_breakdown'), dict) else {}
+    items = [it for it in (breakdown.get('items') or []) if isinstance(it, dict)]
+    # 人工费/装饰费合并成一行：它们在 ``detail`` 里带的是**给用户看的收费依据**
+    # （「含丝带/贺卡/点缀（14 元/束，按预算档标准）」），出现在给店家的清单里
+    # 又长又无关 —— 店家只关心「花材 + 包装 + 一共多少钱」。
+    _FEE_ITEMS = ('人工费', '装饰费')
+    details: list[str] = []
+    fee_total = 0.0
+    has_fee = False
+    for it in items:
+        item, detail = _s(it.get('item')), _s(it.get('detail'))
+        amount = it.get('amount') if isinstance(it.get('amount'), (int, float)) else None
+        if item in _FEE_ITEMS:
+            has_fee = True
+            fee_total += amount or 0
+            continue
+        if not amount:
+            # 「配材：无 —— 0 元」这类空项不进清单（单一花材方案必然出现）
+            continue
+        seg = f'{item}：{detail}' if item and detail else (item or detail)
+        if seg:
+            details.append(f'· {seg} —— {int(round(amount))} 元')
+    if details:
+        lines.append('')
+        lines.append('费用参考')
+        lines.extend(details)
+        if has_fee and fee_total:
+            lines.append(f'· 人工与装饰费 —— {int(round(fee_total))} 元')
+    price = plan.get('price')
+    if isinstance(price, (int, float)) and price:
+        lines.append(f'合计约 {int(price)} 元（按平台在售价估算，实际以门店报价为准）')
+    elif _s(breakdown.get('note')):
+        lines.append(_s(breakdown['note']))
+
+    missing = [m for m in (plan.get('unavailable_materials') or []) if _s(m)]
+    if missing:
+        lines.append('')
+        lines.append('注：以下原料这家店当前暂无，可能需另外采购 —— ' + '、'.join(_s(m) for m in missing))
+
+    lines.append('')
+    lines.append('（本清单由 AI 花艺小助手按平台在售价生成，实际报价以门店为准）')
+    text = '\n'.join(lines).strip()
+    if len(text) > _COPY_TEXT_MAX:
+        # 截断必须留痕：标明「还有下文」，避免用户以为清单到此为止。
+        logger.warning('[design] copy_text 超长（%d 字符）已截断', len(text))
+        text = text[:_COPY_TEXT_MAX].rstrip() + '…（清单较长，已截断）'
+    return text
+
+
 def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: FlowerRequirement | None = None) -> dict:
     """设计一份结构化 DIY 花艺方案（RAG + LLM 语义生成，规则引擎兜底）。
 
@@ -1447,7 +1559,11 @@ def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: F
     :func:`annotate_shop_materials`）——**保留花材本身，只标注，不自动替换**。
     """
     plan = design_with_llm(requirements, shop_id=shop_id, session_requirement=session_requirement)
-    return annotate_shop_materials(plan, shop_id)
+    plan = annotate_shop_materials(plan, shop_id)
+    # 「复制用料清单」：必须在缺料标注之后生成，否则清单漏掉「该店暂无」提醒
+    if isinstance(plan, dict):
+        plan['copy_text'] = build_plan_copy_text(plan)
+    return plan
 
 def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     """语义化改版：RAG 检索 + DeepSeek 基于已有方案与反馈调整，规则引擎兜底。
