@@ -42,6 +42,9 @@ class Case:
         expect: 期望产出类型；``any`` 表示不校验。
         note: 备注（给 --list 看）。
         entry / shop_id: 锁店场景需要带的入口上下文。
+        kind: 期望内容种类 —— ``product``（现成商品）/ ``diy``（定制方案）/ 空=不校验。
+            商品卡与 DIY 方案卡在 ui 层都是 ``plan_card``，只能靠 data 里有无 design 区分，
+            所以「先成品后定制」这条规则必须用 kind 才能锁住。
     """
 
     msg: str
@@ -49,6 +52,7 @@ class Case:
     note: str = ''
     entry: str = ''
     shop_id: str = ''
+    kind: str = ''
 
 
 # ── 用例定义 ──────────────────────────────────────────────────────────────
@@ -78,10 +82,12 @@ GROUPS: dict[str, list[Case]] = {
         Case('预算300，白绿色系，直接给我方案', 'plan_card', '同上'),
     ],
     'diy_or_prod': [
-        Case('有什么花推荐？', 'plan_card', '应查平台商品'),
-        Case('100 以内有什么现成的', 'plan_card', '价格应 ≤100'),
-        Case('帮我定制一束特别的，别跟别人撞', 'plan_card', '应走 DIY'),
-        Case('送女朋友生日花，预算300左右', 'any', 'DIY / 商品都算对'),
+        Case('有什么花推荐？', 'plan_card', '应查平台商品', kind='product'),
+        Case('100 以内有什么现成的', 'plan_card', '价格应 ≤100', kind='product'),
+        Case('送女朋友生日花，预算300左右', 'plan_card',
+             '先成品后定制 → 应优先推现成品（2026-09-17 新规则）', kind='product'),
+        Case('想要很仙的白绿色系，有现成的吗', 'plan_card', '有现成款就推', kind='product'),
+        Case('帮我定制一束特别的，别跟别人撞', 'any', '明确要定制；信息不足先追问也算合理'),
         Case('这两条路哪个好？', 'any', '应能解释差异'),
     ],
     'image': [
@@ -329,12 +335,23 @@ def run_group(name: str, cases: list[Case], base: str, uid: str, token: str,
 
         ui = r.get('ui') or '?'
         reply = r.get('reply') or ''
+        plans = (r.get('data') or {}).get('plans') or []
+        actual_kind = 'diy' if any(
+            isinstance(p, dict) and (p.get('design') or p.get('diy')) for p in plans
+        ) else 'product'
         ok = _check(c.expect, ui)
+        if ok and c.kind:
+            ok = (c.kind == actual_kind)
         passed += ok
         warns = _quality_warnings(reply, trade_check)
         warned += bool(warns)
         mark = '✓' if ok else '✗'
-        exp = '' if c.expect == 'any' else f'  期望={c.expect}'
+        exp_parts = []
+        if c.expect != 'any':
+            exp_parts.append(f'ui={c.expect}')
+        if c.kind:
+            exp_parts.append('方案' if c.kind == 'diy' else '商品')
+        exp = ('  期望 ' + '，'.join(exp_parts)) if exp_parts else ''
 
         tools = [t.get('name') for t in (r.get('tool_calls') or []) if t.get('name')]
 
@@ -370,7 +387,12 @@ def main() -> None:
             tag = '（连续会话）' if g in SEQ_GROUPS else ''
             print(f'  {g:<15} {len(cases):>2} 条{tag}')
             for c in cases:
-                exp = '' if c.expect == 'any' else f'  → {c.expect}'
+                exp_parts = []
+                if c.expect != 'any':
+                    exp_parts.append(c.expect)
+                if c.kind:
+                    exp_parts.append('方案' if c.kind == 'diy' else '商品')
+                exp = ('  → ' + '/'.join(exp_parts)) if exp_parts else ''
                 print(f'        · {c.msg}{exp}')
         print(f'\n合计 {sum(len(v) for v in all_groups.values())} 条')
         print('\n跑法：python scripts/agent_smoke.py --group basic --group guard')
