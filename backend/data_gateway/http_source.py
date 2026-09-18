@@ -29,10 +29,13 @@ active mapping，否则 ``query_external_entity`` 直接拒答——这是长期
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import threading
+import time
 from typing import Any
 
 from backend.data_gateway.external import _annotate_open_status
@@ -46,6 +49,32 @@ _IDENTIFIER = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 MAX_LIMIT = 100
 TIMEOUT = 12.0
+
+# ── 进程内 TTL 缓存 ────────────────────────────────────────────────────────
+# 为什么需要：平台列表接口**不支持查询参数**（关键词/店铺过滤都在本地做），
+# 每次 fetch 都是「拉全量 + 本地筛」。一轮咨询里模型常查 2~4 次（不同关键词或实体），
+# 而平台数据秒级内不会变 —— 实测单次拉取 0.3~2s，重复拉纯属浪费。
+# 键含 token 指纹：不同数据源凭据不同，串了会串数据。
+_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def cache_ttl() -> float:
+    """HTTP 拉取的缓存有效期（秒）。<=0 表示关闭缓存。
+
+    Returns:
+        环境变量 ``PLATFORM_HTTP_CACHE_TTL`` 的浮点值，缺省 60 秒。
+    """
+    try:
+        return float(os.getenv('PLATFORM_HTTP_CACHE_TTL', '60') or '60')
+    except ValueError:
+        return 60.0
+
+
+def clear_cache() -> None:
+    """清空 HTTP 缓存（手动刷新 / 测试用）。"""
+    with _CACHE_LOCK:
+        _CACHE.clear()
 
 # 实体 → 平台资源路径（只读列表接口）
 ENTITY_RESOURCES: dict[str, str] = {
@@ -168,11 +197,21 @@ def _fetch_json(url: str, token: str = '', timeout: float = TIMEOUT) -> dict[str
         timeout: 超时秒数。
 
     Returns:
-        解析后的 JSON dict。
+        解析后的 JSON dict（可能是共享的缓存对象，调用方**不得原地修改**）。
 
     Raises:
         RuntimeError: 网络/HTTP/JSON 解析失败。
     """
+    ttl = cache_ttl()
+    cache_key = ''
+    if ttl > 0:
+        cache_key = hashlib.sha256(f'{url}\x00{token}'.encode()).hexdigest()[:20]
+        with _CACHE_LOCK:
+            hit = _CACHE.get(cache_key)
+        if hit and time.time() - hit[0] < ttl:
+            logger.debug('[http_source] 缓存命中 %s', url)
+            return hit[1]
+
     import httpx
 
     headers = {'Accept': 'application/json'}
@@ -186,13 +225,17 @@ def _fetch_json(url: str, token: str = '', timeout: float = TIMEOUT) -> dict[str
         raise RuntimeError(f'平台接口返回 HTTP {resp.status_code}')
     text = resp.content.decode('utf-8', 'replace')
     try:
-        return json.loads(text)
+        payload = json.loads(text)
     except json.JSONDecodeError:
         # 平台部分错误信息以 GBK 编码，容错再试一次
         try:
-            return json.loads(resp.content.decode('gbk', 'replace'))
+            payload = json.loads(resp.content.decode('gbk', 'replace'))
         except json.JSONDecodeError as exc:
             raise RuntimeError('平台接口返回的不是合法 JSON') from exc
+    if cache_key:
+        with _CACHE_LOCK:
+            _CACHE[cache_key] = (time.time(), payload)
+    return payload
 
 
 def _unwrap(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -240,22 +283,69 @@ def normalize_row(entity: str, raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _match(row: dict[str, Any], entity: str, keyword: str, shop_id: str, row_id: str) -> bool:
-    """本地过滤：主键 / 店铺 / 关键词（不依赖平台侧未公开的查询参数）。"""
+def _match_scope(row: dict[str, Any], entity: str, shop_id: str, row_id: str) -> bool:
+    """硬约束过滤：主键 / 店铺。**不参与关键词放宽**。
+
+    Args:
+        row: 已规范化的行。
+        entity: 实体名（决定店铺列的 canonical 字段名）。
+        shop_id: 限定店铺（空 = 不限定）。
+        row_id: 限定主键（空 = 不限定）。
+
+    Returns:
+        是否通过硬约束。
+    """
     if row_id and str(row.get('id') or '') != str(row_id):
         return False
     if shop_id:
         shop_col = 'shop_id' if entity == 'plan' else 'id'
         if str(row.get(shop_col) or '') != str(shop_id):
             return False
-    if keyword:
-        needle = keyword.strip().lower()
-        haystack = ' '.join(
-            str(row.get(k) or '') for k in ('name', 'subtitle', 'description', 'flower_meaning', 'tags', 'city')
-        ).lower()
-        if needle not in haystack:
-            return False
     return True
+
+
+_KEYWORD_SEP = re.compile(r'[\s,，、;；+/|·]+')
+
+
+def _split_keywords(keyword: str) -> list[str]:
+    """把关键词串拆成独立词元（去空、去重、保序、小写）。
+
+    为什么需要拆：模型常把多个词堆在一起（``"妈妈 康乃馨"``），而旧实现把整串当
+    一个 needle 做子串匹配 —— 商品名里不可能同时出现这串字面，**必然返回空**，
+    模型于是换关键词再试一轮（实测白烧一次 6.5s 的 LLM 往返）。
+
+    Args:
+        keyword: 原始关键词，可能含空格/顿号/逗号等分隔符。
+
+    Returns:
+        小写词元列表。
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in _KEYWORD_SEP.split((keyword or '').strip()):
+        token = part.strip().lower()
+        if token and token not in seen:
+            seen.add(token)
+            out.append(token)
+    return out
+
+
+def _keyword_hits(row: dict[str, Any], tokens: list[str]) -> int:
+    """统计行命中几个关键词元（0 = 完全不命中）。
+
+    Args:
+        row: 已规范化的行。
+        tokens: :func:`_split_keywords` 拆出的词元。
+
+    Returns:
+        命中的词元个数。
+    """
+    if not tokens:
+        return 0
+    haystack = ' '.join(
+        str(row.get(k) or '') for k in ('name', 'subtitle', 'description', 'flower_meaning', 'tags', 'city')
+    ).lower()
+    return sum(1 for t in tokens if t in haystack)
 
 
 def fetch_entity(
@@ -265,6 +355,7 @@ def fetch_entity(
     limit: int = 100,
     shop_id: str = '',
     row_id: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """只读查询标准业务实体（HTTP 通路）。
 
@@ -298,13 +389,49 @@ def fetch_entity(
     rows = _unwrap(payload)
 
     out: list[dict[str, Any]] = []
-    for raw in rows:
-        row = normalize_row(entity, raw)
-        if _match(row, entity, keyword, shop_id, row_id or ''):
+    cap = max(1, min(int(limit or MAX_LIMIT), MAX_LIMIT))
+    tokens = _split_keywords(keyword)
+    mode = 'all'
+
+    if tokens:
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for raw in rows:
+            row = normalize_row(entity, raw)
+            if not _match_scope(row, entity, shop_id, row_id or ''):
+                continue
+            hits = _keyword_hits(row, tokens)
+            if hits:
+                scored.append((hits, row))
+        if scored:
+            # 命中词元多的排前面：「妈妈 康乃馨」里命中「康乃馨」的比只命中「妈妈」的更相关
+            scored.sort(key=lambda item: -item[0])
+            mode = 'exact' if scored[0][0] == len(tokens) else 'partial'
+            out = [row for _, row in scored[:cap]]
+
+    if not out:
+        # 无关键词，或关键词零命中 → 扫全量（仍守 shop_id / row_id 硬约束）。
+        # ⚠️ 零命中时**刻意不返回空**：返空会让模型换个关键词再试一轮（实测白烧一次
+        # 6.5s 的 LLM 往返），而它最终需要的还是这批数据。改为如实标注 mode='relaxed'，
+        # 由上层告知模型「未按该关键词筛出、以下是全部在售」，让模型自己判断怎么用。
+        if tokens:
+            mode = 'relaxed'
+        for raw in rows:
+            row = normalize_row(entity, raw)
+            if not _match_scope(row, entity, shop_id, row_id or ''):
+                continue
             out.append(row)
-            if len(out) >= max(1, min(int(limit or MAX_LIMIT), MAX_LIMIT)):
+            if len(out) >= cap:
                 break
+
     # 营业状态按「此刻」实时推算（与 DB 通路同一套派生字段，不写平台）
     _annotate_open_status(out)
-    logger.info('[http_source] source=%s entity=%s 命中=%d/%d', source_id, entity, len(out), len(rows))
+    if meta is not None:
+        meta.update({
+            'match': mode,
+            'keyword_tokens': tokens,
+            'matched': len(out),
+            'scanned': len(rows),
+        })
+    logger.info('[http_source] source=%s entity=%s match=%s 返回=%d/%d 词元=%s',
+                source_id, entity, mode, len(out), len(rows), tokens)
     return out

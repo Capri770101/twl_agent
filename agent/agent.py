@@ -620,6 +620,9 @@ _CARD_TOOLS = ('generate_diy_plan', 'revise_diy_plan', 'show_plan_card')
 # 三者返回结构同构（reply / ui / data / stage / intent / 结构化信号），下游统一按
 # respond_args 消费，不必按工具名分支——新增「非文字输出」工具时只需登记到这里。
 _TERMINAL_TOOLS = ('respond_to_user', 'show_plan_card', 'show_options')
+# 延迟工具：**读**同轮其它工具写入的会话状态（生图取「最近一次 DIY 方案」），
+# 所以必须等其余工具执行完再串行跑，不能并进并发批次。
+_DEFERRED_TOOLS = ('generate_effect_image',)
 # 「方案类追问」——命中这些词的问句应按知识问答作答，不该被强制拉回出卡
 _PLAN_QUESTION_WORDS = (
     '为什么', '为何', '怎么养', '如何养', '养护', '寓意', '花语', '有毒', '能吃',
@@ -1527,16 +1530,62 @@ class ReActAgent:
                 assistant_msg = {'role': 'assistant', 'content': getattr(msg, 'content', '') or '', 'tool_calls': [{'id': tc['id'], 'type': 'function', 'function': {'name': tc['name'], 'arguments': json.dumps(tc['arguments'], ensure_ascii=False)}} for tc in tool_calls]}
                 messages.append(assistant_msg)
                 new_msgs.append({**assistant_msg, 'content': ''})
-                for tc in tool_calls:
-                    if tc['name'] in _TERMINAL_TOOLS:
+                # ── 工具执行：终结工具只取参数；其余并发跑（互不依赖）──
+                # 为什么要并发：模型一次发多个调用时，旧实现逐个 await，用户要为每一次
+                # 网络往返分别等待。并发后总耗时 ≈ 最慢的那个，而不是累加。
+                # ⚠️ 结果必须**按模型给出的原始顺序**回填（messages / tool_log / 事件）：
+                #    · OpenAI 协议要求 tool 消息与 assistant.tool_calls 一一对应；
+                #    · _derive_ui 依赖 reversed(tool_log) 取「最后一次产卡工具」，顺序错会选错卡。
+                results: dict[int, tuple[str, str]] = {}
+                exec_idx: list[int] = []
+                defer_idx: list[int] = []
+                for i, tc in enumerate(tool_calls):
+                    name = tc.get('name') or ''
+                    if name in _TERMINAL_TOOLS:
+                        # 终结工具不执行：它的参数本身就是本轮结论（reply / ui / data）。
                         respond_args = tc['arguments']
-                        obs = json.dumps(respond_args, ensure_ascii=False)
-                        messages.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
-                        new_msgs.append({'role': 'tool', 'content': obs, 'tool_call_id': tc.get('id', '')})
+                        results[i] = (json.dumps(respond_args, ensure_ascii=False), 'terminal')
                         continue
-                    # 注入会话累积需求：工具侧可用它补全跨轮信息（如 DIY 设计只传了「11朵粉玫瑰」，
-                    # 前几轮说过的「送妈妈、预算200」仍生效）。
-                    result, status = await execute_tool(tc['name'], tc['arguments'], {'user_id': user_id, 'session_id': sid, 'location': location, 'shop_id': shop_id, 'entry': entry, 'product_id': product_id, 'product_title': product_title, 'requirement': req_acc})
+                    (defer_idx if name in _DEFERRED_TOOLS else exec_idx).append(i)
+
+                # 注入会话累积需求：工具侧可用它补全跨轮信息（如 DIY 设计只传了「11朵粉玫瑰」，
+                # 前几轮说过的「送妈妈、预算200」仍生效）。
+                tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
+                            'shop_id': shop_id, 'entry': entry, 'product_id': product_id,
+                            'product_title': product_title, 'requirement': req_acc}
+                if len(exec_idx) > 1:
+                    gathered = await asyncio.gather(
+                        *(execute_tool(tool_calls[i]['name'], tool_calls[i]['arguments'], tool_ctx)
+                          for i in exec_idx),
+                        return_exceptions=True,
+                    )
+                    for i, item in zip(exec_idx, gathered):
+                        if isinstance(item, BaseException):
+                            # 单个工具炸掉不影响同批其它工具（execute_tool 本身也兜了异常，
+                            # 这里防的是它之外的问题——如取消/超时）。
+                            logger.exception('[agent] 并发工具执行异常: %s',
+                                             tool_calls[i]['name'], exc_info=item)
+                            results[i] = (f'工具执行失败: {item}', 'error')
+                        else:
+                            results[i] = item
+                    logger.info('[agent] 同轮并发执行 %d 个工具: %s',
+                                len(exec_idx), [tool_calls[i]['name'] for i in exec_idx])
+                elif exec_idx:
+                    i = exec_idx[0]
+                    results[i] = await execute_tool(tool_calls[i]['name'],
+                                                    tool_calls[i]['arguments'], tool_ctx)
+
+                for i in defer_idx:
+                    results[i] = await execute_tool(tool_calls[i]['name'],
+                                                    tool_calls[i]['arguments'], tool_ctx)
+
+                for i in sorted(results):
+                    tc = tool_calls[i]
+                    result, status = results[i]
+                    if status == 'terminal':
+                        messages.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
+                        new_msgs.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
+                        continue
                     record = ToolCallRecord(name=tc['name'], arguments=tc['arguments'], result=result, status=status)
                     tool_log.append(record)
                     if on_event:

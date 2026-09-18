@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import inspect
 import json
@@ -191,7 +192,12 @@ async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dic
         if inspect.iscoroutinefunction(spec.func):
             result = await spec.func(**kwargs)
         else:
-            result = spec.func(**kwargs)
+            # 同步工具丢线程池执行。为什么必须这样：同步 I/O（如平台 REST 查询走
+            # 同步 httpx.get）会**阻塞整个事件循环** —— 一个用户的工具执行期间，
+            # 所有并发请求（含其它用户的对话）都被卡住。to_thread 让事件循环继续服务。
+            # 线程安全前提（已核对）：http_source._CACHE / shop_materials._LOCK 均带锁，
+            # retrieve_knowledge 只读本地知识库。
+            result = await asyncio.to_thread(spec.func, **kwargs)
         if not isinstance(result, str):
             result = json.dumps(result, ensure_ascii=False)
         try:

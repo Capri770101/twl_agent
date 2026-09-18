@@ -39,7 +39,7 @@ def platform_db_sample_table(source_id: str, schema: str='public', table: str=''
         return tool_result(False, error=str(exc))
 
 
-@register_tool(name='platform_db_query_entity', description='按指定 source_id 的 active 映射只读查询标准业务实体。entity 取值：plan(在售方案/商品)、shop(店铺)、order(订单)、user(用户)；没有 active 映射、字段白名单或实体映射时拒绝执行。单次最多返回 100 条，需要更多时让用户缩小关键词。用户从商品详情页进入时用 id 参数按主键精确查那一件商品（比 keyword 模糊搜更准）。查询成功后，系统会**自动把结果渲染成商品卡 / 店铺卡**呈现给用户——你只需在 reply 里给出关键结论（推荐哪几款、价格、营业状态），不要只写「看卡片」。锁店 / 全平台下的行为差异见模式规则。实际字段以该平台 active 映射为准，缺哪个就如实说明查不到。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string'}, 'entity': {'type': 'string', 'description': 'plan/shop/order/user'}, 'keyword': {'type': 'string'}, 'id': {'type': 'string', 'description': '可选：按主键精确查单行（商品详情页进入时用商品 ID 查该商品）'}, 'limit': {'type': 'integer', 'description': '返回条数上限，默认 100，最大 100'}, 'shop_id': {'type': 'string', 'description': '可选：只看该店铺的数据。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['source_id', 'entity']}, inject_context=True, tags=['database', 'query', 'external'])
+@register_tool(name='platform_db_query_entity', description='按指定 source_id 的 active 映射只读查询标准业务实体。entity 取值：plan(在售方案/商品)、shop(店铺)、order(订单)、user(用户)；没有 active 映射、字段白名单或实体映射时拒绝执行。单次最多返回 100 条，需要更多时让用户缩小关键词。用户从商品详情页进入时用 id 参数按主键精确查那一件商品（比 keyword 模糊搜更准）。查询成功后，系统会**自动把结果渲染成商品卡 / 店铺卡**呈现给用户——你只需在 reply 里给出关键结论（推荐哪几款、价格、营业状态），不要只写「看卡片」。锁店 / 全平台下的行为差异见模式规则。实际字段以该平台 active 映射为准，缺哪个就如实说明查不到。返回的 meta 里若带 match="relaxed"（关键词没筛出任何东西、已放宽为全部在售）或 match="partial"（只命中部分词），要据实说明，不要当成「平台上没有」。', parameters={'type': 'object', 'properties': {'source_id': {'type': 'string'}, 'entity': {'type': 'string', 'description': 'plan/shop/order/user'}, 'keyword': {'type': 'string', 'description': '可选：关键词，只放一个核心词（如「康乃馨」「玫瑰」「母亲节」）。⚠️ 不要堆多个词成短句（「妈妈 康乃馨」会按字面匹配、通常查空），否则要再查一次、用户白等一轮。不确定就不传，直接取全部在售自己筛'}, 'id': {'type': 'string', 'description': '可选：按主键精确查单行（商品详情页进入时用商品 ID 查该商品）'}, 'limit': {'type': 'integer', 'description': '返回条数上限，默认 100，最大 100'}, 'shop_id': {'type': 'string', 'description': '可选：只看该店铺的数据。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['source_id', 'entity']}, inject_context=True, tags=['database', 'query', 'external'])
 def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit: int=100, shop_id: str='', id: str='', _context: dict | None=None) -> str:
     # 实体白名单兜底：schema 已按白名单收窄（见 toolkit.visible_tool_specs），但模型仍可能
     # 照着提示词或历史硬传 shop —— 这里再挡一层，体验/演示实例不该暴露店铺链路。
@@ -60,11 +60,19 @@ def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit
     if not effective_id and not keyword and ctx_product and entity == 'plan':
         effective_id = ctx_product
         auto_scoped = True
+    _diag: dict[str, Any] = {}
     try:
-        rows = query_external_entity(source_id, entity, keyword, limit, shop_id=effective_shop, row_id=effective_id)
+        rows = query_external_entity(source_id, entity, keyword, limit, shop_id=effective_shop,
+                                     row_id=effective_id, meta=_diag)
     except Exception as exc:
         return tool_result(False, error=str(exc))
     meta: dict[str, Any] = {}
+    if _diag.get('match') in ('relaxed', 'partial'):
+        # 关键词没完全命中：relaxed = 一个词都没命中，已放宽为「该范围内全部在售」；
+        # partial = 只命中了部分词。必须如实告知模型，否则它会以为「平台上没有这类花」
+        # （实测：模型拿空结果会换个关键词再试一轮，白烧一次 LLM 往返）。
+        meta['match'] = _diag['match']
+        meta['keyword_tokens'] = _diag.get('keyword_tokens') or []
     if auto_scoped:
         meta['auto_scoped_by'] = 'session_product_id'
         meta['product_id'] = effective_id

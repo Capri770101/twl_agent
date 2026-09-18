@@ -409,8 +409,12 @@ def _annotate_open_status(rows: list[dict[str, Any]]) -> None:
             row['open_status_text'] = '未知（营业时段原文无法解析，请按 business_hours 原文如实告知用户）'
 
 
-def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '', transform_fields=None, row_id: str | None = None) -> list[dict[str, Any]]:
+def query_external_entity(source_id: str, entity: str, keyword: str = '', limit: int = 10, shop_id: str = '', transform_fields=None, row_id: str | None = None, meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """只读查询标准业务实体。
+
+    meta 非空时，HTTP 通路会把关键词匹配情况写进去（``match`` / ``keyword_tokens`` /
+    ``matched`` / ``scanned``），供上层判断是否需要提示模型「关键词已被放宽」。
+    DB 通路不写（SQL 层过滤语义不同），调用方需按缺省处理。
 
     shop_id 非空时，若该实体的 active 映射含店铺列（canonical 名 shop_id），
     则按店铺过滤——用于「从某家店铺进入」的场景，把结果硬限定在该店铺内。
@@ -431,6 +435,7 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
     if http_source.is_configured(source_id):
         return http_source.fetch_entity(
             source_id, entity, keyword=keyword, limit=limit, shop_id=shop_id, row_id=row_id,
+            meta=meta,
         )
     from backend.data_gateway.mapping_store import get_active_mapping
     active = get_active_mapping(source_id)
