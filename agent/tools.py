@@ -946,6 +946,20 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     labor_fee = _LABOR_FEE.get(tkey, 25)
     decor_fee = _DECOR_FEE.get(tkey, 18)
     plan = {'plan_id': 'DIY_' + uuid.uuid4().hex[:6], 'version': version, 'parent_id': parent_id, 'name': f'{style_label}·{occ_label}花束', 'diy': True, 'style': style_label, 'style_id': style_id, 'substyle_id': substyle_id, 'substyle': style.get('name') if substyle_id and resolved is not parent else None, 'recipient': dims.get('recipient', '通用'), 'occasion': occ_label, 'scene_id': scene['id'] if scene else None, 'scene': scene['name'] if scene else None, 'budget_num': budget_num, 'budget_tier': tier['label'], 'design': {'main_flowers': main_flowers, 'fillers': filler_flowers, 'foliage': foliage_flowers, 'color_scheme': color_scheme, 'packaging': packaging['name'] if packaging else '花束', 'meaning': meaning, 'notes': notes, 'difficulty': difficulty, 'est_time': est_time, 'shelf_life': shelf_life, 'suitable_for': suitable_for, 'caution': caution, 'mood_tags': mood_tags, 'fees': {'labor_fee': labor_fee, 'labor_standard': f'人工费 {labor_fee} 元/束（含修剪、去刺、扎制、定型，按预算档标准收取）', 'decor_fee': decor_fee, 'decor_standard': f'装饰费 {decor_fee} 元/束（含丝带、贺卡、点缀饰材，按预算档标准收取）', 'stem_count': _flower_qty_text, 'note': '花材按支数计费，人工费与装饰费为门店统一收取标准，下单前以门店确认为准。'}}, 'estimated_price': est, 'effect_prompt': effect_prompt, 'desc': f"为你设计了一份{style_label}{occ_label}花束：花材共 {_flower_qty_text}，色调{'/'.join(color_scheme)}，寓意{meaning}。含人工费 {labor_fee} 元 + 装饰费 {decor_fee} 元，预算{est}。", 'diy_steps': _build_diy_steps(main, fillers, foliage, color_scheme, packaging), 'care_tips': _build_care_tips(main), 'card_message': _build_card_message(dims.get('recipient', '朋友'), scene['name'] if scene else occ_label, style_label, tone, short_meaning), 'budget_breakdown': _build_budget_breakdown(main, fillers, foliage, packaging, tier, budget_num, stem_count)}
+    # 顶层数值价格（2026-09-18，外部审计 P0-3 修复）。
+    # 问题：原实现只有 `estimated_price` 字符串（"约 300 元（轻送礼档）"）与嵌套的
+    # `budget_breakdown.total_estimate`，**没有顶层数值字段**。接入方按平台商品卡惯例取
+    # `plan['price']` 得到 undefined，前端 `Math.round((e.price||0)*100)` 算出 0
+    # → 一束约 300 元的花束以 **0 元**进购物车并跳结算页（下游真实事故）。
+    # 现在补 `price`（数值）+ `price_text`（展示文案）+ `price_unit`，并让
+    # `estimated_price` 与数值**同口径**，避免"文案一个数、扣款另一个数"。
+    # ⚠️ 单位是「元」；平台商品卡返回的 price 单位是「分」，接入方务必按字段名/单位文档区分。
+    _bb_total = (plan.get('budget_breakdown') or {}).get('total_estimate')
+    if _bb_total is not None:
+        plan['price'] = int(_bb_total)
+        plan['price_unit'] = 'CNY'
+        plan['price_text'] = f"约 {int(_bb_total)} 元（{tier['label']}档）"
+        plan['estimated_price'] = plan['price_text']
     # 打标：供 _merge_plan 强制单一花材 / 明确支数（LLM 输出不得违背用户显式要求）。
     if single_flower:
         plan['_single_flower'] = single_flower
