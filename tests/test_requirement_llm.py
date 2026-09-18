@@ -39,11 +39,15 @@ def test_extract_stem_count_covers_chinese_numerals() -> None:
     assert _extract_stem_count('要二十支') == 20
     assert _extract_stem_count('十枝就好') == 10
     assert _extract_stem_count('两朵') == 2
-    # 既有语义必须保持不变：一束 = 11 支、一打 = 12 支（不能被中文数字解析成 1）
-    assert _extract_stem_count('一束花') == 11
+    # 「一束」是**量词，不是支数**（2026-09-18 修正）：用户说「来一束花，预算 300」
+    # 并不关心几支；硬映射成 11 支会跳过「按预算反推」→ 实测把 300 元方案算成 141 元，
+    # 还害得模型自己再调一轮 revise 去救。官网页早修了，主链路现已从源头统一。
+    assert _extract_stem_count('一束花') is None
+    assert _extract_stem_count('送妈妈一束花') is None
+    assert _extract_stem_count('来 3 束花') is None       # 同理，「束」是容器单位
+    # 一打 = 12 保留：它是明确的计数单位
     assert _extract_stem_count('一打玫瑰') == 12
     assert _extract_stem_count('11朵') == 11
-    assert _extract_stem_count('送妈妈一束花') == 11
     assert _extract_stem_count('想买花') is None
     # 边界钳制
     assert _extract_stem_count('9999朵') == 999

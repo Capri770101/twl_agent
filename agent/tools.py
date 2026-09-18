@@ -397,21 +397,27 @@ def _cn_to_int(raw: str) -> int | None:
 
 
 def _extract_stem_count(text: str) -> int | None:
-    """抽取花材支数：『11 朵』『9支』『十一朵』『一束』『一打』→ 主花支数。
+    """抽取**用户明确说出**的花材支数：『11 朵』『9支』『十一朵』『一打』。
 
-    仅当数量紧跟 朵/支/枝/束/根/头 才认定（避免把年份、金额误当支数）。
-    中文数字支持个位与十位（两朵 / 九支 / 十朵 / 十一朵 / 二十五支）；
-    注意「一束 = 11 支」「一打 = 12 支」是既有语义，由上方分支**先于**中文数字解析捕获，
-    所以「一束」不会被当成 1（顺序即语义，勿调整）。
+    仅当数量紧跟 朵/支/枝/根/头 才认定（避免把年份、金额误当支数）；
+    中文数字支持个位与十位（两朵 / 九支 / 十朵 / 十一朵 / 二十五支）。
+
+    ⚠️ **「一束」不在此列**（2026-09-18 修正，勿回退）：
+    它是**容器 / 单位量词**，不是支数 —— 用户说「来一束花，预算 300」时并不关心几支。
+    原实现把「一束」硬映射成 11 支，而支数是**强约束**（`_alloc_stems` 里优先级最高、
+    会跳过「按预算反推」），实测把一束 300 元的方案算成 **141 元**（只有 6 支花）；
+    模型察觉方案明显不合预算，又自己调一轮 `revise_diy_plan` 去救 ——
+    **既报错价、又白烧一整轮 LLM**（单轮 DIY 因此从 ~30s 涨到 60~150s）。
+    官网页（`client_payload`）早就有「一束让位预算」的修正，主链路一直缺这条，
+    现在从**源头**统一，两条链路行为一致。
+    「一打 = 12 支」保留：它是明确的计数单位。
     """
-    m = re.search(r'(\d{1,3})\s*(?:朵|支|枝|束|根|头)', text)
+    m = re.search(r'(\d{1,3})\s*(?:朵|支|枝|根|头)', text)
     if m:
         return max(1, min(int(m.group(1)), 999))
     if re.search(r'一\s*打', text):
         return 12
-    if re.search(r'一\s*束', text):
-        return 11
-    cm = re.search(r'([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九])\s*(?:朵|支|枝|束|根|头)', text)
+    cm = re.search(r'([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九])\s*(?:朵|支|枝|根|头)', text)
     if cm:
         val = _cn_to_int(cm.group(1))
         if val:
@@ -614,6 +620,40 @@ def merge_requirement(req: FlowerRequirement, llm_req: dict | None) -> FlowerReq
     if out.recipient and not out.relationship:
         out.relationship = _RELATIONSHIP_MAP.get(out.recipient)
     return out
+
+def _reject_hallucinated_stem_count(rule_req: FlowerRequirement, merged: FlowerRequirement,
+                                    text: str) -> FlowerRequirement:
+    """丢弃模型凭空补出的支数（**用户原话里对不上**就丢弃）。原地修改并返回 ``merged``。
+
+    为什么必须做（2026-09-18 线上实测）：
+    prompt 里原本给模型的示例是「『11 朵』→ 11」，结果**两条完全不同、且都没提支数的**
+    请求（预算 300 / 预算 500）都「补召回」出了 ``stem_count=11`` —— 模型把示例值
+    当成了默认值。
+
+    支数是**强约束**：`_alloc_stems` 里「用户明确支数」优先级最高、会直接跳过
+    「按预算反推」。实测代价：一束 299 元的方案被算成 **101 元**；
+    模型随后察觉不对，又自己调一轮 `revise_diy_plan` 去救 ——
+    **既报错价、又白烧一整轮 LLM**（单轮 DIY 因此从 ~30s 涨到 60~150s）。
+
+    只校验「模型补出来的」那一档：若规则引擎（含会话累积）已经抽到支数，
+    说明用户确实说过，不受影响。
+
+    Args:
+        rule_req: 规则引擎抽出的需求（会话累积后）。
+        merged: LLM 合并后的需求（可能被写入幻觉支数）。
+        text: 本轮用户原话。
+
+    Returns:
+        修正后的 ``merged``（幻觉值被置回 None）。
+    """
+    if rule_req.stem_count is not None or merged.stem_count is None:
+        return merged
+    if _extract_stem_count(text or '') != merged.stem_count:
+        logger.warning('[requirement] 丢弃模型补出的支数 %s —— 用户原话里没有依据（防幻觉）',
+                       merged.stem_count)
+        merged.stem_count = None
+    return merged
+
 
 def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefer_flowers: list[str] | None=None, exclude_flowers: set[str] | None=None, single_flower: str | None=None) -> tuple[list[dict], list[dict], list[dict]]:
     """根据维度 + 风格 + 预算，从知识库挑主花/配材/叶材。
@@ -1405,9 +1445,10 @@ _LLM_REQUIREMENT_HINT = (
     '"style":"风格（S_KOREAN/S_NORDIC/S_VINTAGE/S_NATURAL/S_INS/S_JAPANESE 之一，未明确则 null）",'
     '"colors":["颜色（红/粉/白/香槟/紫/蓝/黄/橙/绿/多彩混合/亮），未明确则 []"],'
     '"mood":"情绪（温柔/温馨/浪漫/清新/热烈/活泼/高级/素雅/优雅/治愈/甜美 之一，未明确则 null）",'
-    '"stem_count":"用户明确说的支数（「11 朵」「十一朵」→ 11，没提则 null）",'
+    '"stem_count":"用户明确说出的支数，只填阿拉伯数字（用户说「11 朵」就填 11）；**用户没提就填 null**",'
     '"single_flower":"用户要求只用一种花时填花名（「纯红玫瑰」→ 红玫瑰），否则 null"}。'
-    '严格按原话判断：**没有说的字段一律 null / []，绝不根据常识推测**——该对象会被系统用于校验，填错反而有害。'
+    '严格按原话判断：**没有说的字段一律 null / []，绝不根据常识推测、也不要把示例里的数字当成默认值**'
+    '——该对象会被系统用于校验（预算与支数会直接决定报价），填错比不填更糟。'
 )
 
 
@@ -1451,6 +1492,9 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
         from backend.config import settings
         if settings.DIY_LLM_REQUIREMENT_ENABLED:
             req_merged = merge_requirement(req, llm_plan.get('requirements') if isinstance(llm_plan, dict) else None)
+            # ⚠️ 支数必须能在用户原话里对上才允许补（模型会把 prompt 里的示例值
+            # 当默认值填回来 —— 详见 _reject_hallucinated_stem_count 的实测记录）
+            req_merged = _reject_hallucinated_stem_count(req, req_merged, requirements)
             if req_merged.single_flower and not baseline.get('_single_flower'):
                 baseline['_single_flower'] = req_merged.single_flower
             if req_merged.stem_count is not None and baseline.get('stem_count') is None:
