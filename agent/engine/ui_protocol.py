@@ -55,6 +55,11 @@ class ToolCallRecord(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     result: str = ""
     status: str = "ok"  # "ok" | "error"
+# AIGC 标识文案（单一来源）：非流式 ChatResponse 与流式 done 事件共用同一份，
+# 避免两处各写一遍导致口径漂移。依据 GB 45438-2025，接入方应在界面显著位置展示。
+AI_CONTENT_DISCLOSURE = '本内容由 AI 生成，仅供参考'
+
+
 class ChatResponse(BaseModel):
     """/chat 统一响应体（前端渲染契约）。"""
 
@@ -67,6 +72,12 @@ class ChatResponse(BaseModel):
     session_id: str = ""
     stage: str = ""  # 当前 SessionStage 值，便于前端感知进度
     products: list[ProductItem] = Field(default_factory=list)  # 商品卡片数组（platform_db_query_entity entity=plan 的结构化结果）
+    # ── AIGC 标识（GB 45438-2025《人工智能生成合成内容标识方法》，2026-09-18 外部安全审计 P0）──
+    # 本服务的回复 / 方案 / 效果图 / 贺卡**全部由 AI 生成**，需向使用方显式声明。
+    # 采用「接口声明 + 界面展示」的组合，而不是在每句话后面加后缀（那会严重破坏对话体验，
+    # 也不符合"在适当位置标识"的要求）：接入方拿到这两个字段后，在界面显著位置展示即可。
+    ai_generated: bool = True
+    content_disclosure: str = AI_CONTENT_DISCLOSURE
 
 
 class ErrorResponse(BaseModel):

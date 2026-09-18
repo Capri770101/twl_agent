@@ -145,6 +145,45 @@ def _strip_internal_leak(text: str) -> str:
     return out
 
 
+# 危险 HTML 标签（会把用户输入变成可执行内容的那一类）。
+# 只列「明确危险」的标签名，不做全量转义 —— 见 _neutralize_dangerous_tags 的说明。
+_DANGEROUS_TAG_RE = re.compile(
+    r'<\s*/?\s*(?:script|iframe|frame|frameset|object|embed|applet|svg|math|link|style'
+    r'|base|meta|form|input|button|textarea|select|video|audio|source|track'
+    r'|details|marquee|template|noscript|img|image|body|html|head|a)\b[^>]*>',
+    re.I,
+)
+
+
+def _neutralize_dangerous_tags(text: str) -> str:
+    """把回复里可能被当成 HTML 渲染的**危险标签**转义掉（XSS 兜底）。
+
+    为什么（2026-09-18 外部安全审计 P0）：`reply` 是模型输出的**纯文本**，服务端此前
+    不做任何处理，安全责任被推给了每一个接入方 —— 演示页做了转义所以安全，但
+    **任何不转义的第三方接入端**都会把 `<script>` 原样渲染；若该端还把消息存库回显，
+    就变成存储型 XSS。
+
+    刻意**只中和明确危险的标签名**，不做全量转义：全量转义会把正常文本里的 `<`、`>`
+    变成 `&lt;`、`&gt;`（如「我<3你」），在纯文本端反而显示异常。转义后标签失去语义，
+    但**文字内容仍然可读**（用户看到的是「&lt;script&gt;」而不是标签生效）。
+
+    Args:
+        text: 模型生成的回复文本。
+
+    Returns:
+        危险标签已转义的文本；无危险标签、非字符串或空文本时原样返回。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    out, n = _DANGEROUS_TAG_RE.subn(
+        lambda m: m.group(0).replace('<', '&lt;').replace('>', '&gt;'),
+        text,
+    )
+    if n:
+        logger.warning('[agent] 回复中出现危险 HTML 标签，已转义（XSS 兜底，共 %d 处）', n)
+    return out
+
+
 # 卡片类回复的「要点兜底」阈值：reply 短于此长度、且本轮带卡片时，才自动补充要点。
 #
 # 背景：实测模型在带卡片时强烈倾向只回「已推给你，点卡片看」而不给结论。已尝试 3 处
@@ -1521,6 +1560,9 @@ class ReActAgent:
         # 隐私兜底：去掉回复里残留的工具名 / 内部字段 / 原始数据行，
         # 确保数据库查询结果与内部实现不出现在前端（prompt 约束 + 代码兜底双保险）。
         final_reply = _strip_internal_leak(final_reply)
+        # XSS 兜底：把回复里的危险 HTML 标签转义掉。reply 是纯文本，但任何不转义的
+        # 接入端都会把 <script> 原样渲染 —— 安全不能只靠下游自觉（2026-09-18 审计 P0）。
+        final_reply = _neutralize_dangerous_tags(final_reply)
         # 要点兜底：带卡片但回复过短时，追加一句基于卡片数据的可读要点
         # （模型有卡片时倾向只说「看卡片」，prompt 约束不稳定，此处确定性补齐）。
         final_reply = _ensure_card_summary(final_reply, ui, data)

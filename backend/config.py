@@ -128,6 +128,13 @@ class Settings(BaseSettings):
     # 供配置方通过对话完成结构与映射接入。日常运营保持 false。
     ENABLE_OPS_TOOLS: bool = False
 
+    # ── 公网接口文档开关（默认关闭）──
+    # 关闭时 /docs、/redoc、/openapi.json 一律 404。
+    # 原因（2026-09-18 外部安全审计）：三者此前匿名可取，/openapi.json 会吐出
+    # **全部端点的完整 schema**（参数、鉴权头、错误结构），等于把攻击面清单递给对方。
+    # 需要浏览接口时临时置 true，或向维护方索取 openapi.json。
+    API_DOCS_ENABLED: bool = False
+
     # ── 平台数据「可查实体」白名单（留空 = 不限制）──
     # 逗号分隔，取值 plan / shop / order / user。留空时保持原有全量行为（生产默认）。
     # 用途：**体验/演示实例**只让用户走「生成方案 + 给建议」这条主线，于是把它设为

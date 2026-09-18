@@ -61,11 +61,20 @@ async def lifespan(app: FastAPI):
     logger.info('跳舞兰花卉智能体服务关闭')
 
 
+# 接口文档开关（2026-09-18 外部安全审计修复）：
+# 关闭时 /docs、/redoc、/openapi.json 全部 404 —— 三者匿名可取会暴露**全部端点的完整
+# schema**（含参数、鉴权头、错误结构），等于把攻击面清单递给对方。
+# 需要浏览接口时设 API_DOCS_ENABLED=true，或向维护方索取 openapi.json。
+_docs_kwargs = {} if settings.API_DOCS_ENABLED else {
+    'docs_url': None, 'redoc_url': None, 'openapi_url': None,
+}
+
 app = FastAPI(
     title='跳舞兰花卉智能体 API',
     description='跳舞兰花卉智能体：基于 ReAct 的花艺顾问 AI，支持微信小程序等多平台接入',
     version='1.0.0',
-    lifespan=lifespan
+    lifespan=lifespan,
+    **_docs_kwargs,
 )
 
 # CORS
@@ -94,9 +103,11 @@ app.mount('/generated', StaticFiles(directory=str(generated_dir)), name='generat
 
 @app.get('/health')
 async def health():
-    return {
-        'status': 'ok',
-        'service': 'flora-agent',
-        'version': '1.0.0',
-        'env': settings.APP_ENV
-    }
+    """容器探活端点（只返回最小必要信息）。
+
+    ⚠️ 原先返回 `service` / `version` / `env`：其中 `env: prod` 等于匿名告诉外界
+    「这是生产环境」，`version: 1.0.0` 则便于按版本检索已知漏洞
+    （2026-09-18 外部安全审计）。docker healthcheck 只判断请求是否成功、
+    不校验返回体，因此精简不影响探活。
+    """
+    return {'status': 'ok'}

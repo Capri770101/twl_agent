@@ -13,7 +13,7 @@ from typing import Any
 from backend.config import settings
 from backend.storage import memory as mem_store
 from backend.storage import tasks as task_store
-from agent.engine.ui_protocol import UIType
+from agent.engine.ui_protocol import AI_CONTENT_DISCLOSURE, UIType
 from agent.agent import ReActAgent
 from agent.memory_consolidator import maybe_consolidate
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
@@ -280,6 +280,11 @@ async def chat_stream(
                                                      entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title):
                 event_type = evt.get('event', 'text')
                 data = {k: v for k, v in evt.items() if k != 'event'}
+                if event_type == 'done':
+                    # AIGC 标识（GB 45438-2025）：与非流式 /chat 的 ChatResponse 保持同一口径，
+                    # 让接入方在两种模式下都能拿到标识字段（2026-09-18 外部安全审计 P0）。
+                    data.setdefault('ai_generated', True)
+                    data.setdefault('content_disclosure', AI_CONTENT_DISCLOSURE)
                 yield f'event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
         except Exception as exc:
             _ok = False

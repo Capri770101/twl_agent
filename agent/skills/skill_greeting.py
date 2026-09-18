@@ -541,6 +541,14 @@ def _render_card_image(text: str, recipient: str, sender: str, template: str) ->
     fw = _text_width(foot, f_font)
     draw.text(((w - fw) / 2, h - 78), foot, font=f_font, fill=sub + (150,))
 
+    # AIGC 显式标识（GB 45438-2025 / 2026-09-18 外部安全审计 P0）：
+    # 贺卡是 AI 合成内容，必须在成品图上**可见标注**，不能只有接口字段。
+    # 用比主水印更淡的小字，避免破坏贺卡观感，但保证"AI 生成"可被识别。
+    ai_font = _load_font(14)
+    ai_text = 'AI 生成'
+    aw = _text_width(ai_text, ai_font)
+    draw.text(((w - aw) / 2, h - 52), ai_text, font=ai_font, fill=sub + (110,))
+
     img = Image.alpha_composite(img, layer)
     if img.mode != 'RGB':
         img = img.convert('RGB')
