@@ -1356,6 +1356,19 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
         for key in ('main_flowers', 'fillers', 'foliage', 'color_scheme', 'packaging', 'meaning', 'notes', 'diy_steps', 'care_tips', 'card_message', 'budget_breakdown', 'difficulty', 'est_time', 'shelf_life', 'suitable_for', 'caution', 'mood_tags'):
             if ld.get(key) not in (None, '', []):
                 bd[key] = ld[key]
+        # LLM 精简输出后 main_flowers 里没有 role / flower_language（2026-09-20 延迟优化）。
+        # 这两项都是**知识库静态属性**，从知识库补齐即可 —— 既省 token，
+        # 又避免模型自己编花语（花语写错比不写更糟）。
+        # ⚠️ demo 方案卡会在主花下面展示花语（demo/index.html:579），漏补会导致花语消失。
+        for _group, _role in (('main_flowers', '主花'), ('fillers', '填充'), ('foliage', '叶材')):
+            for _fl in bd.get(_group) or []:
+                if not isinstance(_fl, dict) or not _fl.get('name'):
+                    continue
+                _fl.setdefault('role', _role)
+                if not _fl.get('flower_language'):
+                    _kf = _known_flower(str(_fl['name']))
+                    if _kf:
+                        _fl['flower_language'] = _kf.get('flower_language', []) or []
     if isinstance(ld, dict):
         real_main = [{'name': m['name']} for m in ld.get('main_flowers', []) if isinstance(m, dict) and m.get('name')]
         real_fill = [{'name': f['name']} for f in ld.get('fillers', []) if isinstance(f, dict) and f.get('name')]
@@ -1374,6 +1387,14 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
                 plan['budget_breakdown'] = _build_budget_breakdown(real_main, real_fill, real_foli, pkg, tier, plan.get('budget_num'), plan.get('stem_count'))
         if ld.get('card_message') not in (None, '', []):
             plan['card_message'] = ld['card_message']
+        # 保持对外结构不变：2026-09-20 精简 prompt 后模型不再输出 design.diy_steps /
+        # design.care_tips，但**以前这两项在 design 内层是有值的**，接入方可能直接读
+        # （demo 是 `d.diy_steps || p.diy_steps` 双兜底，其他接入方不一定）。
+        # 原则：只补齐、不删除 —— 绝不让已对接的字段从「有值」变成 undefined。
+        for _k, _src in (('diy_steps', plan.get('diy_steps')),
+                         ('care_tips', plan.get('care_tips'))):
+            if _src and not bd.get(_k):
+                bd[_k] = _src
     # ===== 硬性约束：用户明确的单一花材 / 支数，LLM 输出不得违背 =====
     _sf = plan.get('_single_flower')
     _sc = plan.get('stem_count')
@@ -1478,7 +1499,19 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
         if shop_id:
             hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
-        system = '你是资深花艺设计师。依据用户需求与下方【知识库召回】设计一份花艺方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述（含花材与支数，如「玫瑰×10 配满天星×3」）,"effect_prompt":"生图 prompt（描述花材/色彩/形态/包装，与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语],"qty":支数}],"fillers":[{"name":花名,"role":"填充","qty":支数}],"foliage":[{"name":叶材名,"role":"叶材","qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤(数组，需具体到每种花材的修剪方式与数量，如「玫瑰×10 斜剪45°去刺去叶」),"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：花材必须从【候选花材】中选取真实名称；配色与风格须与知识库一致；每种花材务必给出具体支数 qty（按预算合理分配，主花 6-16 支、配材/叶材 1-4 支）；diy_steps 要具体到每种花材怎么修剪（斜剪/去刺/去叶/摘雄蕊）、怎么装饰；若用户未指定某维度，按花语与场景合理默认，不要留空。' + constraint_block
+        # ⚠️ 只让模型输出**规则引擎做不到的语义部分**（方案名/文案/选花/配色/包装/寓意）。
+        # 实测依据（2026-09-20 服务器实测）：LLM 耗时 ≈ 输出 token × 17~19ms，
+        # **上下文长度几乎无影响**（塞到 2 万字首字仍只要 1.76s）。
+        # 完整 schema 输出 793 token → 15.0s；精简到 424 token → 7.2s（省 52%）。
+        # 其余字段（effect_prompt / diy_steps / care_tips / card_message / difficulty /
+        # est_time / shelf_life / suitable_for / caution / mood_tags，以及
+        # recipient / occasion / scene / role）**baseline 已算好**，
+        # _merge_plan 是「LLM 缺则回落 baseline」→ 不写反而更快、质量不降。
+        # ⚠️ effect_prompt 尤其要删：它在 _merge_plan 末尾会被 _effect_prompt_from_design
+        # 按**校正后的支数**重建（卡片与生图必须同源），模型写了也是白烧 token。
+        # ⚠️ flower_language 也不再要模型写（花语是知识库静态属性，模型写可能编造），
+        # 由 _merge_plan 合并后从知识库补。
+        system = '你是资深花艺设计师。依据用户需求与下方【知识库召回】设计一份花艺方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"desc":一句话方案描述（含花材与支数，如「玫瑰×10 配满天星×3」）,"design":{"main_flowers":[{"name":花名,"qty":支数}],"fillers":[{"name":花名,"qty":支数}],"foliage":[{"name":叶材名,"qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案}}。要求：花材必须从【候选花材】中选取真实名称；配色与风格须与知识库一致；每种花材务必给出具体支数 qty（按预算合理分配，主花 6-16 支、配材/叶材 1-4 支）；若用户未指定某维度，按花语与场景合理默认，不要留空。' + constraint_block
         # L2：让模型在同一次调用里顺带给出结构化需求（补规则漏抽的槽位）
         system = system + _LLM_REQUIREMENT_HINT
         user = f'用户需求：{requirements}\n\n{knowledge}'
@@ -1753,7 +1786,9 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
         if shop_id:
             hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
-        system = '你是资深花艺设计师。基于【已有方案】与【用户反馈】调整出一版新方案，只输出 JSON、不要额外解释。字段须严格同设计：{"name":方案名,"style":风格标签,"recipient":收礼人,"occasion":场景或节日,"scene":场景名,"desc":一句话方案描述,"effect_prompt":"生图 prompt（与方案一致）","design":{"main_flowers":[{"name":花名,"role":"主花","flower_language":[花语]}],"fillers":[{"name":花名,"role":"填充"}],"foliage":[{"name":叶材名,"role":"叶材"}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案,"diy_steps":DIY 步骤,"care_tips":养护贴士,"card_message":贺卡文案,"difficulty":制作难度(仅限 入门/进阶/高手),"est_time":预计耗时分钟数(整数),"shelf_life":保鲜期(收到后可养几天,如"约 5-7 天"),"suitable_for":[适宜人群标签],"caution":禁忌或提醒(如花粉过敏慎选),"mood_tags":[情绪标签(如 治愈/热烈/宁静)]}}。要求：反馈明确要改的维度必须落实；花材从知识库真实名称选；未提及的维度保持原方案，不要随意改动。' + constraint_block
+        # 同 design_with_llm：只让模型改**语义部分**，其余字段由 baseline + _merge_plan 补。
+        # 依据见 design_with_llm 处的实测记录（输出 token 数才是耗时主因）。
+        system = '你是资深花艺设计师。基于【已有方案】与【用户反馈】调整出一版新方案，只输出 JSON、不要额外解释。字段须严格为：{"name":方案名,"style":风格标签,"desc":一句话方案描述,"design":{"main_flowers":[{"name":花名,"qty":支数}],"fillers":[{"name":花名,"qty":支数}],"foliage":[{"name":叶材名,"qty":支数}],"color_scheme":[颜色],"packaging":包装名,"meaning":寓意文案}}。要求：反馈明确要改的维度必须落实；花材从知识库真实名称选；未提及的维度保持原方案，不要随意改动。' + constraint_block
         user = f'已有方案：{json.dumps(original, ensure_ascii=False)}\n用户反馈：{feedback}\n\n{knowledge}'
         resp = call_llm([{'role': 'system', 'content': system}, {'role': 'user', 'content': user}], response_format={'type': 'json_object'})
         llm_plan = json.loads(resp.choices[0].message.content)
@@ -1821,7 +1856,7 @@ def respond_to_user(reply: str='', ui: str='text', data: dict | None=None, stage
     return {'reply': reply, 'ui': ui, 'data': data or {}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative), 'missing': normalize_missing_slots(missing)}
 
 
-@register_tool(name='show_plan_card', description='标准方案卡片输出工具。用于展示现成方案或 DIY 方案，调用时只需传 plans 列表，工具会自动包装为 plan_card 并结束本轮对话。', parameters={'type': 'object', 'properties': {'plans': {'type': 'array', 'description': '方案卡片列表，每项应符合 plan_card 约定'}, 'reply': {'type': 'string', 'description': '给用户的自然语言说明'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 view_plan 或 diy_design'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['plans']}, tags=['meta'])
+@register_tool(name='show_plan_card', description='标准方案卡片输出工具。用于展示现成方案或 DIY 方案，调用时只需传 plans 列表，工具会自动包装为 plan_card 并结束本轮对话。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言说明。⚠️ 请**第一个**写这个字段：模型按参数顺序生成，reply 在前用户才能立刻看到文字（实测 reply 在后时首字要等 20s+）'}, 'plans': {'type': 'array', 'description': '方案卡片列表，每项应符合 plan_card 约定'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 view_plan 或 diy_design'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['reply', 'plans']}, tags=['meta'])
 def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='view_plan', intent: str='design', confirmation: str='none', image: str='none', wants_alternative: bool=False, missing: list[str] | None=None) -> dict[str, Any]:
     """方案卡片终结工具：统一输出 plan_card。
 
@@ -1839,7 +1874,7 @@ def show_plan_card(plans: list[dict] | None = None, reply: str='', stage: str='v
     return {'reply': reply, 'ui': UIType.PLAN_CARD.value, 'data': {'plans': plans or []}, 'stage': stage, 'intent': intent, 'confirmation': confirmation, 'image': image, 'wants_alternative': bool(wants_alternative), 'missing': normalize_missing_slots(missing)}
 
 
-@register_tool(name='show_options', description='给用户一组可点选的选项（前端渲染成按钮），需要用户从几个方向里挑一个时用它——比如「想要哪种风格 / 哪个色系」「要不要继续调整」「换一批往哪个方向换」。传 options（每项一个简短标签）即可，工具会自动包装成选项列表并结束本轮对话。', parameters={'type': 'object', 'properties': {'options': {'type': 'array', 'items': {'type': 'string'}, 'description': '选项列表，每项一个简短标签（建议 2-4 项，每项不超过 12 字），如 ["温柔韩式","清新自然","复古法式"]'}, 'reply': {'type': 'string', 'description': '给用户的自然语言说明（说明你为什么让他选，不要只写「请选择」）'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 analyze'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['options']}, tags=['meta'])
+@register_tool(name='show_options', description='给用户一组可点选的选项（前端渲染成按钮），需要用户从几个方向里挑一个时用它——比如「想要哪种风格 / 哪个色系」「要不要继续调整」「换一批往哪个方向换」。传 options（每项一个简短标签）即可，工具会自动包装成选项列表并结束本轮对话。', parameters={'type': 'object', 'properties': {'reply': {'type': 'string', 'description': '给用户的自然语言说明（说明你为什么让他选，不要只写「请选择」）。⚠️ 请**第一个**写这个字段（模型按参数顺序生成，reply 在前用户才能立刻看到文字）'}, 'options': {'type': 'array', 'items': {'type': 'string'}, 'description': '选项列表，每项一个简短标签（建议 2-4 项，每项不超过 12 字），如 ["温柔韩式","清新自然","复古法式"]'}, 'stage': {'type': 'string', 'description': '下一业务阶段，默认 analyze'}, 'intent': {'type': 'string', 'enum': ['buying', 'qa', 'chitchat', 'design', 'other'], 'description': '用户本轮真实意图'}, 'confirmation': _CONFIRMATION_PROP, 'image': _IMAGE_PROP, 'wants_alternative': _ALTERNATIVE_PROP, 'missing': _MISSING_PROP}, 'required': ['reply', 'options']}, tags=['meta'])
 def show_options(options: list | None=None, reply: str='', stage: str='analyze', intent: str='other', confirmation: str='none', image: str='none', wants_alternative: bool=False, missing: list[str] | None=None) -> dict[str, Any]:
     """选项列表终结工具：把「让用户挑一个」变成显式的工具调用。
 
