@@ -144,8 +144,13 @@ def _install(monkeypatch, turns: list[list], *, tool_results: dict | None = None
         # ⚠️ execute_tool 的契约是返回 (result, status) 二元组（run() 里直接解包），
         # 不是裸的结果字符串 —— 集成测试第一次就因为这里少了一层而报
         # "too many values to unpack"，正好说明这类测试能逼出真实的接口契约。
-        if tool_results and name in tool_results:
-            return tool_results[name], 'ok'
+        val = (tool_results or {}).get(name)
+        if callable(val):
+            # 同一个工具有多轮不同参数时用回调（如 platform_db_query_entity 换关键词查两次）
+            out = val(arguments)
+            return out if isinstance(out, tuple) else (out, 'ok')
+        if val is not None:
+            return val, 'ok'
         return '{}', 'ok'
 
     monkeypatch.setattr(A, 'execute_tool', fake_execute, raising=False)
@@ -257,3 +262,45 @@ def test_cleanup_chain_scrubs_reply(monkeypatch):
     assert 'platform_db_query_entity' not in reply, '内部工具名泄漏'
     assert '\n---\n' not in reply and not reply.startswith('---'), '独立分隔线未清理'
     assert reply, '清理后不能为空（_ensure_non_empty_reply 应兜住）'
+
+
+# ── 场景 5：卡片永远与文案对齐（取数并集 + 数量回写）──
+
+def _query_rows(*names: str) -> str:
+    import json as _json
+    return _json.dumps({'ok': True, 'data': [{'name': n, 'price': 100} for n in names]},
+                       ensure_ascii=False)
+
+
+def test_product_card_matches_reply_across_query_rounds(monkeypatch):
+    """⚠️ 2026-09-20 生产回归（端到端）：模型分两轮换关键词查商品，文案把两轮结果都点了名。
+
+    线上原症状：「我挑了 4 款…（月光漫步 / 热恋代码 / 郁见你 / 网红Kitty）」却只渲染 **2 张**卡，
+    且其中一张还是文案没提过的款 —— 因为卡片只取**最后一次**查询的结果。
+
+    这里断言完整契约的两半：
+      ① 卡片必须包含**两轮查询**里被点名的商品（不能只取最后一轮）；
+      ② 文案自报的数量必须等于卡片实际条数（模型那个数字是猜的）。
+    """
+    table = {'第一轮': ('月光漫步', '热恋代码'), '第二轮': ('网红Kitty', '花漾岁月')}
+
+    def _q(arguments):
+        return _query_rows(*table.get(str((arguments or {}).get('keyword') or ''), ()))
+
+    turns = [
+        [_chunk(tool_calls=[_tc(0, id='c1', name='platform_db_query_entity',
+                                args='{"source_id": "aistore", "entity": "plan", "keyword": "第一轮"}')])],
+        [_chunk(tool_calls=[_tc(0, id='c2', name='platform_db_query_entity',
+                                args='{"source_id": "aistore", "entity": "plan", "keyword": "第二轮"}')])],
+        _terminal('respond_to_user',
+                  '{"reply": "我挑了 4 款都在预算内：月光漫步、网红Kitty", '
+                  '"stage": "view_plan", "intent": "buying"}', 'c3'),
+    ]
+    _install(monkeypatch, turns, tool_results={'platform_db_query_entity': _q})
+    resp, events = _run('送女朋友一束花，预算200左右')
+    assert getattr(resp.ui, 'value', resp.ui) == 'plan_card', f'期望出商品卡，实得 {resp.ui}'
+    names = [p.get('name') for p in (resp.data or {}).get('plans') or []]
+    assert names == ['月光漫步', '网红Kitty'], f'卡片必须含两轮里被点名的款，实得 {names}'
+    reply = resp.reply or ''
+    assert '4 款' not in reply, '文案自报数量必须与卡片条数一致'
+    assert '2 款' in reply, f'数字应被回写为 2 款，实得：{reply}'
