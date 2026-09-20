@@ -655,6 +655,35 @@ def _reject_hallucinated_stem_count(rule_req: FlowerRequirement, merged: FlowerR
     return merged
 
 
+def _fallback_flower(all_flowers: dict, category: str, preferred: str,
+                     exclude: set[str]) -> list[dict]:
+    """填充 / 叶材的同类兜底：优先 ``preferred``，被排除时改取同类未排除的第一个。
+
+    Args:
+        all_flowers: 知识库花材表（name → 花材 dict，含 ``category``）。
+        category: 目标类别（``填充`` / ``叶材``）。
+        preferred: 首选花名（原来的硬编码兜底项）。
+        exclude: 用户明确不要的花材集合。
+
+    Returns:
+        单元素列表或空列表（一个可用候选都没有时**留空**）。
+
+    ⚠️ 为什么不直接 ``or [all_flowers.get(preferred)]``（2026-09-20 实测缺陷）：
+    用户说「不要满天星」后，只要候选里没有别的填充花材，旧写法就把满天星**塞回来** ——
+    卡片里残留「满天星×5」，用户看到的是「说了不要还给我」。
+    这里确立优先级：**「绝不把用户明确不要的花材加回来」>「方案必须配齐配材/叶材」**。
+    """
+    first = all_flowers.get(preferred)
+    if isinstance(first, dict) and preferred not in exclude:
+        return [first]
+    for name, flower in all_flowers.items():
+        if name in exclude or not isinstance(flower, dict):
+            continue
+        if flower.get('category') == category:
+            return [flower]
+    return []
+
+
 def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefer_flowers: list[str] | None=None, exclude_flowers: set[str] | None=None, single_flower: str | None=None) -> tuple[list[dict], list[dict], list[dict]]:
     """根据维度 + 风格 + 预算，从知识库挑主花/配材/叶材。
 
@@ -720,8 +749,14 @@ def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefe
         scored.append((w, idx, f))
     scored.sort(key=lambda x: (x[0], x[1]))
     main = [f for _, _, f in scored][:2] or candidates[:1]
-    fillers = [f for f in candidates if f.get('category') == '填充' and f['name'] not in exclude_flowers][:1] or [all_flowers.get('满天星')]
-    foliage = [f for f in candidates if f.get('category') == '叶材' and f['name'] not in exclude_flowers][:1] or [all_flowers.get('尤加利')]
+    fillers = [f for f in candidates if f.get('category') == '填充' and f['name'] not in exclude_flowers][:1]
+    if not fillers:
+        # ⚠️ 兜底也必须尊重排除：旧写法是无条件 `or [满天星]`，会把用户明确
+        # 不要的满天星塞回来（2026-09-20 实测「不要满天星」后卡片仍残留满天星×5）。
+        fillers = _fallback_flower(all_flowers, '填充', '满天星', exclude_flowers)
+    foliage = [f for f in candidates if f.get('category') == '叶材' and f['name'] not in exclude_flowers][:1]
+    if not foliage:
+        foliage = _fallback_flower(all_flowers, '叶材', '尤加利', exclude_flowers)
     return ([f for f in main if f], [f for f in fillers if f], [f for f in foliage if f])
 # 主花支数的**兜底**基准（按预算档）。
 # ⚠️ 正常路径不用它：真实支数由「（预算 − 基础费）÷ 单品综合成本」算出（见 _alloc_stems）。
@@ -1160,6 +1195,11 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     _source_label = {'override': '商家设定的标准价', 'merchant': '本店在售商品',
                      'baseline': '平台在售商品'}.get(table.source, '平台在售商品')
     plan = {'plan_id': 'DIY_' + uuid.uuid4().hex[:6], 'version': version, 'parent_id': parent_id, 'name': f'{style_label}·{occ_label}花束', 'diy': True, 'style': style_label, 'style_id': style_id, 'substyle_id': substyle_id, 'substyle': style.get('name') if substyle_id and resolved is not parent else None, 'recipient': dims.get('recipient', '通用'), 'occasion': occ_label, 'scene_id': scene['id'] if scene else None, 'scene': scene['name'] if scene else None, 'budget_num': budget_num, 'budget_tier': tier['label'], 'design': {'main_flowers': main_flowers, 'fillers': filler_flowers, 'foliage': foliage_flowers, 'color_scheme': color_scheme, 'packaging': packaging['name'] if packaging else '花束', 'meaning': meaning, 'notes': notes, 'difficulty': difficulty, 'est_time': est_time, 'shelf_life': shelf_life, 'suitable_for': suitable_for, 'caution': caution, 'mood_tags': mood_tags, 'fees': {'base_fee': base_fee, 'base_standard': f'包装、手工与基础服务 {base_fee:.0f} 元/束（按{_source_label}推算）', 'stem_count': _flower_qty_text, 'note': f'单支花材价按{_source_label}推算，已含包装与手工；下单前以门店确认为准。', 'price_source': table.source}}, 'estimated_price': est, 'effect_prompt': effect_prompt, 'desc': f"为你设计了一份{style_label}{occ_label}花束：花材共 {_flower_qty_text}，色调{'/'.join(color_scheme)}，寓意{meaning}。含包装与手工 {base_fee:.0f} 元，预算{est}。", 'diy_steps': _build_diy_steps(main, fillers, foliage, color_scheme, packaging), 'care_tips': _build_care_tips(main), 'card_message': _build_card_message(dims.get('recipient', '朋友'), scene['name'] if scene else occ_label, style_label, tone, short_meaning), 'budget_breakdown': _build_budget_breakdown(main, fillers, foliage, packaging, tier, budget_num, stem_count, table)}
+    if exclude_flowers:
+        # 持久化「用户明确不要的花材」：改版时由 revise_with_llm 并集继承。
+        # 不记的话，下一轮用户只说「换个配色」，被排除的花材就会**悄悄回来**
+        # （2026-09-20 实测：说了「不要满天星」的下一版仍出现满天星）。
+        plan['exclude_flowers'] = sorted(exclude_flowers)
     # 顶层数值价格（2026-09-18，外部审计 P0-3 修复）。
     # 问题：原实现只有 `estimated_price` 字符串（"约 300 元（轻送礼档）"）与嵌套的
     # `budget_breakdown.total_estimate`，**没有顶层数值字段**。接入方按平台商品卡惯例取
@@ -1335,7 +1375,141 @@ def _sync_flower_qty(text: str, qty: dict[str, int]) -> str:
     return text
 
 
-def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
+def _apply_flower_exclusions(plan: dict, exclude: set[str], baseline_design: dict | None = None) -> list[str]:
+    """把「用户明确不要的花材」从**最终方案**里确定性剔除（模型不给面子时也生效）。
+
+    Args:
+        plan: 已合并的方案（原地修改）。
+        exclude: 用户不要的花名集合。
+        baseline_design: 规则引擎基线里的 ``design``（主花被清空时用于回落）。
+
+    Returns:
+        实际剔除的花名（去重前的发现顺序），供日志与测试断言。
+
+    为什么必须在**合并之后**再剔一遍（2026-09-20 实测缺陷）：
+    ``_build_plan(exclude_flowers=…)`` 只保证 **baseline** 干净，而 ``_merge_plan`` 是
+    「LLM 有则覆盖」—— 模型照样能把被排除的花材写回来。实测用户说「不要满天星」，
+    新版卡片配材里仍是「满天星×5」，模型自己都在文案里承认「残留了一条」。
+
+    ⚠️ 必须早于 ``real_main/fillers/foliage`` 与 ``_enrich_plan_fees``：后者按最终花材
+    重算 diy_steps / 明细 / 顶层价格。晚一步就会变成「用料去掉了、报价还是旧的」。
+    """
+    if not exclude:
+        return []
+    design = plan.get('design')
+    if not isinstance(design, dict):
+        return []
+    removed: list[str] = []
+    for group in ('main_flowers', 'fillers', 'foliage'):
+        items = design.get(group)
+        if not isinstance(items, list):
+            continue
+        kept: list[Any] = []
+        for flower in items:
+            name = str(flower.get('name') or '').strip() if isinstance(flower, dict) else ''
+            if name and name in exclude:
+                removed.append(name)
+            else:
+                kept.append(flower)
+        design[group] = kept
+    if not design.get('main_flowers'):
+        # 主花被清空（用户说「不要玫瑰」而候选里没别的）→ 不能留一个没有主花的方案。
+        # 从 baseline 取（它本就按排除集构建过）；仍为空就交给上游的兜底出卡处理。
+        fallback = [m for m in ((baseline_design or {}).get('main_flowers') or [])
+                    if isinstance(m, dict) and str(m.get('name') or '') not in exclude]
+        if fallback:
+            design['main_flowers'] = fallback
+    if removed:
+        # notes 里若提到被排除的花材，一并去掉（否则卡片说明里还留着它的名字）
+        terms = [t for t in _all_flower_terms() if t in exclude]
+        notes = design.get('notes')
+        if isinstance(notes, list) and terms:
+            design['notes'] = [n for n in notes
+                               if not (isinstance(n, str) and any(t in n for t in terms))]
+        logger.info('[设计] 已强制移除用户排除的花材：%s', '、'.join(dict.fromkeys(removed)))
+    return removed
+
+
+_NEGATION_MARKERS = ('去除', '去掉', '不要', '不含', '没有', '无需', '剔除', '换掉', '省略', '不加', '免去', '无')
+
+
+def _mentions_excluded(text: str, names: list[str]) -> bool:
+    """文本是否**正面**提到了被排除的花材（否定表述不算）。
+
+    ⚠️ 为什么不能「见名就删」：模型常写「**去除了**满天星的繁复感」——这在
+    「用户不要满天星」的语境下是**正确且加分**的表述，误删反而把对的改错。
+    只有「配满天星」「点缀满天星」这类正面提及才需要处理。
+    """
+    for name in names:
+        if not name:
+            continue
+        start = 0
+        while True:
+            idx = text.find(name, start)
+            if idx < 0:
+                break
+            if not any(mark in text[max(0, idx - 5):idx] for mark in _NEGATION_MARKERS):
+                return True
+            start = idx + len(name)
+    return False
+
+
+def _desc_from_design(plan: dict) -> str:
+    """按**最终设计清单**重建一句话描述（只在 LLM 的文字与清单冲突时兜底用）。"""
+    d = plan.get('design') if isinstance(plan.get('design'), dict) else {}
+    segs: list[str] = []
+    for group in ('main_flowers', 'fillers', 'foliage'):
+        for flower in d.get(group) or []:
+            if isinstance(flower, dict) and flower.get('name'):
+                qty = flower.get('qty')
+                segs.append(f"{flower['name']}×{qty}" if qty else str(flower['name']))
+    colors = d.get('color_scheme') or []
+    colors = '、'.join(str(c) for c in colors) if isinstance(colors, list) else str(colors)
+    style = str(plan.get('style') or '').strip()
+    return (f"{style}风格花束：花材共 {'、'.join(segs) or '以最终清单为准'}，"
+            f"色调{colors or '自然'}，{d.get('packaging') or '花束'}包装。")
+
+
+def _meaning_from_design(design: dict) -> str:
+    """按**最终主花**的花语重建寓意文案（花语取自知识库，不编造）。"""
+    langs: list[str] = []
+    for flower in design.get('main_flowers') or []:
+        if not isinstance(flower, dict):
+            continue
+        value = flower.get('flower_language') or []
+        langs.extend(str(x) for x in (value if isinstance(value, list) else [value]) if x)
+    return '、'.join(dict.fromkeys(langs)) or '美好心意'
+
+
+def _scrub_excluded_mentions(plan: dict, exclude: set[str]) -> None:
+    """清掉方案**文字字段**里对「被排除花材」的**正面提及**（否定表述保留）。
+
+    为什么（2026-09-20 实测缺陷）：卡面上除了花材清单，还有一句话描述（desc）、
+    制作步骤（diy_steps）、花语文案（meaning）。用料剔除了满天星，但文字里若还写着
+    「配满天星」，用户看到的依然是自相矛盾 —— 和「数据残留」是同一个问题的另一面。
+    """
+    names = sorted(n for n in exclude if n)
+    if not names:
+        return
+    d = plan.get('design') if isinstance(plan.get('design'), dict) else {}
+    if _mentions_excluded(str(plan.get('desc') or ''), names):
+        plan['desc'] = _desc_from_design(plan)
+        logger.info('[设计] desc 里正面提到了被排除的花材 → 已按最终清单重建描述')
+    if _mentions_excluded(str(d.get('meaning') or ''), names):
+        d['meaning'] = _meaning_from_design(d)
+        logger.info('[设计] meaning 里正面提到了被排除的花材 → 已按最终主花重建寓意')
+    steps = plan.get('diy_steps')
+    if isinstance(steps, list):
+        kept = [s for s in steps if not _mentions_excluded(str(s), names)]
+        if len(kept) != len(steps):
+            plan['diy_steps'] = kept
+            if isinstance(d.get('diy_steps'), list):
+                d['diy_steps'] = kept
+            logger.info('[设计] diy_steps 里提到被排除花材的步骤已移除（%d → %d 步）',
+                        len(steps), len(kept))
+
+
+def _merge_plan(baseline: dict, llm_plan: dict, exclude_flowers: set[str] | None = None) -> dict:
     """用 LLM 生成的语义字段覆盖 baseline；缺字段回落 baseline，保证 schema 完整不崩。
 
     baseline 由规则引擎 _build_plan 产出（机械字段齐全、花材真实），LLM 负责提升语义
@@ -1369,10 +1543,23 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
                     _kf = _known_flower(str(_fl['name']))
                     if _kf:
                         _fl['flower_language'] = _kf.get('flower_language', []) or []
+    # ★ 排除花材的**最终兜底**：baseline 干净 ≠ 合并结果干净（LLM 会覆盖）。
+    # 必须在这里做——再晚就会跑在下游 diy_steps / 明细 / 价格重算的后面，
+    # 变成「用料去掉了、步骤与报价还是旧的」。
+    if exclude_flowers:
+        _apply_flower_exclusions(plan, set(exclude_flowers), baseline.get('design'))
     if isinstance(ld, dict):
-        real_main = [{'name': m['name']} for m in ld.get('main_flowers', []) if isinstance(m, dict) and m.get('name')]
-        real_fill = [{'name': f['name']} for f in ld.get('fillers', []) if isinstance(f, dict) and f.get('name')]
-        real_foli = [{'name': g['name']} for g in ld.get('foliage', []) if isinstance(g, dict) and g.get('name')]
+        # ⚠️ 花名来源必须是**已合并、已剔除排除项**的 `plan['design']`，不能是 LLM 原始 `ld`：
+        # 否则「用料去掉了、diy_steps 与明细还是旧的」（2026-09-20 排除花材修复）。
+        _merged = plan.get('design') if isinstance(plan.get('design'), dict) else {}
+
+        def _merged_names(group: str) -> list[dict[str, Any]]:
+            return [{'name': str(i.get('name'))} for i in (_merged.get(group) or [])
+                    if isinstance(i, dict) and i.get('name')]
+
+        real_main = _merged_names('main_flowers')
+        real_fill = _merged_names('fillers')
+        real_foli = _merged_names('foliage')
         if real_main:
             pk_name = ld.get('packaging') or plan.get('design', {}).get('packaging') or '花束'
             pkg = {'name': pk_name, 'id': 'PK_BOX' if '礼盒' in pk_name else 'PK_BOUQUET'}
@@ -1454,6 +1641,10 @@ def _merge_plan(baseline: dict, llm_plan: dict) -> dict:
             plan.get('style') or '韩式',
             (plan.get('design') or {}).get('packaging') or '花束',
         )
+    # 文字字段的排除兜底：数据剔了、文字里还写着「配满天星」同样是自相矛盾。
+    # 放在支数校正**之后**——重建 desc 需要已定稿的 qty / 明细。
+    if exclude_flowers:
+        _scrub_excluded_mentions(plan, set(exclude_flowers))
     return plan
 
 # L2：在设计调用里**顺带**要求模型输出它读到的结构化需求（零额外 LLM 调用）。
@@ -1484,7 +1675,11 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
     # 会话累积需求 + 本轮抽取：把「前面几轮说过的」送谁 / 场合 / 预算也带进规则基线。
     # 此前只按当前这条消息抽取，一旦 LLM 失败回退 baseline，方案就会缺跨轮补充的信息。
     req = accumulate(session_requirement, extract_requirement(requirements))
-    baseline = _build_plan(req.to_legacy_dict(), shop_id=shop_id)
+    # 用户在这句话里明确不要的花材（「不要满天星」）→ 规则基线直接排除。
+    # ⚠️ 以前只有**改版**路径（revise_with_llm）解析排除，首轮设计完全不看，
+    # 于是「帮我设计一束不要满天星的」照样给满天星（2026-09-20 实测）。
+    exclude = set(_extract_feedback(requirements)['exclude'])
+    baseline = _build_plan(req.to_legacy_dict(), exclude_flowers=exclude, shop_id=shop_id)
     if shop_id:
         baseline['shop_id'] = shop_id
     try:
@@ -1496,6 +1691,8 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
             hard_constraints.append(f"用户明确要求『纯{req.single_flower}』单一花材：禁止混入任何其他花材、配材或叶材（不得出现康乃馨、非洲菊、满天星、尤加利等），design.fillers 与 design.foliage 必须为空数组，main_flowers 只能含「{req.single_flower}」。")
         if req.stem_count is not None:
             hard_constraints.append(f"用户明确要求主花 {req.stem_count} 支（朵），main_flowers 的 qty 必须为 {req.stem_count}。")
+        if exclude:
+            hard_constraints.append(_exclusion_rule(exclude))
         if shop_id:
             hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
@@ -1537,7 +1734,7 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
             if req_merged is not req:
                 logger.info('[requirement] LLM 补召回 stem_count=%s single_flower=%s budget_num=%s colors=%s',
                             req_merged.stem_count, req_merged.single_flower, req_merged.budget_num, req_merged.colors)
-        plan = _merge_plan(baseline, llm_plan)
+        plan = _merge_plan(baseline, llm_plan, exclude_flowers=exclude)
         plan['plan_id'] = baseline['plan_id']
         plan['version'] = baseline.get('version', 1)
         plan['parent_id'] = baseline.get('parent_id')
@@ -1546,6 +1743,21 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
     except Exception:
         logger.exception('[design] LLM 语义生成失败，回退规则引擎')
         return baseline
+
+def _exclusion_rule(exclude: set[str]) -> str:
+    """用户明确不要的花材 → 注入设计/改版 prompt 的硬性约束文案。
+
+    为什么要有（2026-09-20 实测）：用户说「不要满天星」，改版后卡片配材里仍有
+    「满天星×5」，模型自己都在文案里承认「清单里还残留了一条」。
+    光靠「反馈明确要改的维度必须落实」这句泛化要求管不住否定式指令，
+    所以这里把**具体花名**点名列出（与单一花材约束同样的处理方式）。
+    ⚠️ 提示词只是第一道；``_apply_flower_exclusions`` 会在合并后**确定性剔除**，
+    两道一起上才叫保险（模型不听话时兜底能兜住）。
+    """
+    return (f"用户明确不要这些花材：{'、'.join(sorted(exclude))}。"
+            'main_flowers / fillers / foliage 都**不允许出现**它们（不要用同义写法绕开），'
+            'desc 与 diy_steps 等文字里也不得提及，改用其他花材或直接留空。')
+
 
 def _shop_scope_rule(shop_id: str) -> str:
     """店铺锁定场景下的原料约束文案（用户从某家店铺进入时注入设计/改版 prompt）。
@@ -1767,8 +1979,11 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     shop_id = shop_id or str(original.get('shop_id') or '')
     dims = _dims_from_plan(original)
     fb = _extract_feedback(feedback)
+    # 排除项**跨轮继承**：用户上一轮说过「不要满天星」，这一轮只说「换个配色」时不能失效
+    # （`_build_plan` 会把它持久化到 `plan['exclude_flowers']`，这里并集回来）。
+    exclude = set(fb['exclude']) | {str(n) for n in (original.get('exclude_flowers') or [])}
     dims.update(fb['dims'])
-    baseline = _build_plan(dims, version=original.get('version', 1) + 1, parent_id=original.get('plan_id'), exclude_flowers=fb['exclude'], shop_id=shop_id)
+    baseline = _build_plan(dims, version=original.get('version', 1) + 1, parent_id=original.get('plan_id'), exclude_flowers=exclude, shop_id=shop_id)
     if shop_id:
         baseline['shop_id'] = shop_id
     # 继承原方案的单一花材 / 支数约束，避免改版后跑偏。
@@ -1783,6 +1998,8 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
             hard_constraints.append(f"原方案为『纯{original['_single_flower']}』单一花材：除用户反馈明确要求加入其他花材外，必须保持单一花材，禁止混入康乃馨、非洲菊、满天星、尤加利等。")
         if original.get('stem_count') is not None:
             hard_constraints.append(f"原方案主花为 {original['stem_count']} 支，除非反馈要求改数量，否则 qty 保持 {original['stem_count']}。")
+        if exclude:
+            hard_constraints.append(_exclusion_rule(exclude))
         if shop_id:
             hard_constraints.append(_shop_scope_rule(shop_id))
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
@@ -1792,7 +2009,7 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
         user = f'已有方案：{json.dumps(original, ensure_ascii=False)}\n用户反馈：{feedback}\n\n{knowledge}'
         resp = call_llm([{'role': 'system', 'content': system}, {'role': 'user', 'content': user}], response_format={'type': 'json_object'})
         llm_plan = json.loads(resp.choices[0].message.content)
-        new_plan = _merge_plan(baseline, llm_plan)
+        new_plan = _merge_plan(baseline, llm_plan, exclude_flowers=exclude)
         new_plan['plan_id'] = baseline['plan_id']
         new_plan['version'] = original.get('version', 1) + 1
         new_plan['parent_id'] = original.get('plan_id')
