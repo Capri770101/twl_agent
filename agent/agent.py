@@ -33,8 +33,44 @@ from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
 from agent.toolkit import allowed_entities, execute_tool, to_openai_tools
+# 工具与 UI 的元数据集中在 agent/tools_meta.py（review 第 10、11 条）：新增工具 / UI
+# 时只改那一处，不必再在本文件里找 5 个落点。用下划线别名导入，既保持本文件内部既有
+# 引用（`_CARD_UIS` 等）不变，也让既有测试的 `from agent.agent import _DEFERRED_TOOLS` 照常可用。
+from agent.tools_meta import (
+    ACTION_CAPABILITY,
+    CARD_TOOLS as _CARD_TOOLS,
+    CARD_UIS as _CARD_UIS,
+    DEFERRED_TOOLS as _DEFERRED_TOOLS,
+    TERMINAL_TOOLS as _TERMINAL_TOOLS,
+    UI_TO_ACTION,
+)
 from backend.config import settings, setup_logging
 from backend.storage import memory as mem_store
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 关键词表总览与重叠说明（2026-09-20 补，外部 code review 第 8 条）
+#
+# review 指出：关键词表散落在 25+ 个模块级变量里、彼此有重叠、没有优先级机制。
+# 这里给出**清单与冲突说明**（暂不做配置化/搬家 —— 它们被上百处引用，
+# 搬家的风险/收益不划算；而「能一眼看全 + 知道谁和谁重叠」已解决排查时最痛的部分）。
+#
+# | 表 | 用途 | 与谁重叠 / 注意 |
+# |---|---|---|
+# | `_CHITCHAT_WORDS` | 纯寒暄（不触发出卡护栏） | — |
+# | `_AFFIRMATIVE` | 肯定（含「要」） | ⚠️ 与 `_NEGATIVE` 互斥：**判定顺序即优先级**，肯定在后会误命中「不要」 |
+# | `_NEGATIVE` | 否定 | ⚠️ 见上 |
+# | `_IMAGE_DECLINE_WORDS` | 明确拒绝生图 | ⚠️ 含「不要生成」，与 `_NEGATIVE` 的「不要」重叠；专用于生图场景 |
+# | `_IMAGE_TOPIC_WORDS` | 提到生图话题 | — |
+# | `_IMAGE_CLAIM_PATTERNS` / `_IMAGE_FAIL_WORDS` | 谎称已出图识别 | 仅 image 护栏用 |
+# | `_PLATFORM_SHOP_WORDS` / `_PLATFORM_PLAN_WORDS` | 平台事实类提问 | 决定 platform 护栏是否启用 |
+# | `_PLAN_QUESTION_WORDS` | 方案类追问（应按问答作答） | **优先级高于「强制出卡」** |
+# | `_REASONING_META_MARKERS` / `_PROCESS_NARRATION_MARKERS` | 内部独白识别 | 仅 reasoning 护栏用 |
+# | `_RECIPIENT_KW` / `_OCCASION_KW` / `_STYLE_KW` / `_COLOR_KW` / `_MOOD_KW` / `_BUDGET_ORAL` | 需求槽位抽取（在 agent/tools.py） | 同词多义时靠 dict 单一映射，无冲突 |
+#
+# ⚠️ **多表同时命中时，行为由代码里的 if-else 顺序决定**（没有独立的优先级表）。
+# 改这些表或调整判定顺序前，请先跑：
+# `tests/test_intent_signals.py`、`tests/test_intent_negative.py`、`tests/test_run_e2e.py`。
+# ══════════════════════════════════════════════════════════════════════════════
 
 _CHITCHAT_WORDS = ('你好', '您好', '在吗', '在么', '嗨', '哈喽', '谢谢', '感谢', '再见', '拜拜', '哈哈', '辛苦了', '赞', '呵呵')
 
@@ -268,10 +304,7 @@ def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
 _EMPTY_TEXT_FALLBACK = '抱歉，刚才那句我组织得不太清楚。你再说一下想要的风格或用途，我马上给你配一束～'
 _EMPTY_CARD_FALLBACK = '我已经为你整理好相关结果啦，请查看下方卡片～'
 
-_CARD_UIS = (
-    UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD,
-    UIType.PAY_JUMP, UIType.IMAGE_TASK, UIType.GREETING_CARD,
-)
+# `_CARD_UIS`（卡片类 UI 清单）已移到 agent/tools_meta.py —— 文件顶部已别名导入。
 
 
 def _ensure_non_empty_reply(reply: str, ui: UIType) -> str:
@@ -696,14 +729,9 @@ def _platform_nudge_text(entity: str) -> str:
     )
 
 
-_CARD_TOOLS = ('generate_diy_plan', 'revise_diy_plan', 'show_plan_card')
-# 终结工具族：调用其中任一 = 模型在本轮**选定了 UI 输出形态**并结束本轮。
-# 三者返回结构同构（reply / ui / data / stage / intent / 结构化信号），下游统一按
-# respond_args 消费，不必按工具名分支——新增「非文字输出」工具时只需登记到这里。
-_TERMINAL_TOOLS = ('respond_to_user', 'show_plan_card', 'show_options')
-# 延迟工具：**读**同轮其它工具写入的会话状态（生图取「最近一次 DIY 方案」），
-# 所以必须等其余工具执行完再串行跑，不能并进并发批次。
-_DEFERRED_TOOLS = ('generate_effect_image',)
+# `_CARD_TOOLS` / `_TERMINAL_TOOLS` / `_DEFERRED_TOOLS` 已移到 agent/tools_meta.py
+# （那里有「新增工具要改哪几处」的完整清单 + 终结工具 `reply` 必须排第一位的原因）。
+# 文件顶部以别名导入，下方引用保持不变。
 # 「方案类追问」——命中这些词的问句应按知识问答作答，不该被强制拉回出卡
 _PLAN_QUESTION_WORDS = (
     '为什么', '为何', '怎么养', '如何养', '养护', '寓意', '花语', '有毒', '能吃',
@@ -1177,6 +1205,34 @@ def _tool_error_result(tool_name: str, exc: BaseException | None = None) -> str:
         hint = '外部数据源暂时连不上，可稍后重试或如实告知用户查不到'
     payload: dict[str, Any] = {'error': hint, 'tool': tool_name, 'failed': True}
     return json.dumps(payload, ensure_ascii=False)
+
+
+# ── 会话 flag（session_flag）─────────────────────────────────────────────────
+# 2026-09-20 集中化（外部 code review 第 3 条）。此前这些 flag 名是**散落的字符串
+# 字面量**（`set_session_flag(user_id, sid, 'image_confirmed', '1')` 等共 25 处），
+# 既无法枚举，也没有地方写清「何时设置 / 何时清除 / 何时过期」。
+#
+# ⚠️ **命名不一致是历史遗留，且有意保留**：
+# `_FLAG_IMAGE_OPTOUT` 的值是 `'img_optout'`（不是 `'image_optout'`）——
+# 它与 `_FLAG_PREFIX_IMAGE`（`'image_'`）**前缀不同**，所以
+# `clear_session_flags(prefix='image_')` **清不掉它**，必须再单独用
+# `prefix=_FLAG_IMAGE_OPTOUT` 清一次（代码里正是这么打补丁的，这就是 review 说的
+# 「补丁痕迹」）。之所以不直接改名：flag 存在**会话行**里，改名会让存量会话的标记
+# 静默失效（最坏情况：用户明确拒绝过生图，却被再问一次）。要改名请先写数据迁移。
+#
+# | flag | 何时设置 | 何时清除 | 语义 |
+# |---|---|---|---|
+# | `image_confirmed` | 用户对生图表示肯定 | `prefix='image_'` | 已就生图征得过同意 |
+# | `img_optout` | 用户明确拒绝生图 | 单独清（前缀不同，见上） | 本会话不再追问生图 |
+# | `image_forced` | 兜底强制出图后 | `prefix='image_'` | 已强制出过一次，防重复 |
+# | `clarify_asked` | 已追问过一轮缺参 | `prefix='clarify_'` | 「该出卡」判据之一（追问过即算有上下文）|
+_FLAG_IMAGE_CONFIRMED = 'image_confirmed'
+_FLAG_IMAGE_OPTOUT = 'img_optout'
+_FLAG_IMAGE_FORCED = 'image_forced'
+_FLAG_CLARIFY_ASKED = 'clarify_asked'
+_FLAG_PREFIX_IMAGE = 'image_'
+_FLAG_PREFIX_CLARIFY = 'clarify_'
+_FLAG_PREFIX_PLAN = 'plan_'
 
 
 @dataclass
@@ -1694,7 +1750,7 @@ class ReActAgent:
         # 且用户肯定」的快速标记（保守方向：只多标一次 image_confirmed，不触发生图）。
         # 主判据在 _post_process 段 2（_resolve_image：模型信号优先 + 关键词兜底）。
         if stage == SessionStage.IMAGE_GEN and is_affirmative(message):
-            await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
+            await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
         long_term = await mem_store.get_long_term(user_id)
         history = await mem_store.load_history(sid, settings.history_limit)
         # 历史里的方案卡数据（data）不会作为可读内容发给模型 → 抽成摘要注入 prompt，
@@ -1712,7 +1768,7 @@ class ReActAgent:
         _prior_user_turns = sum(1 for m in history if str(m.get('role')) == 'user')
         _has_plan_context = (
             bool(current_plan)
-            or await mem_store.get_session_flag(user_id, sid, 'clarify_asked') == '1'
+            or await mem_store.get_session_flag(user_id, sid, _FLAG_CLARIFY_ASKED) == '1'
             or _prior_user_turns >= 1
         )
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
@@ -1910,22 +1966,11 @@ class ReActAgent:
                 on_event({'event': 'text', 'content': final_reply or ''})
             if ui and ui.value != 'text':
                 on_event({'event': 'card', 'ui': ui.value, 'data': data})
-        action_type = {
-            UIType.PLAN_CARD: AgentActionType.SHOW_PLAN,
-            UIType.SHOP_CARD: AgentActionType.SHOW_SHOP,
-            UIType.ORDER_CARD: AgentActionType.CREATE_ORDER,
-            UIType.PAY_JUMP: AgentActionType.OPEN_PAYMENT,
-            UIType.IMAGE_TASK: AgentActionType.START_IMAGE_TASK,
-            UIType.DIALOG_OPTIONS: AgentActionType.SHOW_OPTIONS,
-            UIType.TEXT: AgentActionType.SHOW_TEXT,
-        }.get(ui, AgentActionType.SHOW_TEXT)
-        capability = {
-            AgentActionType.SHOW_PLAN: 'show_plan_page',
-            AgentActionType.SHOW_SHOP: 'show_shop_page',
-            AgentActionType.CREATE_ORDER: 'create_order',
-            AgentActionType.OPEN_PAYMENT: 'open_payment',
-            AgentActionType.START_IMAGE_TASK: 'start_image_task',
-        }.get(action_type)
+        # UI → 前端动作 / 能力标签 的映射集中在 agent/tools_meta.py（review 第 11 条）：
+        # 新增 UI 类型只改那一处，不必在这里手写两份字典
+        # （原先漏登记会静默退化成 SHOW_TEXT —— 用户看不到卡片，且没有报错）。
+        action_type = UI_TO_ACTION.get(ui, AgentActionType.SHOW_TEXT)
+        capability = ACTION_CAPABILITY.get(action_type)
         action = AgentAction(
             type=action_type,
             payload={'reply': final_reply, 'ui': ui.value, 'data': data, 'stage': new_stage.value},
@@ -2080,23 +2125,23 @@ class ReActAgent:
         _img_want, _img_declined = _resolve_image(message, _img_signal)
 
         # ── 2. 图片确认标记 + 「拒绝生图」的会话级粘性标记 ──
-        # img_optout 用 `img_` 前缀，**不会被 clear_session_flags(prefix='image_') 清掉**：
+        # img_optout 用 `img_` 前缀，**不会被 clear_session_flags(prefix=_FLAG_PREFIX_IMAGE) 清掉**：
         # 用户说「不要效果图」后，即使之后产出新方案也不再自动生图，除非用户又明确要。
         # 修「拒了又硬塞」——此前新方案会无条件重新触发生图，把用户的拒绝冲掉。
         # L1 起：拒绝/想要由「模型信号 ∪ 关键词」判定（decline 取并集，最保守）。
         if _img_declined:
-            await mem_store.set_session_flag(user_id, sid, 'img_optout', '1')
-            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+            await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_OPTOUT, '1')
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
         elif _img_want:
             # 用户又明确要图了 → 撤销退出标记
-            await mem_store.clear_session_flags(user_id, sid, prefix='img_optout')
-            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
-        _img_optout = await mem_store.get_session_flag(user_id, sid, 'img_optout') == '1'
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_IMAGE_OPTOUT)
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
+        _img_optout = await mem_store.get_session_flag(user_id, sid, _FLAG_IMAGE_OPTOUT) == '1'
         if new_stage == SessionStage.IMAGE_GEN and new_stage != incoming:
-            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
-            await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
-        elif (not _img_optout) and _img_want and incoming in (SessionStage.DIY_DESIGN, SessionStage.IMAGE_GEN) and (await mem_store.get_session_flag(user_id, sid, 'image_confirmed') != '1'):
-            await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
+            await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
+        elif (not _img_optout) and _img_want and incoming in (SessionStage.DIY_DESIGN, SessionStage.IMAGE_GEN) and (await mem_store.get_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED) != '1'):
+            await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
 
         # ── 3. 方案确认入库 ──
         # L1：以模型 confirmation 信号为主判据（能理解「好的，就这样吧」这类无「方案」字样的确认），
@@ -2137,7 +2182,7 @@ class ReActAgent:
         # 注：曾有一版「兜底推方案」的硬编码逻辑，现已移除；这里只保留标志清理。
         # （原先残留的 _had_card / _plan_pushed 两个变量计算后从未被使用，已删除。）
         if _wants_alternative(respond_args, message):
-            await mem_store.clear_session_flags(user_id, sid, prefix='plan_')
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_PLAN)
 
         # ── 5. QA 意图过滤 ──
         if llm_intent:
@@ -2156,12 +2201,12 @@ class ReActAgent:
         _diy_produced = any(tc.name in ('generate_diy_plan', 'revise_diy_plan') and tc.status == 'ok' for tc in tool_log)
         _clarify = _clarify_slots(
             message, respond_args, ui, _diy_produced,
-            asked_before=await mem_store.get_session_flag(user_id, sid, 'clarify_asked') == '1',
+            asked_before=await mem_store.get_session_flag(user_id, sid, _FLAG_CLARIFY_ASKED) == '1',
             session_req=session_req,
         )
         _clarified = bool(_clarify)
         if _clarified:
-            await mem_store.set_session_flag(user_id, sid, 'clarify_asked', '1')
+            await mem_store.set_session_flag(user_id, sid, _FLAG_CLARIFY_ASKED, '1')
             ui = UIType.TEXT
             data = {}
             final_reply = _append_clarify(final_reply, _clarify)
@@ -2172,7 +2217,7 @@ class ReActAgent:
             # 否则「追问只做一次、第二次必须给方案」这条规则没有落点：线上实测
             # （2026-09-16）模型第 1 轮纯文字追问没有留下标记 → 第 2 轮用户补齐后
             # 模型既不追问也不出卡，改成用文字写了一段"凭想象"的方案。
-            await mem_store.set_session_flag(user_id, sid, 'clarify_asked', '1')
+            await mem_store.set_session_flag(user_id, sid, _FLAG_CLARIFY_ASKED, '1')
             logger.info('[agent] 模型自报缺信息 %s，标记本会话已追问一次', respond_args.get('missing'))
 
         # ── 6. 方案即生图 ──
@@ -2180,14 +2225,14 @@ class ReActAgent:
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
         # 产出新方案 → 清掉上一张图的补调标记，让新方案能重新触发一次生图
         if diy_done:
-            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
             # 本轮没有追问 = 需求已完整成立，允许将来（新需求）再追问一次
             if not _clarified:
-                await mem_store.clear_session_flags(user_id, sid, prefix='clarify_')
+                await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_CLARIFY)
         if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and (not _img_optout) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
             try:
                 from agent.tools import generate_effect_image as _gei
-                await mem_store.set_session_flag(user_id, sid, 'image_confirmed', '1')
+                await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
                 raw = await _gei('latest_diy', {'user_id': user_id, 'session_id': sid, 'location': location})
                 eff = raw if isinstance(raw, dict) else json.loads(raw) if isinstance(raw, str) else {}
                 if 'task_id' in eff:
@@ -2202,20 +2247,20 @@ class ReActAgent:
         # ── 7. 生图补调（幂等 + 去重 + 意图豁免）──
         # 历史坑：这里曾因「标志永不清除 + 不去重 + 硬编码覆盖回复」造成死循环——
         # 用户说什么都回同一句「正在为您生成效果图预览」，且每句话都新建一个生图任务烧 API。
-        eff_confirmed = await mem_store.get_session_flag(user_id, sid, 'image_confirmed') == '1'
-        eff_forced = await mem_store.get_session_flag(user_id, sid, 'image_forced') == '1'
+        eff_confirmed = await mem_store.get_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED) == '1'
+        eff_forced = await mem_store.get_session_flag(user_id, sid, _FLAG_IMAGE_FORCED) == '1'
         eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
         # 本轮模型**自己**真的调了生图 → 同样标记「本会话已出过图」。否则下一轮只要 ui 不是
         # plan_card 就会再补调一次；线上实测（2026-09-16）：用户随后问「数据库包括哪些」，
         # 系统又白烧一次生图 API（image_forced 原先只在「补调成功」时置位，漏了这条路径）。
         if eff_done:
-            await mem_store.set_session_flag(user_id, sid, 'image_forced', '1')
+            await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_FORCED, '1')
 
         if _img_declined:
             # 意图豁免：用户明确不要生图（模型信号 ∪ 关键词）→ 记**粘性**退出标记 img_optout
             # + 清 image_ 标志，本轮及以后都不再补调（除非用户又明确要图，见第 2 段）。
-            await mem_store.set_session_flag(user_id, sid, 'img_optout', '1')
-            await mem_store.clear_session_flags(user_id, sid, prefix='image_')
+            await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_OPTOUT, '1')
+            await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
             logger.info('[agent] 用户拒绝生图，记录 img_optout 并停止补调')
         elif (eff_confirmed and (not eff_done) and (not eff_forced) and (not _img_optout)
               and (ui != UIType.PLAN_CARD)
@@ -2239,7 +2284,7 @@ class ReActAgent:
                     logger.exception('[agent] 生图补调失败')
             if 'task_id' in eff:
                 # 幂等：标记本会话已补调过，避免之后每轮重复触发
-                await mem_store.set_session_flag(user_id, sid, 'image_forced', '1')
+                await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_FORCED, '1')
                 # 回复主体必须回应用户的发言：生图提示只作追加，绝不顶替模型原答复
                 # （历史坑：曾直接覆盖成固定文案，导致用户说什么都得到同一句）
                 _notice = '（效果图我在生成中，稍等一下就好～）'
