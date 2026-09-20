@@ -90,6 +90,30 @@ def test_claims_ignored_for_plain_generation_words():
     assert not _claims_image_done('数据库里包括商品、店铺、价格、库存这些字段。')
 
 
+def test_claims_detected_on_colloquial_phrasings():
+    """⚠️ 回归（2026-09-20 **生产**实测漏判）：原词表只认书面说法（已提交/已生成/生成中…），
+    用户说「就这款了，帮我生成效果图」，模型**零生图任务**却回
+    「效果图我也同步在跑了」——护栏放行，用户在等一张根本不存在的图。
+
+    补齐两类：①「已经 + 动词」（原表只认「已提交」，不认「已经提交」）；
+    ② 口语进行态（在跑 / 跑起来 / 已安排 / 正在处理）。"""
+    # 生产那两句原话
+    assert _claims_image_done('就它了！效果图我也同步在跑了。')
+    assert _claims_image_done('效果图已经提交，稍等就好。')
+    # 同类口语变体
+    assert _claims_image_done('效果图跑起来了，稍等片刻。')
+    assert _claims_image_done('效果图已安排上了。')
+    assert _claims_image_done('效果图正在处理，马上就好。')
+
+
+def test_claims_ignored_for_explanatory_in_progress():
+    """⚠️ 反例（放宽词表时最容易踩的误伤）：**解释句**里的「在生成」不能算声称。
+    ——「在生成」能出现在「效果图在生成时会用到方案里的花材」这类解释里，
+    所以口语进行态只收「在跑 / 跑起来」这类不可能用于解释的动词。"""
+    assert not _claims_image_done('效果图在生成时会用到方案里的花材，所以要先定方案。')
+    assert not _claims_image_done('效果图生成需要先确认配色，我们再调一版？')
+
+
 # ── _needs_image_nudge ───────────────────────────────────────────────
 
 def test_nudge_fires_when_claiming_without_task():
