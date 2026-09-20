@@ -304,3 +304,37 @@ def test_product_card_matches_reply_across_query_rounds(monkeypatch):
     reply = resp.reply or ''
     assert '4 款' not in reply, '文案自报数量必须与卡片条数一致'
     assert '2 款' in reply, f'数字应被回写为 2 款，实得：{reply}'
+
+
+# ── 场景 6：方案卡 + 待出图（卡片不能被生图任务顶掉）──
+
+def test_diy_card_survives_pending_image_task(monkeypatch):
+    """⚠️ 2026-09-20 生产回归：**方案卡 + 待出图**（生图任务还没出图）时，卡片不能被丢掉。
+
+    线上原症状：这一轮 `ui` 被降级成 `text`、`data` 只剩 `task_id`，已推导出的方案卡
+    **整个消失**，而文案仍在说「方案留在卡片上」「点卡片可以直接下单」——
+    用户看不到任何卡片（呈现与文案不一致）。
+
+    根因：`_post_process` 里那段「生图任务接管 UI」的兜底**无条件**执行，
+    覆盖掉了 `_derive_ui` 已经做对的「卡片优先」（09-16 修过一次同类问题，这里是更后一步）。
+    """
+    import json as _json
+    plan = {'plan_id': 'DIY_x', 'name': '温柔回响', 'price': 299,
+            'design': {'main_flowers': [{'name': '康乃馨', 'qty': 60}]}}
+    turns = [
+        _terminal('generate_diy_plan', '{"requirements": "送妈妈，粉色系，预算300"}', 'c1'),
+        [_chunk(tool_calls=[_tc(0, id='c2', name='generate_effect_image',
+                                args='{"plan": "latest_diy"}')])],
+        _terminal('respond_to_user',
+                  '{"reply": "「温柔回响」这版方案留在卡片上，效果图任务已提交。", '
+                  '"stage": "view_plan", "intent": "design"}', 'c3'),
+    ]
+    _install(monkeypatch, turns, tool_results={
+        'generate_diy_plan': _json.dumps(plan, ensure_ascii=False),
+        'generate_effect_image': _json.dumps({'task_id': 't1', 'poll': '/tasks/t1'}),
+    })
+    resp, _ = _run('就这个，帮我出一张效果图')
+    assert getattr(resp.ui, 'value', resp.ui) == 'plan_card', f'方案卡不能被待出图顶掉，实得 {resp.ui}'
+    data = resp.data or {}
+    assert (data.get('plans') or []), '方案卡内容不能为空'
+    assert data.get('task_id') == 't1', '生图任务信息应挂到卡片 data 上（前端据此轮询补图）'

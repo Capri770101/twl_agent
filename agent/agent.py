@@ -2199,9 +2199,16 @@ class ReActAgent:
             # 为什么（2026-09-16 线上实测）：模型出方案后会顺手调 generate_effect_image，
             # 旧逻辑让生图顶掉了方案卡 —— 用户只看到「效果图正在生成」，拿不到任何方案明细。
             _img_task = _extract_image_task(tool_log)
-            if _img_task.get('task_id') and ui in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.GREETING_CARD):
+            _is_card_ui = ui in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.GREETING_CARD, UIType.ORDER_CARD)
+            if _img_task.get('task_id') and _is_card_ui:
                 data = {**data, **_img_task}
-            if inferred_data.get('task_id'):
+            # ⚠️ 只有**没有卡片可展示**时才让生图任务接管 UI（`not _is_card_ui`）。
+            # 2026-09-20 生产实测：这里原是无条件的 `if inferred_data.get('task_id')`，
+            # 于是「方案卡 + 待出图」这个**常见组合**里 ui 被降级成 TEXT、data 被换成 task_id
+            # —— **已推导出的方案卡被整个丢掉**，而文案还在说「方案留在卡片上」
+            # 「点卡片可以直接下单」，用户却看不到任何卡片（呈现与文案不一致）。
+            # 与上面 09-16 修的「生图顶掉方案卡」是同一类问题，只是发生在更后一步。
+            if inferred_data.get('task_id') and not _is_card_ui:
                 if inferred_data.get('result_url'):
                     ui = UIType.IMAGE_TASK
                     data = {'task_id': inferred_data['task_id'], 'poll': inferred_data.get('poll'), 'result_url': inferred_data['result_url']}
