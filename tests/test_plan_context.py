@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 from agent.agent import ReActAgent, _latest_plan_summary
 
 
-def _plan_msg(name: str, price: float, flowers: list[dict], colors: str) -> dict:
+def _plan_msg(name: str, price: float, flowers: list[dict], colors: list | str) -> dict:
     return {
         'role': 'assistant',
         'content': '方案已生成',
@@ -92,3 +92,81 @@ def test_build_system_injects_plan():
 def test_build_system_omits_plan_when_empty():
     out = ReActAgent._build_system(None, None, {}, current_plan='')  # type: ignore[arg-type]
     assert '会话中的当前方案' not in out
+
+
+# ── 定制方案 vs 商品卡：定制方案优先（2026-09-20 修复）──
+
+def _product_card_msg(*items: tuple[str, float]) -> dict:
+    """现成商品卡：只有名字 / 价格，**没有 ``design.main_flowers``** —— 这是它与定制方案的区别。"""
+    return {
+        'role': 'assistant',
+        'content': '给你挑了几款现成的',
+        'ui': 'plan_card',
+        'data': {'plans': [{'name': n, 'price': p} for n, p in items]},
+    }
+
+
+def test_diy_plan_not_replaced_by_later_product_card():
+    """🔴 回归：模型在定制方案之后又推了现成商品时，**定制方案不能被顶掉**。
+
+    线上真实链路（2026-09-20）：
+      第 2 轮出 DIY 定制方案 → 第 3 轮顺手推了几款成品（「先成品后定制」策略的自然结果）
+      → 第 4 轮注入的方案上下文里**只剩商品**，定制方案数据彻底丢失。
+    后果：模型只能靠上一条回复的文字回忆，把「玫瑰×4＋蝴蝶兰×4」复述成
+    「非洲菊×4＋向日葵×4」；用户说「给这个方案生成效果图」时答非所问地又推荐了一遍成品。
+    """
+    diy = _plan_msg('静默温柔', 178,
+                    [{'name': '洋桔梗', 'qty': 2}, {'name': '玫瑰', 'qty': 2}], ['粉', '白'])
+    products = _product_card_msg(('宫崎骏的夏天', 108), ('四季予你', 88))
+    s = _latest_plan_summary([diy, {'role': 'user', 'content': '就这一版了'}, products])
+    assert '静默温柔' in s, '定制方案被后续的商品卡顶掉了'
+    assert '洋桔梗×2' in s and '玫瑰×2' in s
+    assert '宫崎骏的夏天' not in s, '商品卡不该挤掉定制方案'
+
+
+def test_newer_diy_plan_still_wins():
+    """多版定制方案之间仍取**最新**那版（别被「优先定制」改坏）。"""
+    old = _plan_msg('旧定制', 100, [{'name': '玫瑰', 'qty': 11}], ['红'])
+    new = _plan_msg('新定制', 300, [{'name': '绣球', 'qty': 3}], ['白'])
+    s = _latest_plan_summary([old, new, _product_card_msg(('某成品', 99))])
+    assert '新定制' in s and '旧定制' not in s
+
+
+def test_falls_back_to_product_card_when_no_diy():
+    """会话里没有定制方案时，商品卡仍要注入（否则模型不知道推过什么）。"""
+    s = _latest_plan_summary([_product_card_msg(('宫崎骏的夏天', 108))])
+    assert '宫崎骏的夏天' in s
+
+
+def test_colors_list_rendered_cleanly():
+    """⚠️ ``color_scheme`` 是 list：注入 prompt 必须是「香槟、白」，
+    不能是 ``"['香槟', '白']"``（Python 字面量会干扰模型理解）。"""
+    s = _latest_plan_summary([_plan_msg('测试', 100, [{'name': '玫瑰', 'qty': 5}], ['香槟', '白'])])
+    assert "['" not in s and '"' not in s
+    assert '香槟、白' in s
+
+
+def test_summary_includes_fillers_foliage_and_packaging():
+    """⚠️ 配材 / 叶材 / 包装也要注入 —— 只给主花时模型会**自己编**。
+
+    实测（2026-09-20）：摘要只含主花「洋桔梗×4、玫瑰×4」时，模型在后续轮里凭空补出
+    「2 支勿忘我、1 支尤加利叶」，用户拿这份清单去跟店家核料就会对不上
+    （DIY 方案是要交给店家照做的，用料错 = 做错花）。
+    """
+    hist = [{
+        'role': 'assistant', 'content': '', 'ui': 'plan_card',
+        'data': {'plans': [{
+            'name': '素心致歉', 'price': 99,
+            'design': {
+                'main_flowers': [{'name': '洋桔梗', 'qty': 4}],
+                'fillers': [{'name': '勿忘我', 'qty': 2}],
+                'foliage': [{'name': '尤加利', 'qty': 1}],
+                'color_scheme': ['浅紫', '香槟'],
+                'packaging': '雾面纸',
+            },
+        }]},
+    }]
+    s = _latest_plan_summary(hist)
+    assert '洋桔梗×4' in s
+    assert '勿忘我×2' in s and '尤加利×1' in s, f'配材/叶材没注入：{s}'
+    assert '雾面纸' in s
