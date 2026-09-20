@@ -290,6 +290,30 @@ def _ensure_non_empty_reply(reply: str, ui: UIType) -> str:
     return _EMPTY_CARD_FALLBACK if ui in _CARD_UIS else _EMPTY_TEXT_FALLBACK
 
 
+# 回复里「自报商品数量」的说法：只认「款 / 束」这两个花艺语境的量词。
+# 刻意不含「朵 / 支」——那是单束花的花材数量（如「33 朵玫瑰」）；也不含「种」，
+# 那个常指风格或配色数量，容易与商品数混淆。
+_REPLY_PLAN_COUNT_RE = re.compile(r'(\d+)\s*(?:款|束)')
+
+
+def _reply_declared_count(reply: str) -> int:
+    """从回复里抽出自报的商品数量（「给你挑了 4 款」→ 4）；没有则返回 0。
+
+    取**第一处**匹配。模型自报数量通常出现在开头（「给你挑了 N 款…」），且
+    第一处比「全文取最小」更可预测，避免被后文的「这 8 款里我推荐 4 款」干扰。
+
+    用途见 ``ReActAgent._align_products_with_reply``：工具契约要求模型
+    「先写 reply、再定 plans」（为压低首字延迟），所以那个数字是**猜的**。
+    """
+    match = _REPLY_PLAN_COUNT_RE.search(reply or '')
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _align_card_data_with_reply(ui: UIType, data: dict, reply: str) -> dict:
     """最终回复定型后，把**商品卡**与文案对齐（DIY 方案卡原样保留）。
 
@@ -2408,6 +2432,18 @@ class ReActAgent:
             picked = [r for r in uniq if cls._name_mentioned(str(r.get('name') or ''), reply)]
             if picked:
                 uniq = picked
+            else:
+                # 文案一个商品名都没点名时，再退一步看它是否自报了数量（「给你挑了 4 款」）。
+                # 工具契约要求模型「先写 reply、再定 plans」（压首字延迟），那个数字是猜的 →
+                # 线上实测（2026-09-20）出现过「文案说 4 款、卡片却给满 PRODUCT_CARD_LIMIT 8 款」。
+                # 这里让卡片服从文案，只留前 N 款 —— 与既有「点名则只留点名的」同一套哲学。
+                declared = _reply_declared_count(reply)
+                if 0 < declared < len(uniq):
+                    logger.info(
+                        '[agent] 文案自报 %d 款且未点名 → 卡片截取前 %d 款（原 %d 款）',
+                        declared, declared, len(uniq),
+                    )
+                    uniq = uniq[:declared]
         return uniq[:cls.PRODUCT_CARD_LIMIT]
 
     @staticmethod
