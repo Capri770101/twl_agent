@@ -22,6 +22,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from string import Template
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -409,16 +410,29 @@ _PROMPT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prompts'
 _PROMPT_CACHE: dict[str, str] = {}
 
 
-_RAW_CACHE: dict[str, str] = {}
+# name → (文件 mtime, 原文)。用 **mtime 做失效判定**：改 prompts/*.md 后无需重启即可生效
+# （2026-09-20，review 第 9 条）。原实现是纯进程级字典缓存 —— 改文案必须重启服务，
+# 开发期反复重启很烦；生产环境多一次 os.stat 的开销可忽略。
+_RAW_CACHE: dict[str, tuple[float, str]] = {}
 
 
 def _read_raw_prompt(name: str) -> str:
-    """读取模板原文（未拼接），结果缓存。"""
-    if name not in _RAW_CACHE:
-        path = os.path.join(_PROMPT_DIR, f'{name}.md')
-        with open(path, encoding='utf-8') as handle:
-            _RAW_CACHE[name] = handle.read().strip('\n')
-    return _RAW_CACHE[name]
+    """读取模板原文（未拼接），按**文件 mtime** 判定是否复用缓存。"""
+    path = os.path.join(_PROMPT_DIR, f'{name}.md')
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    cached = _RAW_CACHE.get(name)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    with open(path, encoding='utf-8') as handle:
+        content = handle.read().strip('\n')
+    _RAW_CACHE[name] = (mtime, content)
+    # 拼接后的模板（见 `_load_prompt`）建立在原文之上，必须一并失效 ——
+    # 否则改了 md 仍会拿到旧文案（这正是原实现的坑）。
+    _PROMPT_CACHE.clear()
+    return content
 
 
 def _latest_plan_summary(history: list[dict[str, Any]], max_plans: int = 3) -> str:
@@ -1124,6 +1138,153 @@ def _finalize_reasoning_leak(reply: str, ui: Any) -> str:
     return _REASONING_FALLBACK_CARD if ui in _CARD_UIS else _REASONING_FALLBACK_TEXT
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 回复清理链（显式管道）
+#
+# 2026-09-20 重构（外部 code review 第 2 条「护栏补丁叠补丁」）：
+# 原先这 8 个函数是在 run() 末尾**按固定顺序硬编码串联**的（「隐式清理链」），
+# 顺序语义与彼此依赖只体现在代码行的先后 —— 改一处看不出后果。
+# 现在改成一张显式的阶段表：
+#   · 顺序一眼可见，每步的 `why` 写清它**为什么必须在这个位置**；
+#   · 新增护栏只改这张表，不用再去 360 行的 run() 里找落点；
+#   · `enabled` 显式表达条件步骤（如「仅体验版追加交易边界说明」）；
+#   · tests/test_run_e2e.py 会真跑完整 run()，改表若有意外会被集成测试拦下。
+#
+# ⚠️ 调整顺序前先读各步 `why` —— 其中几步是**互相依赖**的（见 why 里的「必须/否则」）。
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _tool_error_result(tool_name: str, exc: BaseException | None = None) -> str:
+    """把工具失败转成**脱敏后**的 tool 消息（2026-09-20，review 第 6 条）。
+
+    原先回填给模型的是 ``f'工具执行失败: {item}'`` —— 直接把异常 ``repr`` 塞进上下文，
+    可能带出内部路径 / 参数 / 堆栈片段；模型一旦复述，这些就进了用户可见的 `reply`。
+    现在只给「哪类失败 + 该怎么办」，**原始异常只落服务端日志**（调用处已有
+    ``logger.exception``，保留完整 traceback 便于排查）。
+
+    Args:
+        tool_name: 失败的工具名。
+        exc: 原始异常（可为 None，表示非异常原因导致的失败）。
+
+    Returns:
+        JSON 字符串，形如 ``{"error": "查询超时", "tool": "platform_db_query_entity"}``。
+    """
+    hint = '该工具暂时不可用，可换一种方式或改用其它工具'
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        hint = '查询超时，可缩小范围后重试'
+    elif isinstance(exc, (KeyError, ValueError, TypeError)):
+        hint = '参数不被接受，请调整参数后重试（或改用其它工具）'
+    elif isinstance(exc, (ConnectionError, OSError)):
+        hint = '外部数据源暂时连不上，可稍后重试或如实告知用户查不到'
+    payload: dict[str, Any] = {'error': hint, 'tool': tool_name, 'failed': True}
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@dataclass
+class _GuardBudget:
+    """本轮四项确定性护栏的剩余拦截额度（2026-09-20 重构，review 第 1 条）。
+
+    原先这四个计数器（`_platform_nudge_left` 等）是散在 `run()` 局部变量里的，
+    生命周期只存在于 360 行的方法体内、且与 8 个内联拦截点交错 —— 读代码很难看出
+    「谁在什么时候扣了额度」。现在收进一个对象，与 `_check_guards()` 配套使用。
+
+    每项**只拦一次**：模型第二次仍可能违规，但再注入纠正只会白烧一轮 LLM
+    （用户等待时间直接翻倍），所以选择「拦一次 + 确定性兜底」的组合
+    （兜底见 `_finalize_image_claim` / `_finalize_reasoning_leak` / 规则引擎补卡）。
+    """
+
+    platform: int = 1
+    card: int = 1
+    image: int = 1
+    reasoning: int = 1
+
+
+@dataclass(frozen=True)
+class _CleanupStep:
+    """清理链的一步（**顺序即语义**）。"""
+
+    name: str
+    fn: Callable[..., str]
+    why: str                                   # 为什么必须在这个位置（含依赖关系）
+    needs: tuple[str, ...] = ('reply',)        # 除 reply 外还需哪些上下文
+    enabled: Callable[[], bool] | None = None  # 条件步骤（None = 总是执行）
+
+
+_CLEANUP_PIPELINE: tuple[_CleanupStep, ...] = (
+    _CleanupStep(
+        'strip_separator_lines', _strip_separator_lines,
+        '先删独立分隔线（--- / ***）：放最前，避免它被后续步骤当成正文处理',
+    ),
+    _CleanupStep(
+        'strip_internal_leak', _strip_internal_leak,
+        '隐私兜底：清掉工具名 / 内部字段 / 原始数据行。'
+        '**必须早于 XSS 转义** —— 否则转义后的实体会让这里的模式匹配失效',
+    ),
+    _CleanupStep(
+        'neutralize_dangerous_tags', _neutralize_dangerous_tags,
+        'XSS 兜底：reply 虽是纯文本，但不能假设接入端会转义（审计 P0）。'
+        '放在 _strip_internal_leak 之后，避免转义产物被再删一遍',
+    ),
+    _CleanupStep(
+        'ensure_card_summary', _ensure_card_summary,
+        '要点兜底：把卡片数据补成一句可读要点。依赖**已清理过的**正文与卡片数据，'
+        '放这里才能读到干净文本',
+        needs=('reply', 'ui', 'data'),
+    ),
+    _CleanupStep(
+        'ensure_non_empty_reply', _ensure_non_empty_reply,
+        '⚠️ 非空兜底：脱敏可能把正文整段清空 → 用户看到空气泡。必须紧跟清理类步骤',
+        needs=('reply', 'ui'),
+    ),
+    _CleanupStep(
+        'demo_trade_note', _demo_trade_note,
+        '体验版（不承接下单）边界说明：仅在非交易部署下追加',
+        enabled=lambda: not _shop_entity_enabled(),
+    ),
+    _CleanupStep(
+        'finalize_image_claim', _finalize_image_claim,
+        '生图声明兜底：护栏纠正后仍谎称已出图 → 整段换成如实说明'
+        '（不能让用户去找一张不存在的图）',
+        needs=('reply', 'tool_log'),
+    ),
+    _CleanupStep(
+        'finalize_reasoning_leak', _finalize_reasoning_leak,
+        '独白兜底：纠正后仍是「我该怎么回答」→ 整段换成面向用户的话。'
+        '⚠️ 必须放最后：它是**整段替换**，放前面会把后面步骤的产出一起覆盖掉',
+        needs=('reply', 'ui'),
+    ),
+)
+
+
+def _run_cleanup_pipeline(reply: str, *, ui: UIType, data: dict[str, Any],
+                          tool_log: list[Any]) -> str:
+    """按 :data:`_CLEANUP_PIPELINE` 顺序执行回复清理（顺序即语义，见各步 ``why``）。
+
+    Args:
+        reply: ``_post_process`` 产出的原始回复。
+        ui: 本轮产出类型（卡片类步骤需要）。
+        data: 卡片数据（要点兜底需要）。
+        tool_log: 本轮工具调用记录（生图声明兜底需要）。
+
+    Returns:
+        清理后的最终回复。
+    """
+    for step in _CLEANUP_PIPELINE:
+        if step.enabled is not None and not step.enabled():
+            continue
+        # ⚠️ 正文用**位置参数**传：这 8 个函数的历史参数名不统一
+        # （前 3 个叫 `text`、后 5 个叫 `reply`），统一按关键字会 TypeError
+        # —— 集成测试第一次跑就抓到了这点。
+        kwargs: dict[str, Any] = {}
+        if 'ui' in step.needs:
+            kwargs['ui'] = ui
+        if 'data' in step.needs:
+            kwargs['data'] = data
+        if 'tool_log' in step.needs:
+            kwargs['tool_log'] = tool_log
+        reply = step.fn(reply, **kwargs)
+    return reply
+
+
 _IMAGE_DECLINE_WORDS = (
     '不要生成', '不用生成', '别生成', '不生成', '不要出图', '不用出图', '别出图',
     '取消生图', '不要效果图', '不用效果图', '别效果图', '不要预览图', '不用预览图',
@@ -1542,14 +1703,12 @@ class ReActAgent:
         # 本轮问的是平台事实类信息（店铺/商品）→ 注入「必须先查证」指令，防编造（见 _platform_fact_hint）
         platform_facts = _platform_fact_hint(message)
         platform_sources = _platform_source_ids()
-        _platform_nudge_left = 1  # 「未查证即作答」只纠正一次，避免与模型拉锯
+        # 四项确定性护栏的剩余额度（逻辑统一在 _check_guards()，这里只管状态）。
+        _guards = _GuardBudget()
         # 「只有文字没出卡」的判定上下文。三条任一成立即算「该出卡了」：
         #   ① 历史里已有方案卡；② 本会话已追问过一轮；③ **用户已经说过话（非首轮）**。
         # ③ 是必需的兜底：实测模型在纯文字追问时**并不填 `missing`**，也不产出卡片，
         #    于是 ② 永远落不上标记（2026-09-16 二次复现），只能按轮次兜住。
-        _card_nudge_left = 1
-        _image_nudge_left = 1  # 「谎称已生成效果图」也只纠正一次
-        _reasoning_nudge_left = 1  # 「把内部独白当回复」同样只纠正一次
         _prior_user_turns = sum(1 for m in history if str(m.get('role')) == 'user')
         _has_plan_context = (
             bool(current_plan)
@@ -1632,7 +1791,7 @@ class ReActAgent:
                             # 这里防的是它之外的问题——如取消/超时）。
                             logger.exception('[agent] 并发工具执行异常: %s',
                                              tool_calls[i]['name'], exc_info=item)
-                            results[i] = (f'工具执行失败: {item}', 'error')
+                            results[i] = (_tool_error_result(tool_calls[i]['name'], item), 'error')
                         else:
                             results[i] = item
                     logger.info('[agent] 同轮并发执行 %d 个工具: %s',
@@ -1665,81 +1824,37 @@ class ReActAgent:
                     # 修店铺分支后，问「推荐送妈妈的花束」又编造了 3 个不存在的商品名与价格。
                     # 这里做**确定性拦截**：注入一次性纠正（只进本轮 LLM 上下文，不落库、不入历史），
                     # 要求先查再答；只拦一次，避免与模型拉锯。
-                    if (_platform_nudge_left and platform_facts and platform_sources
-                            and not _platform_queried(tool_log, platform_facts)):
-                        _platform_nudge_left -= 1
-                        messages.append({'role': 'user', 'content': _platform_nudge_text(platform_facts)})
+                    # 四项确定性护栏（未查证即答 / 该出卡只写文字 / 谎称已出图 / 内部独白）。
+                    # 判定逻辑统一在 _check_guards()，这里只处理「命中 → 注入纠正 → 重答」。
+                    # 原先这 4 段是内联在这里的（约 40 行），与另一条零工具调用路径重复。
+                    _hit = self._check_guards(
+                        budget=_guards, tool_log=tool_log, message=message,
+                        has_plan_context=_has_plan_context,
+                        reply=str((respond_args or {}).get('reply') or final_reply or ''),
+                        platform_facts=platform_facts, platform_sources=platform_sources,
+                        zero_tool_call=False,
+                    )
+                    if _hit:
+                        messages.append({'role': 'user', 'content': _hit[1]})
                         respond_args = None
-                        logger.warning(
-                            '[agent] 平台事实类提问未查询平台（entity=%s），已注入纠正并要求重答', platform_facts,
-                        )
-                        continue
-                    # 「只有文字、没有方案卡」→ 同样拦一次。
-                    # 线上实测（2026-09-16）：已有方案的会话里，用户补一句「生日，粉色系，你决定就好」，
-                    # 模型零工具调用直接写了两个方案（其中一个商品名平台上根本不存在）。
-                    if _card_nudge_left and _needs_card_nudge(
-                            message, tool_log, _has_plan_context,
-                            str((respond_args or {}).get('reply') or final_reply or '')):
-                        _card_nudge_left -= 1
-                        messages.append({'role': 'user', 'content': _card_nudge_text()})
-                        respond_args = None
-                        logger.warning('[agent] 本轮只产出文字、未生成方案卡，已注入纠正并要求重答')
-                        continue
-                    # 「谎称已生成效果图」→ 同样拦一次（没有 task_id 就不能说图的存在）。
-                    if _image_nudge_left and _needs_image_nudge(
-                            tool_log, str((respond_args or {}).get('reply') or final_reply or '')):
-                        _image_nudge_left -= 1
-                        messages.append({'role': 'user', 'content': _image_nudge_text()})
-                        respond_args = None
-                        logger.warning('[agent] 未提交生图任务却声称已出图，已注入纠正并要求重答')
-                        continue
-                    # 「把内部独白当回复」→ 同样拦一次。实测这条路径（零工具调用直接回文字）
-                    # 正是泄漏高发处：模型把"我该怎么答"的推理当成了回复。
-                    if _reasoning_nudge_left and _needs_reasoning_nudge(
-                            str((respond_args or {}).get('reply') or final_reply or '')):
-                        _reasoning_nudge_left -= 1
-                        messages.append({'role': 'user', 'content': _reasoning_nudge_text()})
-                        respond_args = None
-                        logger.warning('[agent] 回复里出现内部独白，已注入纠正并要求重答')
                         continue
                     break
                 continue
             else:
                 final_reply = getattr(msg, 'content', '') or ''
-                # ⚠️ 模型**一个工具都没调**、直接回一段文字，同样可能是「该出卡却只写文字」。
-                # 两条护栏在这里也必须生效——此前它们只守在 `respond_to_user` 分支里，
-                # 线上实测（2026-09-16）模型正是走了这条路径（零工具调用、4.5 秒回文字），
-                # 导致护栏形同虚设、还谎称「明细在卡片里」。
-                if (_platform_nudge_left and platform_facts and platform_sources
-                        and not _platform_queried(tool_log, platform_facts)):
-                    _platform_nudge_left -= 1
+                # ⚠️ 模型**一个工具都没调**、直接回一段文字时，四项护栏同样必须生效 ——
+                # 线上实测（2026-09-16）护栏漏洞正是出在这条路上：零工具调用、4.5 秒回文字，
+                # 护栏形同虚设、还谎称「明细在卡片里」。
+                _hit = self._check_guards(
+                    budget=_guards, tool_log=tool_log, message=message,
+                    has_plan_context=_has_plan_context, reply=final_reply,
+                    platform_facts=platform_facts, platform_sources=platform_sources,
+                    zero_tool_call=True,
+                )
+                if _hit:
                     messages.append({'role': 'assistant', 'content': final_reply})
-                    messages.append({'role': 'user', 'content': _platform_nudge_text(platform_facts)})
+                    messages.append({'role': 'user', 'content': _hit[1]})
                     final_reply = ''
-                    logger.warning('[agent] 未调工具即答平台事实（entity=%s），已注入纠正并要求重答', platform_facts)
-                    continue
-                if _card_nudge_left and _needs_card_nudge(message, tool_log, _has_plan_context, final_reply):
-                    _card_nudge_left -= 1
-                    messages.append({'role': 'assistant', 'content': final_reply})
-                    messages.append({'role': 'user', 'content': _card_nudge_text()})
-                    final_reply = ''
-                    logger.warning('[agent] 未调工具且未出卡，已注入纠正并要求重答')
-                    continue
-                # 「谎称已生成效果图」在这条路径同样成立（实测正是这条路：零工具调用直接回文字）。
-                if _image_nudge_left and _needs_image_nudge(tool_log, final_reply):
-                    _image_nudge_left -= 1
-                    messages.append({'role': 'assistant', 'content': final_reply})
-                    messages.append({'role': 'user', 'content': _image_nudge_text()})
-                    final_reply = ''
-                    logger.warning('[agent] 未提交生图任务却声称已出图，已注入纠正并要求重答')
-                    continue
-                # 「把内部独白当回复」在这条路径尤其常见（寒暄类消息最容易触发）。
-                if _reasoning_nudge_left and _needs_reasoning_nudge(final_reply):
-                    _reasoning_nudge_left -= 1
-                    messages.append({'role': 'assistant', 'content': final_reply})
-                    messages.append({'role': 'user', 'content': _reasoning_nudge_text()})
-                    final_reply = ''
-                    logger.warning('[agent] 回复里出现内部独白，已注入纠正并要求重答')
                     continue
                 messages.append({'role': 'assistant', 'content': final_reply})
                 break
@@ -1751,7 +1866,7 @@ class ReActAgent:
         # ── 兜底出卡：纠正过一次后模型仍不肯出卡 → 用**规则引擎**确定性地补一张 ──
         # 线上实测（2026-09-16）：模型连续两轮都只写文字，还谎称「明细在卡片里」。
         # 与其让客户看到一张不存在的卡，不如给一张朴素但真实的方案卡（零 LLM 成本）。
-        if (_card_nudge_left == 0 and not _card_produced(tool_log)
+        if (_guards.card == 0 and not _card_produced(tool_log)
                 and _needs_card_nudge(message, tool_log, _has_plan_context, final_reply)):
             try:
                 from agent.tools import _build_plan, extract_requirement
@@ -1775,30 +1890,10 @@ class ReActAgent:
         # 调 _derive_ui 时 reply 还没被 respond_to_user 覆盖，在那里按文案过滤会失效
         # （线上实测：文案推 5 款、卡片给 8 款无关商品）。
         data = _align_card_data_with_reply(ui, data, final_reply)
-        # 排版兜底：删掉 LLM 回复里独立的分隔线行（--- / *** / ——），改为靠 prompt
-        # 规则让其用数字编号分段；此处只做删除不做改写，不碰卡片数据。
-        final_reply = _strip_separator_lines(final_reply)
-        # 隐私兜底：去掉回复里残留的工具名 / 内部字段 / 原始数据行，
-        # 确保数据库查询结果与内部实现不出现在前端（prompt 约束 + 代码兜底双保险）。
-        final_reply = _strip_internal_leak(final_reply)
-        # XSS 兜底：把回复里的危险 HTML 标签转义掉。reply 是纯文本，但任何不转义的
-        # 接入端都会把 <script> 原样渲染 —— 安全不能只靠下游自觉（2026-09-18 审计 P0）。
-        final_reply = _neutralize_dangerous_tags(final_reply)
-        # 要点兜底：带卡片但回复过短时，追加一句基于卡片数据的可读要点
-        # （模型有卡片时倾向只说「看卡片」，prompt 约束不稳定，此处确定性补齐）。
-        final_reply = _ensure_card_summary(final_reply, ui, data)
-        # 非空兜底：脱敏可能把正文整段清空（模型把原始数据行当正文输出时），
-        # 纯文本场景下此前的兜底覆盖不到 → 用户看到空气泡。此处必须放在清理链**最后**。
-        final_reply = _ensure_non_empty_reply(final_reply, ui)
-        # 体验版（不承接下单）兜底：回复里若提到交易，补一句边界说明。
-        if not _shop_entity_enabled():
-            final_reply = _demo_trade_note(final_reply)
-        # 生图声明兜底：护栏纠正后仍谎称已出图 → 整段换成如实说明
-        # （用户不该被引导去找一张不存在的图）。
-        final_reply = _finalize_image_claim(final_reply, tool_log)
-        # 内部独白兜底：纠正后仍是「我该怎么回答」的推理 → 整段换成面向用户的话
-        # （用户读到模型的自我分析，比回复平淡严重得多）。
-        final_reply = _finalize_reasoning_leak(final_reply, ui)
+        # 回复清理链：顺序、依赖与条件步骤统一在 _CLEANUP_PIPELINE 一张表里
+        # （原先这 8 步是硬编码散在这里的，顺序语义只能靠读代码推断 —— review 第 2 条）。
+        # ⚠️ 改清理逻辑请改那张表，不要在这里加调用。
+        final_reply = _run_cleanup_pipeline(final_reply, ui=ui, data=data, tool_log=tool_log)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
@@ -1838,6 +1933,63 @@ class ReActAgent:
             fallback=final_reply or '当前平台暂未实现对应能力，请使用文本方式继续引导。',
         )
         return ChatResponse(user_id=user_id, reply=final_reply, ui=ui, data=data, action=action, tool_calls=tool_log, session_id=sid, stage=new_stage.value, products=self._extract_products(tool_log))
+
+    def _check_guards(
+        self, *, budget: '_GuardBudget', tool_log: list[ToolCallRecord], message: str,
+        has_plan_context: bool, reply: str, platform_facts: str,
+        platform_sources: list[str], zero_tool_call: bool,
+    ) -> tuple[str, str] | None:
+        """检查四项确定性护栏；命中则扣额度并返回 ``(护栏名, 纠正文案)``。
+
+        **为什么需要这道闸**：prompt 是软约束，而这四类缺陷属于「模型行为」而非
+        「模型理解」—— 光靠提示词拦不住（线上反复复现）。分工是：
+        **护栏管「不许做什么」，prompt 管「怎么理解用户」**。
+
+        覆盖的四类：
+        - ``platform``：未查证即答平台事实（编造店名 / 商品 / 价格）
+        - ``card``：该出卡却只写文字（最危险的模型行为 —— 用户被告知「明细在卡片里」，
+          而卡片根本不存在）
+        - ``image``：没提交生图任务却声称已出图（引导用户去找一张不存在的图）
+        - ``reasoning``：把内部独白当回复（用户读到「我该怎么回答」的自我分析）
+
+        ⚠️ **两条路径都要跑**（由 ``zero_tool_call`` 区分），漏掉任何一条都会让护栏失效：
+        - ``respond_to_user`` 分支：模型调了终结工具，但内容违规；
+        - **零工具调用**分支：模型直接回一段文字 —— 线上实测（2026-09-16）护栏漏洞
+          正是出在这条路上（零工具调用、4.5 秒回文字，护栏形同虚设还谎称有卡片）。
+
+        Args:
+            budget: 四项护栏的剩余额度（命中后原地扣减）。
+            tool_log: 本轮工具调用记录（判断是否查过平台 / 出过卡 / 提交过生图）。
+            message: 用户原话。
+            has_plan_context: 会话是否已有方案上下文（出卡护栏的判据之一）。
+            reply: 模型本轮给出的回复文本。
+            platform_facts: 本轮提问涉及的平台实体（空串表示不是平台事实类提问）。
+            platform_sources: 可用的平台数据源（空列表表示没接平台，不该拦）。
+            zero_tool_call: 是否走「模型一个工具都没调」的分支（仅用于日志措辞）。
+
+        Returns:
+            ``(护栏名, 纠正文案)``；四项都没命中时返回 ``None``。
+        """
+        _where = '未调工具且' if zero_tool_call else ''
+        if (budget.platform and platform_facts and platform_sources
+                and not _platform_queried(tool_log, platform_facts)):
+            budget.platform -= 1
+            logger.warning('[agent] %s未查证即答平台事实（entity=%s），已注入纠正并要求重答',
+                           _where, platform_facts)
+            return 'platform', _platform_nudge_text(platform_facts)
+        if budget.card and _needs_card_nudge(message, tool_log, has_plan_context, reply):
+            budget.card -= 1
+            logger.warning('[agent] %s本轮只产出文字、未生成方案卡，已注入纠正并要求重答', _where)
+            return 'card', _card_nudge_text()
+        if budget.image and _needs_image_nudge(tool_log, reply):
+            budget.image -= 1
+            logger.warning('[agent] %s未提交生图任务却声称已出图，已注入纠正并要求重答', _where)
+            return 'image', _image_nudge_text()
+        if budget.reasoning and _needs_reasoning_nudge(reply):
+            budget.reasoning -= 1
+            logger.warning('[agent] %s回复里出现内部独白，已注入纠正并要求重答', _where)
+            return 'reasoning', _reasoning_nudge_text()
+        return None
 
     async def _post_process(
         self, respond_args, tool_log, incoming, message, final_reply,

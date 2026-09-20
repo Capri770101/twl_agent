@@ -70,6 +70,11 @@ async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) 
     return json.dumps(new_plan, ensure_ascii=False)
 
 
+# ⚠️ 这里不是「重复定义」，别删任何一边（2026-09-20 外部 code review 曾误判为重复）：
+# 本文件只负责**注册**（对外 schema + 工具描述），真正实现在
+# `agent/tools.py::generate_effect_image` —— 那里还被 agent 的「兜底出图」逻辑
+# 直接 import 复用（agent.py 内两处 `from agent.tools import generate_effect_image`）。
+# 分两层是为了让「对外 schema」与「内部实现」各自演进；本文件是薄转发壳。
 @register_tool(name='generate_effect_image', description='为 DIY 方案提交 AI 生图任务，立即返回 task_id（客户端通过 GET /tasks/{task_id} 轮询取图）。用户想看效果图、或你给出方案后希望让他看到成品样子时，**由你主动调用它**；只有拿到 task_id 才算真的提交了任务——没拿到就不能说图已生成。若传入 latest_diy 则使用最近一次设计的方案生成精确 prompt（花材/色彩/形态/包装与方案一致）；也可直接传入自定义描述。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '方案描述或方案 ID；latest/latest_diy 表示使用最近设计的方案'}}, 'required': ['plan']}, tags=['image'], inject_context=True)
 async def generate_effect_image(plan: str='latest_diy', _context: dict | None=None) -> str:
     from agent.tools import generate_effect_image as _generate_effect_image
