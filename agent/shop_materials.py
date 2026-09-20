@@ -127,17 +127,20 @@ def available_materials(shop_id: str) -> set[str] | None:
     if not sid:
         return None
     now = time.time()
-    hit = _CACHE.get(sid)
+    from backend.data_gateway.access import cache_scope
+    scope = cache_scope()
+    key = sid if scope is None else (scope, sid)
+    hit = _CACHE.get(key)
     if hit and now - hit[0] < _TTL:
         return hit[1]
     with _LOCK:
-        hit = _CACHE.get(sid)  # 双检：并发下只让一个线程真正去拉
+        hit = _CACHE.get(key)  # 双检：并发下只让一个线程真正去拉
         if hit and time.time() - hit[0] < _TTL:
             return hit[1]
         found = _fetch(sid)
         if found is None:
             return None
-        _CACHE[sid] = (time.time(), found)
+        _CACHE[key] = (time.time(), found)
         logger.info('[shop_materials] 店铺 %s 可提供花材 %d 种：%s', sid, len(found), '、'.join(sorted(found)) or '(空)')
         return found
 
@@ -148,4 +151,7 @@ def clear_cache(shop_id: str | None = None) -> None:
         if shop_id is None:
             _CACHE.clear()
         else:
-            _CACHE.pop(str(shop_id).strip(), None)
+            sid = str(shop_id).strip()
+            for key in list(_CACHE):
+                if key == sid or (isinstance(key, tuple) and key[1] == sid):
+                    _CACHE.pop(key, None)

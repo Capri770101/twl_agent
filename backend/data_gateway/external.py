@@ -43,6 +43,8 @@ _MYSQL_PREFIXES = ('mysql://', 'mysql+pymysql://')
 # 方言无关的辅助函数
 # --------------------------------------------------------------------------- #
 def _source_url(source_id: str) -> str:
+    from backend.data_gateway.access import require_source
+    require_source(source_id)
     if not _IDENTIFIER.match(source_id or ''):
         raise ValueError('invalid external source id')
     env_name = f'PLATFORM_DB_{source_id.upper()}_URL'
@@ -428,6 +430,8 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
     2. 未配库但配了 ``PLATFORM_API_<SOURCE_ID>_URL`` → 走平台 REST 只读通路
        （见 ``backend/data_gateway/http_source.py``，免 mapping）。
     """
+    from backend.data_gateway.access import require_public_entity
+    require_public_entity(source_id, entity)
     if not _IDENTIFIER.match(entity or ''):
         raise ValueError('invalid entity')
     # HTTP 数据源：绕开「必须有 active mapping」的硬要求（平台已提供等价的 REST 只读能力）
@@ -465,11 +469,15 @@ def query_external_entity(source_id: str, entity: str, keyword: str = '', limit:
         if keyword and name_col:
             conditions.append(_ilike_expr(dialect, _quote_ident(dialect, name_col)))
             params.append(f'%{keyword}%')
-        shop_col = columns.get('shop_id')
+        shop_col = columns.get('id') if entity == 'shop' else columns.get('shop_id')
+        if shop_id and not shop_col:
+            raise PermissionError('数据映射缺少店铺过滤字段，无法执行锁店查询')
         if shop_id and shop_col:
             conditions.append(_shop_eq_expr(dialect, _quote_ident(dialect, shop_col)))
             params.append(str(shop_id))
         id_col = columns.get('id')
+        if row_id and not id_col:
+            raise PermissionError('数据映射缺少主键字段，无法执行精确查询')
         if row_id and id_col:
             # 按主键精确查单行：用户从商品详情页进入时，取他正在看的那件商品。
             # 注意：外部连接是原生 psycopg / pymysql，占位符必须写 %s（? 是内部库适配层的写法）。

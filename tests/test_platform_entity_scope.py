@@ -67,7 +67,7 @@ def test_removes_shop_from_tool_description(monkeypatch):
 def test_unrestricted_keeps_original_schema(monkeypatch):
     _set_allowed(monkeypatch, '')
     ent = _entity_spec().parameters['properties']['entity']
-    assert 'enum' not in ent
+    assert ent['enum'] == ['plan', 'shop']
     assert 'shop' in _entity_spec().description
     assert 'shop' in ent['description']
 

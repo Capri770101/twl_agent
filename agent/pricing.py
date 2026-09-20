@@ -515,11 +515,14 @@ def price_table(shop_id: str = '') -> PriceTable:
 
 def _fit_cached(shop_id: str) -> PriceTable | None:
     """带缓存的该店拟合（失败结果也缓存，避免每次都去拉一遍）。"""
-    hit = _CACHE.get(shop_id)
+    from backend.data_gateway.access import cache_scope
+    scope = cache_scope()
+    key = shop_id if scope is None else (scope, shop_id)
+    hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < _TTL:
         return hit[1]
     with _LOCK:
-        hit = _CACHE.get(shop_id)              # 双检：并发下只让一个线程真去拉
+        hit = _CACHE.get(key)              # 双检：并发下只让一个线程真去拉
         if hit and time.time() - hit[0] < _TTL:
             return hit[1]
         table: PriceTable | None = None
@@ -528,7 +531,7 @@ def _fit_cached(shop_id: str) -> PriceTable | None:
             table = fit_from_rows(rows, shop_id)
         if table is None:
             logger.info('[pricing] 店铺 %s 样本不足或取数失败 → 降级到全网基线', shop_id)
-        _CACHE[shop_id] = (time.time(), table)
+        _CACHE[key] = (time.time(), table)
         return table
 
 
@@ -538,4 +541,7 @@ def clear_cache(shop_id: str | None = None) -> None:
         if shop_id is None:
             _CACHE.clear()
         else:
-            _CACHE.pop(str(shop_id).strip(), None)
+            sid = str(shop_id).strip()
+            for key in list(_CACHE):
+                if key == sid or (isinstance(key, tuple) and key[1] == sid):
+                    _CACHE.pop(key, None)

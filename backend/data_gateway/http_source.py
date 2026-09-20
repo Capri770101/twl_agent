@@ -415,6 +415,8 @@ def fetch_entity(
         ValueError: entity 非法或不支持。
         RuntimeError: 未配置 / 请求失败 / 平台业务码非 0。
     """
+    from backend.data_gateway.access import require_source
+    require_source(source_id)
     if not _IDENTIFIER.match(entity or ''):
         raise ValueError('invalid entity')
     resource = ENTITY_RESOURCES.get(entity)

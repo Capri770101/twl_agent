@@ -114,4 +114,19 @@ def record_llm(prompt_tokens: int = 0, completion_tokens: int = 0, error: bool =
     当前 token 级统计未在指标面板需求内，且跨线程无法安全关联到 call_log，
     故保持无副作用。如需启用，可在此按显式 cid 累加 token。
     """
-    return
+    cid = get_call_context()
+    if cid is None or error:
+        return
+    # 计费记录必须能在超时后入账，不受业务写入取消检查影响。
+    from backend.execution import current
+    token = current.set(None)
+    try:
+        with transaction() as conn:
+            conn.execute(
+                'UPDATE call_logs SET prompt_tokens=prompt_tokens+?, completion_tokens=completion_tokens+? WHERE id=?',
+                (int(prompt_tokens or 0), int(completion_tokens or 0), cid),
+            )
+    except Exception:
+        logger.warning('[observability] token 用量写入失败 cid=%s', cid, exc_info=True)
+    finally:
+        current.reset(token)

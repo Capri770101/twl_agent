@@ -16,6 +16,32 @@ if str(ROOT) not in sys.path:
 from agent.agent import ReActAgent, _latest_plan_summary
 
 
+def test_current_plan_survives_history_window(monkeypatch):
+    import asyncio
+    import agent.agent as agent_module
+
+    async def saved_plan(user_id, session_id, key):
+        assert (user_id, session_id, key) == ('u', 's', 'latest_diy_plan')
+        return {'name': '最新定制', 'design': {'main_flowers': [{'name': '玫瑰', 'qty': 9}]}}
+
+    monkeypatch.setattr(agent_module.mem_store, 'get_session_json', saved_plan)
+    summary = asyncio.run(agent_module._current_plan_summary('u', 's', [_product_card_msg(('旧商品', 100))]))
+    assert '最新定制' in summary and '玫瑰×9' in summary
+    assert '旧商品' not in summary
+
+
+def test_current_plan_falls_back_to_history(monkeypatch):
+    import asyncio
+    import agent.agent as agent_module
+
+    async def missing(*args):
+        return None
+
+    monkeypatch.setattr(agent_module.mem_store, 'get_session_json', missing)
+    summary = asyncio.run(agent_module._current_plan_summary('u', 's', [_product_card_msg(('当前商品', 100))]))
+    assert '当前商品' in summary
+
+
 def _plan_msg(name: str, price: float, flowers: list[dict], colors: list | str) -> dict:
     return {
         'role': 'assistant',

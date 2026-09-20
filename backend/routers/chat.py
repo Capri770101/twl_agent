@@ -214,7 +214,7 @@ async def chat(
         try:
             result = await asyncio.wait_for(
                 get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
-                                 entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title),
+                                 entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform),
                 timeout=settings.REQUEST_TIMEOUT
             )
         except asyncio.TimeoutError:
@@ -277,8 +277,10 @@ async def chat_stream(
             return
         try:
             async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
-                                                     entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title):
+                                                     entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform):
                 event_type = evt.get('event', 'text')
+                if event_type == 'error':
+                    _ok = False
                 data = {k: v for k, v in evt.items() if k != 'event'}
                 if event_type == 'done':
                     # AIGC 标识（GB 45438-2025）：与非流式 /chat 的 ChatResponse 保持同一口径，

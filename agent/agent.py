@@ -564,6 +564,16 @@ def _read_raw_prompt(name: str) -> str:
     return content
 
 
+async def _current_plan_summary(user_id: str, session_id: str, history: list[dict[str, Any]]) -> str:
+    """优先读取工具保存的最新 DIY 方案，避免方案被历史窗口截断。"""
+    plan = await mem_store.get_session_json(user_id, session_id, 'latest_diy_plan')
+    if isinstance(plan, dict) and isinstance(plan.get('design'), dict) and plan['design'].get('main_flowers'):
+        summary = _latest_plan_summary([{'role': 'assistant', 'data': {'plans': [plan]}}])
+        if summary:
+            return summary
+    return _latest_plan_summary(history)
+
+
 def _latest_plan_summary(history: list[dict[str, Any]], max_plans: int = 3) -> str:
     """取最近一次方案卡的可读摘要（供 system prompt 注入，作为权威方案数据）。
 
@@ -741,17 +751,8 @@ def _platform_source_ids() -> list[str]:
     未配置任何平台数据源时返回空列表，供 system prompt 如实告知 LLM。
     注：``PLATFORM_API_KEYS``（接入方鉴权）不以 ``_URL`` 结尾，天然不会被误判成数据源。
     """
-    ids: set[str] = set()
-    for key in os.environ:
-        if not key.endswith('_URL'):
-            continue
-        for prefix in ('PLATFORM_DB_', 'PLATFORM_API_'):
-            if key.startswith(prefix):
-                mid = key[len(prefix):-len('_URL')]
-                if mid:
-                    ids.add(mid.lower())
-                break
-    return sorted(ids)
+    from backend.data_gateway.access import visible_sources
+    return visible_sources()
 
 
 # 用户此轮是否在问「平台事实类」信息（店铺 / 商品）——命中则在**本轮** system prompt 追加
@@ -1733,15 +1734,19 @@ def _append_clarify(reply: str, slots: list[str]) -> str:
     tail = f'在给你定方案之前，想先确认一下：{asks}？'
     return f'{base}\n{tail}' if base else tail
 
+from backend.data_gateway.access import scoped_agent_run
+from backend.execution import run_worker, checkpoint
+
+
 class ReActAgent:
     """基于 ReAct + 状态机的导购智能体。"""
 
-    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
+    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None) -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(_AGENT_EXECUTOR, lambda: asyncio.run(self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)))
+        return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id), user_id, settings.request_timeout)
 
-    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None):
+    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None):
         """流式异步入口：yield SSE 事件字典，供 /chat/stream 消费。
 
         事件类型：
@@ -1761,14 +1766,16 @@ class ReActAgent:
 
             def _on_event(evt: dict) -> None:
                 """run() 线程中调用，线程安全地把事件推入 async Queue。"""
-                loop.call_soon_threadsafe(queue.put_nowait, evt)
+                checkpoint()
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(queue.put_nowait, evt)
 
             async def _run():
                 # 关键（P0）：无论成功 / 异常 / 超时，都必须补一个 None 结束哨兵，
                 # 否则消费端 `await queue.get()` 会永久阻塞 —— SSE 挂死、用户转圈不停。
                 try:
                     result = await asyncio.wait_for(
-                        loop.run_in_executor(_AGENT_EXECUTOR, lambda: asyncio.run(self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title))),
+                        run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id), user_id, settings.request_timeout),
                         timeout=settings.request_timeout,
                     )
                     # done 事件带**经清理链处理过**的完整结果：流式期间推的是模型原始
@@ -1809,6 +1816,7 @@ class ReActAgent:
             logger.exception('[agent] arun_stream 异常')
             yield {'event': 'error', 'message': f'智能体执行失败: {type(exc).__name__}'}
 
+    @scoped_agent_run
     async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
         t0 = time.perf_counter()
         # 本轮硬性时间预算（P0 防线程裸跑）：比调用方 wait_for(REQUEST_TIMEOUT) 略早收口，留收尾余量。
@@ -1870,7 +1878,7 @@ class ReActAgent:
         history = await mem_store.load_history(sid, settings.history_limit)
         # 历史里的方案卡数据（data）不会作为可读内容发给模型 → 抽成摘要注入 prompt，
         # 让模型回答方案细节时有权威依据（避免凭记忆复述造成花材/配色失真）。
-        current_plan = _latest_plan_summary(history)
+        current_plan = await _current_plan_summary(user_id, sid, history)
         # 本轮问的是平台事实类信息（店铺/商品）→ 注入「必须先查证」指令，防编造（见 _platform_fact_hint）
         platform_facts = _platform_fact_hint(message)
         platform_sources = _platform_source_ids()

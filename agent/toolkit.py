@@ -65,9 +65,10 @@ def visible_tool_specs() -> list[ToolSpec]:
         可见的 :class:`ToolSpec` 列表（顺序与注册顺序一致）。
     """
     specs = get_tool_specs()
-    if not ops_tools_enabled():
+    from backend.data_gateway.access import cache_scope
+    if not ops_tools_enabled() or cache_scope() is not None:
         specs = [s for s in specs if OPS_TOOL_TAG not in s.tags]
-    allowed = allowed_entities()
+    allowed = allowed_entities() or {'plan', 'shop'}
     if allowed:
         kept = [e for e in _PLATFORM_ENTITIES if e in allowed]
         if not kept:
@@ -85,7 +86,7 @@ def visible_tool_specs() -> list[ToolSpec]:
 
 
 # 平台数据支持的实体（与 data_tools / http_source 对齐）。
-_PLATFORM_ENTITIES: tuple[str, ...] = ('plan', 'shop', 'order', 'user')
+_PLATFORM_ENTITIES: tuple[str, ...] = ('plan', 'shop')
 
 
 def allowed_entities() -> set[str]:
@@ -179,11 +180,14 @@ def generate_tool_manual() -> str:
 
 async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dict[str, Any] | None = None) -> tuple[str, str]:
     """执行工具，返回 (结果字符串, 状态 ok|error)。"""
+    from backend.execution import checkpoint
+    checkpoint()
     spec = TOOL_REGISTRY.get(name)
     if not spec:
         return (f'未知工具: {name}', 'error')
     # 运维工具在未开放时拒绝执行：即使模型幻觉调用（工具定义已不暴露），也挡在入口。
-    if OPS_TOOL_TAG in spec.tags and not ops_tools_enabled():
+    from backend.data_gateway.access import cache_scope
+    if OPS_TOOL_TAG in spec.tags and (not ops_tools_enabled() or cache_scope() is not None):
         return ('该工具当前不可用', 'error')
     try:
         kwargs = dict(arguments or {})
@@ -198,6 +202,7 @@ async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dic
             # 线程安全前提（已核对）：http_source._CACHE / shop_materials._LOCK 均带锁，
             # retrieve_knowledge 只读本地知识库。
             result = await asyncio.to_thread(spec.func, **kwargs)
+        checkpoint()
         if not isinstance(result, str):
             result = json.dumps(result, ensure_ascii=False)
         try:

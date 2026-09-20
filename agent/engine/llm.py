@@ -29,6 +29,7 @@ from typing import Any
 from agent.engine import budget
 from agent.engine.circuit_breaker import CircuitBreaker
 from backend.config import settings
+from backend import execution
 
 logger = logging.getLogger('llm')
 
@@ -109,7 +110,13 @@ def _is_retryable(exc: Exception) -> bool:
 def _backoff(attempt: int) -> None:
     """指数退避 + 抖动。"""
     delay = min(settings.llm_retry_base_delay * 2 ** attempt, settings.llm_retry_max_delay)
-    time.sleep(delay * (0.5 + random.random()))
+    delay = execution.remaining(delay * (0.5 + random.random()))
+    state = execution.current.get()
+    if state:
+        state.cancelled.wait(delay)
+    else:
+        time.sleep(delay)
+    execution.checkpoint()
 
 def _raw_call(provider: dict[str, str], messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, stream: bool, response_format: dict[str, Any] | None, timeout: float | None = None) -> Any:
     from openai import OpenAI
@@ -117,6 +124,8 @@ def _raw_call(provider: dict[str, str], messages: list[dict[str, Any]], tools: l
     # 避免「慢 LLM × 多轮 × 重试」把单个请求拖到远超用户可接受的时间。
     client = OpenAI(base_url=provider['base_url'], api_key=provider['api_key'], timeout=timeout or settings.llm_timeout, max_retries=0)
     kwargs: dict[str, Any] = {'model': provider['model'], 'messages': messages, 'temperature': settings.llm_temperature, 'max_tokens': settings.llm_max_tokens, 'stream': stream}
+    if stream:
+        kwargs['stream_options'] = {'include_usage': True}
     if tools:
         kwargs['tools'] = tools
         kwargs['tool_choice'] = 'auto'
@@ -146,17 +155,23 @@ def _record_cost(user_id: str | None, resp: Any) -> None:
 
 def _try_providers(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, stream: bool, response_format: dict[str, Any] | None, user_id: str | None, timeout: float | None = None) -> Any:
     last_exc: Exception | None = None
+    deadline = time.monotonic() + execution.remaining(timeout or settings.llm_timeout)
     for provider in _providers():
         cb = _cb(provider['name'])
         if settings.llm_circuit_breaker_enabled and (not cb.allow()):
             logger.warning('[llm] provider=%s 熔断中，跳过', provider['name'])
             continue
         for attempt in range(max(1, settings.llm_retry_max_attempts)):
+            execution.checkpoint()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError('LLM total time budget exhausted')
             try:
-                resp = _raw_call(provider, messages, tools, stream, response_format, timeout)
+                resp = _raw_call(provider, messages, tools, stream, response_format, execution.remaining(left))
                 cb.on_success()
                 if not stream:
                     _record_cost(user_id, resp)
+                    execution.checkpoint()
                 return resp
             except Exception as exc:
                 last_exc = exc
@@ -183,6 +198,8 @@ def call_llm(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=
     timeout: 本次调用的超时上限（秒）；None 用 settings.llm_timeout。
               agent 主循环会传「本轮剩余时间预算」，避免慢 LLM 拖长整轮。
     """
+    execution.checkpoint()
+    user_id = execution.user_id(user_id)
     if not _llm_configured():
         raise RuntimeError('未配置 LLM_API_KEY 或 HY_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 HY_API_KEY/llm_providers）后启动。')
     if settings.llm_cost_enabled:
@@ -193,10 +210,28 @@ def call_llm(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=
 
 def call_llm_stream(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None=None, user_id: str | None=None, timeout: float | None=None) -> Any:
     """流式 LLM 调用，返回 OpenAI Stream 对象（调用方自行迭代 chunk）。"""
+    execution.checkpoint()
+    user_id = execution.user_id(user_id)
     if not _llm_configured():
         raise RuntimeError('未配置 LLM_API_KEY 或 HY_API_KEY，系统已切换为 live-only（已弃用 Mock 引擎）。请在 .env 配置 LLM_API_KEY（或 HY_API_KEY/llm_providers）后启动。')
     if settings.llm_cost_enabled:
         allowed, reason = budget.check(user_id)
         if not allowed:
             raise LLMBudgetExceeded(f'LLM token 预算超限（{reason}），已降级')
-    return _try_providers(messages, tools, True, None, user_id, timeout)
+    stream = _try_providers(messages, tools, True, None, user_id, timeout)
+    def tracked():
+        recorded = False
+        try:
+            for chunk in stream:
+                if not recorded and getattr(chunk, 'usage', None) is not None:
+                    _record_cost(user_id, chunk)
+                    recorded = True
+                execution.checkpoint()
+                yield chunk
+        finally:
+            close = getattr(stream, 'close', None)
+            if close:
+                close()
+            if not recorded:
+                logger.warning('[llm] stream_usage_missing: 流中断或供应商未返回用量，不能视为零消耗')
+    return tracked()

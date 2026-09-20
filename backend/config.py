@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     # 例如：PLATFORM_API_KEYS=wxmini=sk-abc123,h5app=sk-def456
     # 配置后，接入方后端通过 POST /auth/token + X-API-Key 为自己的用户换取智能体 token。
     PLATFORM_API_KEYS: str = ""
+    # 平台身份来自已验证 JWT；值为 JSON，如 {"wxmini":["aistore"]}。
+    PLATFORM_SOURCE_ACCESS: str = ""
+    # 仅适用于共享唯一公开商品源的历史部署；多数据源时始终拒绝隐式授权。
+    PLATFORM_SINGLE_SOURCE_COMPAT: bool = False
     # 匿名登录开关：开发联调用；生产环境默认关闭（未显式设置时强制 False）。
     ANONYMOUS_LOGIN_ENABLED: bool = True
 

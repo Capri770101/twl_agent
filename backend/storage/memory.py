@@ -117,19 +117,26 @@ async def set_requirement(session_id: str, req: FlowerRequirement) -> None:
     """保存结构化需求。"""
     with transaction() as conn:
         conn.execute(
-            'UPDATE sessions SET preview = ?, updated_at = ? WHERE session_id = ?',
+            'UPDATE sessions SET requirement_json = ?, updated_at = ? WHERE session_id = ?',
             (json.dumps(req.to_dict(), ensure_ascii=False), _now(), session_id)
         )
 
 
 async def get_requirement(session_id: str):
     with transaction() as conn:
-        row = conn.execute('SELECT preview FROM sessions WHERE session_id = ?', (session_id,)).fetchone()
-    if not row or not row['preview']:
+        row = conn.execute('SELECT requirement_json, preview FROM sessions WHERE session_id = ?', (session_id,)).fetchone()
+    if not row:
+        return None
+    # 兼容旧版保存在 preview 中的需求；新字段一旦写入即为唯一权威来源。
+    raw = row['requirement_json'] if row['requirement_json'] is not None else row['preview']
+    if not raw:
         return None
     try:
-        return FlowerRequirement.from_dict(json.loads(row['preview']))
-    except Exception:
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not set(data).intersection(FlowerRequirement.__dataclass_fields__):
+            return None
+        return FlowerRequirement.from_dict(data)
+    except (ValueError, TypeError):
         return None
 
 
@@ -191,10 +198,16 @@ async def load_display_messages(session_id: str) -> list[dict[str, Any]]:
 
 async def load_history(conversation_id: str, limit: int) -> list[dict[str, Any]]:
     with transaction() as conn:
-        rows = conn.execute('SELECT role, content, ui, data FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT ?', (conversation_id, limit)).fetchall()
+        rows = conn.execute(
+            "SELECT role, content, ui, data FROM messages WHERE session_id = ? "
+            "AND role IN ('user', 'assistant') "
+            "AND (COALESCE(content, '') <> '' OR data IS NOT NULL) "
+            'ORDER BY id DESC LIMIT ?',
+            (conversation_id, max(0, int(limit))),
+        ).fetchall()
 
     messages: list[dict[str, Any]] = []
-    for row in rows:
+    for row in reversed(rows):
         role = row['role']
         if role == 'tool':
             continue
