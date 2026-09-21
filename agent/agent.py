@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.engine.llm import call_llm, call_llm_stream
+from agent.engine.tool_scope import scoped_tools, active_tools
 from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
@@ -574,6 +575,29 @@ async def _current_plan_summary(user_id: str, session_id: str, history: list[dic
     return _latest_plan_summary(history)
 
 
+def _trim_history_for_llm(history: list[dict[str, Any]], char_limit: int) -> list[dict[str, Any]]:
+    """保留最近完整轮次；最近一轮过长时保留全文，避免切掉约束。"""
+    turns = []
+    for msg in history or []:
+        if not isinstance(msg, dict) or msg.get('role') not in ('user', 'assistant'):
+            continue
+        content = str(msg.get('content') or '')
+        if not content:
+            continue
+        if msg['role'] == 'user' or not turns:
+            turns.append([])
+        turns[-1].append({'role': msg['role'], 'content': content})
+    selected = []
+    used = 0
+    for turn in reversed(turns):
+        cost = sum(len(m['content']) for m in turn)
+        if char_limit > 0 and selected and used + cost > char_limit:
+            break
+        selected.append(turn)
+        used += cost
+    return [m for turn in reversed(selected) for m in turn]
+
+
 def _latest_plan_summary(history: list[dict[str, Any]], max_plans: int = 3) -> str:
     """取最近一次方案卡的可读摘要（供 system prompt 注入，作为权威方案数据）。
 
@@ -728,6 +752,43 @@ def _is_chitchat(text: str) -> bool:
     if any(k in t for k in ('买', '送', '花', '束', '预算', '方案', 'diy', '自己', '店铺', '下单', '订单', '确认', '选', '要', '想要', '需要', '推荐', '生图', '效果', '图')):
         return False
     return any(w in t for w in _CHITCHAT_WORDS)
+def _is_simple_chitchat(text: str) -> bool:
+    """精确匹配独立寒暄，混合业务请求一律进入正常推理。"""
+    compact = re.sub(r'[\s，。！？、,.!?~～]+', '', (text or '').lower())
+    return compact in {'你好', '您好', '嗨', '哈喽', '在吗', '在么', '谢谢', '谢谢呀', '感谢', '辛苦了', '再见', '拜拜'}
+
+
+def _simple_chitchat_response(user_id: str, sid: str, stage: SessionStage, message: str) -> ChatResponse:
+    if any(word in message for word in ('谢谢', '感谢', '辛苦')):
+        reply = '不客气～还有想了解的花艺问题，随时问我。'
+    elif any(word in message for word in ('再见', '拜拜')):
+        reply = '再见，祝你今天有个好心情～'
+    else:
+        reply = '你好呀，我是你的专属花艺小助手～想设计花束、看现成款式或问养护，都可以跟我说。'
+    action = AgentAction(type=AgentActionType.SHOW_TEXT,
+                         payload={'reply': reply, 'ui': UIType.TEXT.value, 'data': {}, 'stage': stage.value},
+                         fallback=reply)
+    return ChatResponse(user_id=user_id, reply=reply, ui=UIType.TEXT, data={}, action=action,
+                        tool_calls=[], session_id=sid, stage=stage.value)
+
+
+def _is_unbound_image_request(message: str) -> bool:
+    """识别必须绑定真实 DIY 方案的效果图请求。"""
+    text = (message or '').strip()
+    asks_image = any(word in text for word in ('效果图', '生成图片', '生成图', '出图', '看看成品'))
+    references_plan = any(word in text for word in ('这个方案', '此方案', '该方案', '给「', '给“'))
+    return bool(text) and asks_image and references_plan
+
+
+def _missing_diy_image_response(user_id: str, sid: str, stage: SessionStage) -> ChatResponse:
+    reply = '当前还没有可生成效果图的定制方案。你可以告诉我想送给谁、预算和喜欢的风格，我先为你做一份专属方案并自动准备效果图。'
+    action = AgentAction(type=AgentActionType.SHOW_TEXT,
+                         payload={'reply': reply, 'ui': UIType.TEXT.value, 'data': {}, 'stage': stage.value},
+                         fallback=reply)
+    return ChatResponse(user_id=user_id, reply=reply, ui=UIType.TEXT, data={}, action=action,
+                        tool_calls=[], session_id=sid, stage=stage.value)
+
+
 logger = logging.getLogger('agent')
 _AFFIRMATIVE = ('好', '可以', '确认', '同意', '生成', '要', '行', '是', '看看')
 # 否定词优先于肯定词判断（is_affirmative 先查 _NEGATIVE）。
@@ -1817,6 +1878,7 @@ class ReActAgent:
             yield {'event': 'error', 'message': f'智能体执行失败: {type(exc).__name__}'}
 
     @scoped_agent_run
+    @scoped_tools
     async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
         t0 = time.perf_counter()
         # 本轮硬性时间预算（P0 防线程裸跑）：比调用方 wait_for(REQUEST_TIMEOUT) 略早收口，留收尾余量。
@@ -1876,9 +1938,32 @@ class ReActAgent:
             await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
         long_term = await mem_store.get_long_term(user_id)
         history = await mem_store.load_history(sid, settings.history_limit)
+        if _is_simple_chitchat(message):
+            reply = _simple_chitchat_response(user_id, sid, stage, message)
+            await mem_store.save_messages(sid, [
+                {'role': 'user', 'content': message},
+                {'role': 'assistant', 'content': reply.reply, 'ui': reply.ui.value, 'data': reply.data},
+            ])
+            await mem_store.update_stage(sid, stage.value)
+            if on_event:
+                on_event({'event': 'text', 'content': reply.reply})
+            return reply
+        if _is_unbound_image_request(message):
+            diy = await mem_store.get_session_json(user_id, sid, 'latest_diy_plan')
+            if not isinstance(diy, dict) or not diy.get('diy'):
+                reply = _missing_diy_image_response(user_id, sid, stage)
+                await mem_store.save_messages(sid, [
+                    {'role': 'user', 'content': message},
+                    {'role': 'assistant', 'content': reply.reply, 'ui': reply.ui.value, 'data': reply.data},
+                ])
+                await mem_store.update_stage(sid, stage.value)
+                if on_event:
+                    on_event({'event': 'text', 'content': reply.reply})
+                return reply
         # 历史里的方案卡数据（data）不会作为可读内容发给模型 → 抽成摘要注入 prompt，
         # 让模型回答方案细节时有权威依据（避免凭记忆复述造成花材/配色失真）。
         current_plan = await _current_plan_summary(user_id, sid, history)
+        history_for_llm = _trim_history_for_llm(history, settings.HISTORY_CHAR_LIMIT)
         # 本轮问的是平台事实类信息（店铺/商品）→ 注入「必须先查证」指令，防编造（见 _platform_fact_hint）
         platform_facts = _platform_fact_hint(message)
         platform_sources = _platform_source_ids()
@@ -1895,10 +1980,12 @@ class ReActAgent:
             or _prior_user_turns >= 1
         )
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
+        if active_tools.get() is not None:
+            system += '\n本轮只回答养护问题：按当前工具列表检索知识，结果充分后直接文字回答，不推荐商品、不设计方案、不生图。工具结果不足则如实说明，不重复相同检索。'
         # 只把 role/content 发给 LLM：ui/data 是本系统内部的卡片结构，既不是模型该读的
         # 内容，也不该出现在请求体里（此前原样透传，属无意义载荷）。
         messages: list[dict[str, Any]] = [{'role': 'system', 'content': system}]
-        messages += [{'role': str(m.get('role') or 'user'), 'content': str(m.get('content') or '')} for m in history]
+        messages += history_for_llm
         messages.append({'role': 'user', 'content': message})
         tool_log: list[ToolCallRecord] = []
         respond_args: dict[str, Any] | None = None
@@ -1920,7 +2007,7 @@ class ReActAgent:
                     msg = self._stream_llm(messages, on_event, _remaining)
                     _any_pushed = _any_pushed or bool(getattr(msg, '_pushed', False))
                 else:
-                    resp = call_llm(messages, tools=to_openai_tools(), timeout=min(settings.llm_timeout, _remaining))
+                    resp = call_llm(messages, tools=to_openai_tools(compact=True), timeout=min(settings.llm_timeout, _remaining), user_id=user_id)
                     msg = resp.choices[0].message
             except Exception as exc:
                 # 安全：原始异常只落服务端日志（含完整 traceback），绝不回显给用户，避免泄露
@@ -2543,7 +2630,7 @@ class ReActAgent:
             与 ``resp.choices[0].message`` 等价的对象（``content`` + ``tool_calls``）。
         """
         _HEAD_BUFFER = 40
-        stream = call_llm_stream(messages, tools=to_openai_tools(),
+        stream = call_llm_stream(messages, tools=to_openai_tools(compact=True),
                                  timeout=min(settings.llm_timeout, remaining))
         content_buf = ''
         pushed = False          # 是否已向用户推送过
@@ -2552,6 +2639,7 @@ class ReActAgent:
         tc_acc: dict[int, dict[str, str]] = {}
         _reply_pushed = 0       # 终结工具 reply 参数已推送的字符数（增量推送用）
 
+        _n_chunks = 0
         for _n_chunks, chunk in enumerate(stream, 1):
             choices = getattr(chunk, 'choices', None)
             if not choices:

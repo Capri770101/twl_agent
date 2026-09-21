@@ -65,6 +65,10 @@ def visible_tool_specs() -> list[ToolSpec]:
         可见的 :class:`ToolSpec` 列表（顺序与注册顺序一致）。
     """
     specs = get_tool_specs()
+    from agent.engine.tool_scope import active_tools
+    scope = active_tools.get()
+    if scope is not None:
+        specs = [spec for spec in specs if spec.name in scope]
     from backend.data_gateway.access import cache_scope
     if not ops_tools_enabled() or cache_scope() is not None:
         specs = [s for s in specs if OPS_TOOL_TAG not in s.tags]
@@ -158,9 +162,25 @@ def get_mcp_tool_specs(allowed: set[str] | None = None) -> list[ToolSpec]:
     return [spec for spec in get_tool_specs() if spec.name in names]
 
 
-def to_openai_tools() -> list[dict[str, Any]]:
-    """生成 OpenAI function-calling 的 tools 定义（仅当前会话可见的工具）。"""
-    return [{'type': 'function', 'function': {'name': s.name, 'description': s.description, 'parameters': s.parameters}} for s in visible_tool_specs()]
+def to_openai_tools(*, compact: bool = False) -> list[dict[str, Any]]:
+    """生成当前会话工具定义。
+
+    ``compact`` 只压缩冗长的说明文字，保留完整函数名和 JSON Schema。
+    详细规则已经在 system prompt 中，避免每个 ReAct 轮次重复携带同一大段说明。
+    """
+    tools = []
+    for spec in visible_tool_specs():
+        description = spec.description
+        if compact:
+            description = {
+                'respond_to_user': '结束本轮并返回纯文字回复。填写真实的意图、确认、生图、换批及缺失需求信号；不确定用 none/false/[]，不编造卡片数据。参数含义见 schema。',
+                'show_plan_card': '展示工具已产出的商品或 DIY 方案卡并结束本轮；plans 使用真实工具结果。reply 放在参数第一位，供即时流式展示。填写真实理解信号。',
+                'show_options': '给用户 2-4 个可点击选项并结束本轮，每项建议不超过12字。reply 先说明选择目的，再给 options；填写真实理解信号。',
+            }.get(spec.name, description)
+        tools.append({'type': 'function', 'function': {
+            'name': spec.name, 'description': description, 'parameters': spec.parameters,
+        }})
+    return tools
 
 
 def generate_tool_manual() -> str:
@@ -183,6 +203,10 @@ async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dic
     from backend.execution import checkpoint
     checkpoint()
     spec = TOOL_REGISTRY.get(name)
+    from agent.engine.tool_scope import active_tools
+    scope = active_tools.get()
+    if scope is not None and name not in scope:
+        return ('本轮为养护问答，请使用知识检索并直接回答', 'error')
     if not spec:
         return (f'未知工具: {name}', 'error')
     # 运维工具在未开放时拒绝执行：即使模型幻觉调用（工具定义已不暴露），也挡在入口。

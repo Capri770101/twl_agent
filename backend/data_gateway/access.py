@@ -74,6 +74,8 @@ def cache_scope() -> tuple[str, ...] | None:
 
 
 def require_source(source_id: str) -> None:
+    from backend.execution import checkpoint
+    checkpoint()
     scope = _SOURCES.get()
     if scope is not None and source_id.lower() not in scope:
         raise PermissionError('当前平台无权访问该数据源')
