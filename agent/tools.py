@@ -1962,6 +1962,8 @@ def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: F
     :func:`annotate_shop_materials`）——**保留花材本身，只标注，不自动替换**。
     """
     plan = design_with_llm(requirements, shop_id=shop_id, session_requirement=session_requirement)
+    from agent.plan_validator import annotate_plan_validation
+    plan = annotate_plan_validation(plan, session_requirement)
     plan = annotate_shop_materials(plan, shop_id)
     # 「复制用料清单」：必须在缺料标注之后生成，否则清单漏掉「该店暂无」提醒
     if isinstance(plan, dict):
@@ -2016,10 +2018,12 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
         new_plan['diy'] = True
         if shop_id:
             new_plan['shop_id'] = shop_id
-        return new_plan
+        from agent.plan_validator import annotate_plan_validation
+        return annotate_plan_validation(new_plan)
     except Exception:
         logger.exception('[revise] LLM 语义改版失败，回退规则引擎')
-        return baseline
+        from agent.plan_validator import annotate_plan_validation
+        return annotate_plan_validation(baseline)
 
 _CONFIRM_VALUES = ('confirm', 'reject', 'none')
 _IMAGE_VALUES = ('want', 'decline', 'none')
