@@ -7,9 +7,9 @@
 | 项目 | 值 |
 |---|---|
 | 智能体版本 | `1.2.0` |
-| 当前提交 | `3feadb2` |
+| 功能基线提交 | `3feadb2`（交付文档更新以仓库当前 HEAD 为准） |
 | 评测与路由提交 | `779ada3` |
-| 全量测试 | `759 passed` |
+| 全量测试 | `764 passed` |
 | 生产 API | `https://api.tiaowulan.com` |
 | 演示页 | `https://api.tiaowulan.com/demo/` |
 

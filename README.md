@@ -18,7 +18,7 @@
 | 部署形态 | Docker Compose **6 服务**：常驻 4（`postgres` / `agent` / `nginx` / `dashboard`）+ 体验版 2（`postgres-demo` / `agent-demo`，profile `demo`） |
 | 对外入口 | 生产 API `https://api.tiaowulan.com` · 体验演示页 `https://api.tiaowulan.com/demo/` · 官网体验窗 `https://www.tiaowulan.com/agent.html` |
 | 监控面板 | `https://api.tiaowulan.com/dashboard/` |
-| 自动化测试 | **759 条** pytest（`pytest -q` 全绿）+ 场景评测集 + 对话冒烟脚本 |
+| 自动化测试 | **764 条** pytest（`pytest -q` 全绿）+ 场景评测集 + 对话冒烟脚本 |
 | 当前生产开关 | `CARE_TOOL_SCOPE_ENABLED=false`、`AGENT_INTENT_ROUTING_ENABLED=false` |
 | 当前演示开关 | 两项均为 `true`，用于真实 token / 延迟 / 质量对比 |
 | 文档组织 | 本 README → [`DELIVERY.md`](./DELIVERY.md) → `docs/`；历史资料见 `docs/archive/` |
@@ -134,7 +134,7 @@
 | 反代 / TLS | nginx + 阿里云免费证书 | ⚠️ 上游必须**变量式** `proxy_pass`；改配置需 **restart**，`reload` 无效 |
 | 鉴权 | JWT (HS256) + X-API-Key | `JWT_SECRET ≥ 32` 字符（生产强制） |
 | 可观测 | 自研 `backend/observability.py` | best-effort，异常绝不阻断主链路 |
-| 测试 | pytest（432 条）+ 冒烟脚本 | 含结构护栏 / prompt 契约 / 检索评测回归门 |
+| 测试 | pytest（759 条）+ 场景评测集 + 冒烟脚本 | 含结构护栏 / prompt 契约 / 检索评测 / 意图路由 / 方案校验回归门 |
 | 代码质量 | Ruff（lint + format） | 类型注解 + docstring（Args / Returns / Raises） |
 
 ---
@@ -175,7 +175,8 @@ flora_agent_package/
 │   ├── gen_demo_env.py        ←   从生产 .env 派生 .env.demo
 │   ├── eval_retrieval.py      ←   检索评测
 │   └── ...
-├── tests/                     ← pytest（432 条）+ eval/ 评测集
+├── tests/                     ← pytest（764 条）
+├── evals/                     ← 真实业务场景评测集（JSONL）
 ├── docs/                      ← 项目文档集（按编号导航）
 ├── deploy/                    ← nginx.conf / 证书脚本 / 监控脚本 / env.demo.example
 ├── migrations/                ← 数据库迁移 SQL
@@ -367,7 +368,8 @@ docker compose --profile demo down                            # 停（卷保留�
 
 | 层 | 内容 | 命令 |
 |---|---|---|
-| 单元 / 集成 | **432 条** pytest（含结构护栏、prompt 契约、卡片对齐、检索评测回归门） | `pytest -q` |
+| 单元 / 集成 | **764 条** pytest（含结构护栏、prompt 契约、卡片对齐、检索、路由、方案校验回归门） | `pytest -q` |
+| 场景评测集 | 商品 / DIY / 养护 / 生图 / 贺卡 / 混合需求 | `python scripts/validate_eval_set.py` |
 | 对话冒烟 | 40+ 条测试词按分组跑**真实对话**，自动比对产出类型 + 文本质量 | `python scripts/agent_smoke.py --group <组>` |
 | 检索评测 | 50 条 golden queries，基线 hit@5 = 0.92 / MRR = 0.8667 | `python scripts/eval_retrieval.py` |
 
@@ -502,7 +504,8 @@ docker compose --profile demo down                            # 停（卷保留�
 
 | 日期 | 文档集版本 | 主要变化 |
 |---|---|---|
-| **2026-09-17** | **v2.2** | README 对齐当前状态：6 服务（含体验栈）、工具面（22 注册 / 14 可见）、真实端点清单、测试体系（432 + 冒烟）、新增 6 条架构决策、路线图补 09-08~09-17 |
+| **2026-09-21** | **v2.3** | 对齐智能体 1.2.0、759 项测试、场景评测、候选意图路由、方案校验、版本与交付说明 |
+| 2026-09-17 | v2.2 | README 对齐 6 服务、工具面、真实端点和当时的 432 项测试基线 |
 | 2026-09-07 | v2.1（文档唯一化） | `docs/README.md` 废除，入口并入根 `README.md` |
 | 2026-09-07 | v2.0 | 新建仓库根 `README.md`；K-1~K-3、T-1~T-4 全部修复 |
 | 2026-09-07 | v1.0 | 首次按标准模板建立文档集，旧文档归档 |
@@ -572,4 +575,4 @@ docker compose --profile demo down                            # 停（卷保留�
 
 ---
 
-> **项目状态**：🟢 在跑 · **最后核验**：2026-09-17（432 测试全绿 · 生产 + 体验栈均 healthy）
+> **项目状态**：🟢 在跑 · **最后核验**：2026-09-21（759 测试全绿 · 生产 + 体验栈均 healthy）
