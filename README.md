@@ -120,8 +120,8 @@
 
 | 层 | 选型 | 备注 |
 |---|---|---|
-| LLM（对话） | 阿里云百炼 DashScope `qwen3.8-flash` | `LLM_ENABLE_THINKING=False`；**单轮 38–51s**（工具调用较多，待优化） |
-| LLM（生图） | 阿里云百炼 `qwen-image-3.0` | 走原生 `multimodal-generation`，OSS 转存防失效 |
+| LLM（对话） | OpenAI 兼容接口（生产当前为阿里云百炼 Qwen 兼容配置） | 由 `LLM_BASE_URL` / `LLM_MODEL` 决定；演示路由已对独立养护和贺卡请求做工具收窄实验 |
+| LLM（生图） | `IMAGE_PROVIDER` 配置的 qwen / hy / mock | qwen 走原生 multimodal-generation；生产是否真实出图取决于图片供应商配置 |
 | LLM SDK | `openai` Python SDK（兼容模式） | 同一套接口可切其它兼容厂商 |
 | Agent 框架 | 自研 ReAct（`agent/engine`） | 工具注册表 + 多轮记忆 + 流式回调 + 轮数上限 |
 | 后端框架 | FastAPI + Pydantic v2 | 异步路由 + 自动 OpenAPI 文档 |
@@ -134,7 +134,7 @@
 | 反代 / TLS | nginx + 阿里云免费证书 | ⚠️ 上游必须**变量式** `proxy_pass`；改配置需 **restart**，`reload` 无效 |
 | 鉴权 | JWT (HS256) + X-API-Key | `JWT_SECRET ≥ 32` 字符（生产强制） |
 | 可观测 | 自研 `backend/observability.py` | best-effort，异常绝不阻断主链路 |
-| 测试 | pytest（759 条）+ 场景评测集 + 冒烟脚本 | 含结构护栏 / prompt 契约 / 检索评测 / 意图路由 / 方案校验回归门 |
+| 测试 | pytest（764 条）+ 场景评测集 + 冒烟脚本 | 含结构护栏 / prompt 契约 / 检索评测 / 意图路由 / 方案校验回归门 |
 | 代码质量 | Ruff（lint + format） | 类型注解 + docstring（Args / Returns / Raises） |
 
 ---

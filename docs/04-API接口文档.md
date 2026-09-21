@@ -4,9 +4,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | v1.0 |
-| 编写日期 | 2026-09-07 |
-| 适用代码版本 | git HEAD `1a72ab6` |
+| 文档版本 | v1.1 |
+| 编写日期 | 2026-09-21 |
+| 适用代码版本 | 智能体 `1.2.0`；部署以当前 commit 和 `VERSION` 为准 |
 | 维护人 | 平台后端组 |
 | 服务地址 | `https://api.tiaowulan.com`；容器 agent 监听 8000，**公网已收口，仅 `127.0.0.1:8000` 可达**，由 Nginx 反代 443 |
 | 校验方式 | 字段逐条取自 `backend/routers/chat.py`、`auth.py`、`metrics.py`、`main.py`、`backend/auth.py`、`agent/engine/ui_protocol.py`；已用线上 `GET /ui-contract`、`GET /health` 实测复核 |
@@ -16,7 +16,7 @@
 | 项 | 值 |
 |---|---|
 | Base URL | `https://api.tiaowulan.com`（路径不带 `/api` 前缀，`/api/metrics/*` 除外） |
-| 交互文档 | `https://api.tiaowulan.com/docs`（FastAPI Swagger，可自测） |
+| 交互文档 | `https://api.tiaowulan.com/docs`（仅 `API_DOCS_ENABLED=true` 时开放；生产默认关闭） |
 | 鉴权头 | `Authorization: Bearer <access_token>` |
 | 平台密钥头 | `X-API-Key: <平台密钥>`（**仅 `/auth/token`，只能由宿主后端发起**） |
 | 静态资源 | `/generated/{task_id}.png` —— 生图与贺卡结果 |
@@ -26,9 +26,9 @@
 
 | 链路 | 实测 | 说明 |
 |---|---|---|
-| `POST /chat` 简单问答 | 3~8 s | 不触发工具或只触发 1 次检索 |
-| `POST /chat` 典型 | **约 15 s** | LLM 为阿里云百炼 `qwen3.8-flash`（**带推理**），reasoning token 先行消耗 |
-| 生图任务 | **约 54 s** | `qwen-image-3.0`，走百炼原生 `multimodal-generation` 异步任务 |
+| `POST /chat` 简单问答 | 取决于模型与工具范围 | 独立寒暄可走零 LLM 快速路径；独立养护/贺卡在演示路由开关开启时工具更少 |
+| `POST /chat` 典型 | 取决于 provider、上下文和工具调用 | 不应把历史实测延迟当成 SLA，使用发布评测记录中的同题数据 |
+| 生图任务 | 取决于图片 provider | 默认模板为 mock；真实图片必须配置 qwen / hy 与公网资源访问 |
 | 服务端硬超时 | 180 s | `REQUEST_TIMEOUT`（`backend/config.py:127`），超时返回 504 |
 
 > ⚠️ 小程序 `wx.request` **默认超时 60 s**，典型 15 s 虽安全，工具链长时会逼近上限，**建议显式 `timeout: 120000`**。
