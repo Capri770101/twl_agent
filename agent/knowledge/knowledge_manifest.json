@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "description": "花卉智能体知识库清单。核心知识来自本地 JSON，扩展知识可由开源数据集或外部 API 导入。",
   "core_domains": [
     "flower",
@@ -8,7 +8,8 @@
     "pairing",
     "budget",
     "packaging",
-    "care"
+    "care",
+    "colors"
   ],
   "extended_sources": [
     {

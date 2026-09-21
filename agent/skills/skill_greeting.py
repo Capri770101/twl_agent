@@ -270,6 +270,11 @@ _TEMPLATE_HINT = {
                inject_context=True, tags=['greeting', 'card'])
 async def suggest_greetings(recipient: str = '', occasion: str = '', style: str = '', count: int = 4, _context: dict | None = None) -> str:
     """返回候选祝福语列表（每条附适用备注），供用户挑选或直接采用。"""
+    from agent.greeting_context import current_greeting_context
+    plan_ctx = await current_greeting_context(_context)
+    recipient = recipient or plan_ctx.get('recipient', '')
+    occasion = occasion or plan_ctx.get('occasion', '')
+    style = style or plan_ctx.get('style', '')
     rg, og = _norm_recipient(recipient), _norm_occasion(occasion)
     sg = _norm_style(style)
     count = max(1, min(int(count or 4), 6))
@@ -281,6 +286,7 @@ async def suggest_greetings(recipient: str = '', occasion: str = '', style: str 
     return json.dumps({
         'recipient_group': rg, 'occasion_group': og, 'style_group': sg,
         'recipient_input': recipient, 'occasion_input': occasion,
+        'plan_context': plan_ctx,
         'candidates': out,
         'tip': '把候选序号/文案展示给用户挑；用户选定或自定义文案后调用 render_greeting_card 渲染成贺卡图。',
     }, ensure_ascii=False)
@@ -574,6 +580,10 @@ def _render_card_image(text: str, recipient: str, sender: str, template: str) ->
                inject_context=True, tags=['greeting', 'card', 'image'])
 async def render_greeting_card(text: str, recipient: str = '', sender: str = '', template: str = '', occasion: str = '', _context: dict | None = None) -> str:
     """渲染电子贺卡图；成功返回 greeting_card 数据，失败返回 {error}（不静默）。"""
+    from agent.greeting_context import current_greeting_context
+    plan_ctx = await current_greeting_context(_context)
+    recipient = recipient or plan_ctx.get('recipient', '')
+    occasion = occasion or plan_ctx.get('occasion', '')
     text = (text or '').strip()
     if not text:
         return json.dumps({'error': '祝福语为空：请先让用户从 suggest_greetings 候选里选，或提供自定义文案'}, ensure_ascii=False)
@@ -611,5 +621,6 @@ async def render_greeting_card(text: str, recipient: str = '', sender: str = '',
         'recipient': recipient.strip(),
         'sender': sender.strip(),
         'template': tid,
+        'plan_context': plan_ctx,
         'note': note,
     }, ensure_ascii=False)
