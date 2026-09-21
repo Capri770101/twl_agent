@@ -13,7 +13,7 @@
 | 项目代号（内部） | `flora_agent` / 域名 `tiaowulan` / Docker 容器前缀 `flora-` |
 | 当前版本 | **1.2.0** |
 | 最近更新 | **2026-09-21** |
-| 代码基线 | `main` 提交 `3feadb2`；生产使用已验证发布包，服务器目录不是 git 仓库 |
+| 代码基线 | 当前 HEAD `51fc096`；功能基线 `3feadb2`；生产使用已验证发布包，服务器目录不是 git 仓库 |
 | 生产环境 | **腾讯云 · 北京** · 公网域名 `https://api.tiaowulan.com`（ICP 备案已通过） |
 | 部署形态 | Docker Compose **6 服务**：常驻 4（`postgres` / `agent` / `nginx` / `dashboard`）+ 体验版 2（`postgres-demo` / `agent-demo`，profile `demo`） |
 | 对外入口 | 生产 API `https://api.tiaowulan.com` · 体验演示页 `https://api.tiaowulan.com/demo/` · 官网体验窗 `https://www.tiaowulan.com/agent.html` |
@@ -504,7 +504,7 @@ docker compose --profile demo down                            # 停（卷保留�
 
 | 日期 | 文档集版本 | 主要变化 |
 |---|---|---|
-| **2026-09-21** | **v2.3** | 对齐智能体 1.2.0、759 项测试、场景评测、候选意图路由、方案校验、版本与交付说明 |
+| **2026-09-21** | **v2.3** | 对齐智能体 1.2.0、764 项测试、场景评测、候选意图路由、方案校验、版本与交付说明 |
 | 2026-09-17 | v2.2 | README 对齐 6 服务、工具面、真实端点和当时的 432 项测试基线 |
 | 2026-09-07 | v2.1（文档唯一化） | `docs/README.md` 废除，入口并入根 `README.md` |
 | 2026-09-07 | v2.0 | 新建仓库根 `README.md`；K-1~K-3、T-1~T-4 全部修复 |
