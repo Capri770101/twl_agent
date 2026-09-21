@@ -226,6 +226,7 @@ class Settings(BaseSettings):
     MAX_ITERATIONS: int = 8
     HISTORY_LIMIT: int = 20
     CARE_TOOL_SCOPE_ENABLED: bool = False
+    AGENT_INTENT_ROUTING_ENABLED: bool = False
     # 0 保留完整历史窗口；启用前需验证长对话约束不丢失。
     HISTORY_CHAR_LIMIT: int = 0
     REQUEST_TIMEOUT: float = 180.0

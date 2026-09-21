@@ -30,6 +30,7 @@ from typing import Any
 
 from agent.engine.llm import call_llm, call_llm_stream
 from agent.engine.tool_scope import scoped_tools, active_tools
+from agent.engine.intent import classify
 from agent.engine.state import SessionStage
 from agent.engine.ui_protocol import AgentAction, AgentActionType, ChatResponse, ToolCallRecord, UIType
 from agent.ports import normalize_entry, normalize_product_id, normalize_product_title, normalize_shop_id
@@ -1980,7 +1981,12 @@ class ReActAgent:
             or _prior_user_turns >= 1
         )
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
-        if active_tools.get() is not None:
+        route = classify(message) if settings.AGENT_INTENT_ROUTING_ENABLED else None
+        if route and route.tools is not None:
+            active_tools.set(route.tools)
+        if route and route.tools is not None:
+            system += f'\n本轮意图是 {route.name}，只使用当前工具列表完成任务；不要改做商品推荐、DIY 方案或其他未请求能力。'
+        elif active_tools.get() is not None:
             system += '\n本轮只回答养护问题：按当前工具列表检索知识，结果充分后直接文字回答，不推荐商品、不设计方案、不生图。工具结果不足则如实说明，不重复相同检索。'
         # 只把 role/content 发给 LLM：ui/data 是本系统内部的卡片结构，既不是模型该读的
         # 内容，也不该出现在请求体里（此前原样透传，属无意义载荷）。
@@ -1992,7 +1998,8 @@ class ReActAgent:
         final_reply = ''
         _any_pushed = False     # 本轮是否已通过真流式逐字推过文字（决定末尾要不要整段兜底）
         new_msgs: list[dict[str, Any]] = [{'role': 'user', 'content': message}]
-        for turn in range(1, settings.max_iterations + 1):
+        max_iterations = route.max_iterations if route else settings.max_iterations
+        for turn in range(1, max_iterations + 1):
             _remaining = _deadline - time.perf_counter()
             if _remaining <= _MIN_ITER_BUDGET:
                 logger.warning('[agent] 时间预算耗尽（剩余 %.1fs），第 %d 轮主动收尾', _remaining, turn)
