@@ -60,6 +60,20 @@ docker compose build agent agent-demo
 
 生产 `.env` 只存在服务器，不进仓库。核对 `DATABASE_URL`、`JWT_SECRET`、`PLATFORM_API_KEYS`、`PLATFORM_SOURCE_ACCESS`、`AUTH_REQUIRED=true`、`ANONYMOUS_LOGIN_ENABLED=false`、`ENABLE_OPS_TOOLS=false`。不要提交 `.env`、API Key、JWT、数据库密码或证书私钥。
 
+## 无公网域名时的开发验收
+
+`api.tiaowulan.com` 下线不影响本地或内网开发：
+
+```bash
+docker compose up -d postgres agent
+curl http://127.0.0.1:8000/health
+
+docker compose --profile demo up -d --build
+curl http://127.0.0.1:8010/health
+```
+
+本地接入方将 API base URL 指向 `http://127.0.0.1:8000`；容器内接入使用 `http://agent:8000`。贺卡图片返回 `/generated/...png`，本机可通过对应端口的 `/generated/` 路径验收。没有平台数据源时仍可验收知识库、DIY 结构和贺卡渲染，但不能验收实时商品推荐。
+
 ## 发布与回滚
 
 代码必须先提交并更新 `CHANGELOG.md`，通过测试和 Docker 构建；先演示、后生产。发布前备份数据库、旧代码和镜像，记录 commit、开关和发布目录。回滚优先恢复旧镜像或关闭 feature flag，不删除数据库字段和运行数据。
