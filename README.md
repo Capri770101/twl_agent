@@ -11,15 +11,17 @@
 | 项 | 值 |
 |---|---|
 | 项目代号（内部） | `flora_agent` / 域名 `tiaowulan` / Docker 容器前缀 `flora-` |
-| 当前版本 | v1.x（持续迭代中） |
-| 最近更新 | **2026-09-17** |
-| 代码基线 | 本地 `main` 与 GitHub `origin/main` 同步；生产为 **scp 直传**（服务器目录非 git 仓库，见 [§部署](#-部署生产)） |
+| 当前版本 | **1.2.0** |
+| 最近更新 | **2026-09-21** |
+| 代码基线 | `main` 提交 `3feadb2`；生产使用已验证发布包，服务器目录不是 git 仓库 |
 | 生产环境 | **腾讯云 · 北京** · 公网域名 `https://api.tiaowulan.com`（ICP 备案已通过） |
 | 部署形态 | Docker Compose **6 服务**：常驻 4（`postgres` / `agent` / `nginx` / `dashboard`）+ 体验版 2（`postgres-demo` / `agent-demo`，profile `demo`） |
 | 对外入口 | 生产 API `https://api.tiaowulan.com` · 体验演示页 `https://api.tiaowulan.com/demo/` · 官网体验窗 `https://www.tiaowulan.com/agent.html` |
 | 监控面板 | `https://api.tiaowulan.com/dashboard/` |
-| 自动化测试 | **432 条** pytest（`pytest -q` 全绿）+ 对话冒烟脚本 `scripts/agent_smoke.py` |
-| 文档组织 | **本 README 为全仓库唯一入口**；专题文档在 `docs/`，索引见 [§📚 完整文档索引](#-完整文档索引) |
+| 自动化测试 | **759 条** pytest（`pytest -q` 全绿）+ 场景评测集 + 对话冒烟脚本 |
+| 当前生产开关 | `CARE_TOOL_SCOPE_ENABLED=false`、`AGENT_INTENT_ROUTING_ENABLED=false` |
+| 当前演示开关 | 两项均为 `true`，用于真实 token / 延迟 / 质量对比 |
+| 文档组织 | 本 README → [`DELIVERY.md`](./DELIVERY.md) → `docs/`；历史资料见 `docs/archive/` |
 
 ---
 
@@ -61,7 +63,7 @@
 | 🛡️ **防编造护栏** | 「未查证即作答」「谎称已出图」「该出卡只写文字」「内部独白泄漏」四类**确定性拦截** | `agent/agent.py` |
 | 📊 **调用监控** | 24h 调用量、平均延迟、按平台/工具分布、实时调用流 | 监控面板 + `/api/metrics/*` |
 
-**工具面**：注册 **22 个**工具，其中 C 端可见 **14 个**功能工具；另 **8 个**平台接入工具打 `ops` 标签、默认隐藏。
+**工具面**：注册 **22 个**工具，其中默认 C 端可见约 **14 个**功能工具；另 **8 个**平台接入工具打 `ops` 标签、默认隐藏。实验路由开启时，明显养护 / 贺卡 / 生图请求会进一步收窄工具集。
 运行时以 `agent.toolkit.visible_tool_specs()` 为准。
 
 ---
