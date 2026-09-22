@@ -1575,6 +1575,7 @@ def _entity_query_ok(tool_log: list[ToolCallRecord], entity: str) -> bool:
     return any(
         tc.status == 'ok'
         and tc.name == 'platform_db_query_entity'
+        and tc.source == 'model'
         and (tc.arguments or {}).get('entity') == entity
         for tc in tool_log
     )
@@ -2083,7 +2084,7 @@ class ReActAgent:
                         messages.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
                         new_msgs.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
                         continue
-                    record = ToolCallRecord(name=tc['name'], arguments=tc['arguments'], result=result, status=status)
+                    record = ToolCallRecord(name=tc['name'], arguments=tc['arguments'], result=result, status=status, source='model')
                     tool_log.append(record)
                     if on_event:
                         on_event({'event': 'tool_call', 'name': tc['name'], 'status': status})
@@ -2160,7 +2161,8 @@ class ReActAgent:
         # 商品卡与**最终**回复对齐：必须在 final_reply 定型之后做——_post_process 内部
         # 调 _derive_ui 时 reply 还没被 respond_to_user 覆盖，在那里按文案过滤会失效
         # （线上实测：文案推 5 款、卡片给 8 款无关商品）。
-        data = _align_card_data_with_reply(ui, data, final_reply)
+        if _entity_query_ok(tool_log, 'plan') or _entity_query_ok(tool_log, 'shop'):
+            data = _align_card_data_with_reply(ui, data, final_reply)
         # 文案自报数量 ↔ 卡片条数：以**最终卡片**为准回写数字，保证「读到几款 = 看到几张」。
         # 同为「必须在 final_reply 定型之后」——两个方向合起来才是完整的一致化：
         #   · 卡片服从文案的点名（上面那步）；
@@ -2471,7 +2473,7 @@ class ReActAgent:
                     data = {**data, 'task_id': eff['task_id'], 'poll': eff.get('poll', True)}
                     if eff.get('result_url'):
                         data['result_url'] = eff['result_url']
-                    tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok'))
+                    tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok', source='system'))
                     logger.info('[agent] 方案即生图 task_id=%s', eff['task_id'])
             except Exception:
                 logger.exception('[agent] 方案即生图失败')
@@ -2528,7 +2530,7 @@ class ReActAgent:
                 data = {**(data or {}), 'task_id': eff['task_id'], 'poll': eff.get('poll', True)}
                 if eff.get('result_url'):
                     data['result_url'] = eff['result_url']
-                tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok'))
+                tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok', source='system'))
                 new_msgs.append({'role': 'tool', 'content': json.dumps(eff, ensure_ascii=False), 'tool_call_id': 'forced_effect_image'})
 
         # ── 8. 回复清理 ──

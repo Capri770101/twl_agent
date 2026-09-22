@@ -55,6 +55,7 @@ class ToolCallRecord(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     result: str = ""
     status: str = "ok"  # "ok" | "error"
+    source: str = "model"  # model = LLM tool call; system = deterministic post-process call
 # AIGC 标识文案（单一来源）：非流式 ChatResponse 与流式 done 事件共用同一份，
 # 避免两处各写一遍导致口径漂移。依据 GB 45438-2025，接入方应在界面显著位置展示。
 AI_CONTENT_DISCLOSURE = '本内容由 AI 生成，仅供参考'

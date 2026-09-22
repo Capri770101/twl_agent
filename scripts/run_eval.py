@@ -32,7 +32,7 @@ def tool_names(response: dict[str, Any]) -> list[str]:
     for item in response.get('tool_calls') or []:
         if isinstance(item, str):
             names.append(item)
-        elif isinstance(item, dict) and item.get('name'):
+        elif isinstance(item, dict) and item.get('name') and item.get('source', 'model') == 'model':
             names.append(str(item['name']))
     return names
 
