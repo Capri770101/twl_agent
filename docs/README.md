@@ -20,6 +20,7 @@
 | `11-变更记录.md` | 历史变更与 ADR |
 | `EVALUATION.md` | 真实模型场景评测规范 |
 | `KNOWLEDGE_BASE.md` | 知识域、添加规则和质量门 |
+| `IMAGE_STYLE_REFERENCE.md` | 店铺风格参考生图现状与下一阶段 |
 | `dev-and-release-workflow.md` | 开发、版本和发布流程 |
 
 ## 接入与业务专题

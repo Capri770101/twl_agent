@@ -91,6 +91,13 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
     if not plan_obj:
         return json.dumps({'error': '未找到可生图的方案，请先设计或选择方案'}, ensure_ascii=False)
     prompt = (plan_obj.get('effect_prompt') or plan_obj.get('desc') or plan_obj.get('name') or '花束').strip()
+    shop_id = str((_context or {}).get('shop_id') or plan_obj.get('shop_id') or '').strip()
+    if shop_id:
+        try:
+            from agent.shop_style import get_shop_style_profile, style_prompt_suffix
+            prompt += style_prompt_suffix(get_shop_style_profile(shop_id))
+        except Exception:
+            logger.warning('[tools] 店铺风格参考提取失败，回退原始生图 prompt', exc_info=True)
     if not prompt:
         return json.dumps({'error': '方案缺少可生图的描述信息'}, ensure_ascii=False)
     task_id = await tasks.create_image_task(prompt, user_id=(_context or {}).get('user_id'))
