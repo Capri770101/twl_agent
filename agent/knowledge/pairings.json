@@ -142,5 +142,101 @@
     "type": "material",
     "condition": "叶材搭配",
     "recommendation": "尤加利+银叶菊打底，银绿提气质；叶材约占整体三成，避免盖过主花。"
+  },
+  {
+    "id": "P_COLOR_WHITE_GREEN",
+    "type": "color",
+    "condition": "白绿色系",
+    "recommendation": "白玫瑰/白洋牡丹+绿洋桔梗+尤加利，清新高级；婚礼/生日/告白均适合，是近年最热门的色系之一。"
+  },
+  {
+    "id": "P_COLOR_PINK_PURPLE",
+    "type": "color",
+    "condition": "粉紫色系",
+    "recommendation": "粉玫瑰+紫罗兰+洋桔梗+勿忘我，浪漫温柔；适合告白、纪念日、闺蜜生日。"
+  },
+  {
+    "id": "P_COLOR_WARM",
+    "type": "color",
+    "condition": "暖色系（橙黄红）",
+    "recommendation": "向日葵+非洲菊+红掌+尤加利，明亮活泼；适合生日、开业、探病，传递正能量。"
+  },
+  {
+    "id": "P_COLOR_COOL",
+    "type": "color",
+    "condition": "冷色系（蓝紫白）",
+    "recommendation": "飞燕草+鸢尾+白玫瑰+尤加利，清雅高级；适合商务、道歉、慰问，显得克制得体。"
+  },
+  {
+    "id": "P_COLOR_MONOCHROME",
+    "type": "color",
+    "condition": "单色系深浅",
+    "recommendation": "同一色相不同明度（如深粉+浅粉+白），层次丰富又不杂乱；适合高端定制和婚礼。"
+  },
+  {
+    "id": "P_SHAPE_WILD",
+    "type": "shape",
+    "condition": "自然野趣/散状",
+    "recommendation": "高低错落、不规则分布，加入线状花材（飞燕草/金鱼草/铁线莲）和填充花材（蕾丝花/醉蝶花）；适合自然风、森系、户外婚礼。"
+  },
+  {
+    "id": "P_SHAPE_MODERN",
+    "type": "shape",
+    "condition": "现代极简",
+    "recommendation": "少量高品质花材（3-5 种），大量留白，线条感强；配龟背竹/天堂鸟/红掌出热带现代感。"
+  },
+  {
+    "id": "P_SHAPE_VINTAGE",
+    "type": "shape",
+    "condition": "复古法式",
+    "recommendation": "芍药/洋牡丹+紫罗兰+洋桔梗+尤加利，色调偏暖粉/香槟；包装选雾面纸或牛皮纸，系丝带。"
+  },
+  {
+    "id": "P_OCC_GRADUATION",
+    "type": "occasion",
+    "condition": "毕业/升学",
+    "recommendation": "向日葵+郁金香+洋桔梗，明亮积极；配「前程似锦」贺卡，色调以黄/橙/白为主。"
+  },
+  {
+    "id": "P_OCC_HOUSEWARMING",
+    "type": "occasion",
+    "condition": "乔迁/新居",
+    "recommendation": "红掌+蝴蝶兰+尤加利，寓意红火兴旺；包装选红色/金色系，配「乔迁之喜」贺卡。"
+  },
+  {
+    "id": "P_OCC_ANNIVERSARY_WORK",
+    "type": "occasion",
+    "condition": "工作周年/升职",
+    "recommendation": "香槟玫瑰+蝴蝶兰+尤加利，低调得体；商务风包装，配「前程似锦」贺卡。"
+  },
+  {
+    "id": "P_RECIP_TEACHER",
+    "type": "recipient",
+    "condition": "送老师",
+    "recommendation": "康乃馨+百合+尤加利，温馨尊重；色调以粉白/香槟为主，避免过于艳丽的红色。"
+  },
+  {
+    "id": "P_RECIP_CHILD",
+    "type": "recipient",
+    "condition": "送小孩/儿童",
+    "recommendation": "非洲菊+向日葵+小雏菊，明亮活泼；避免浓香花卉（百合/风信子），选择无刺品种。"
+  },
+  {
+    "id": "P_RECIP_MALE",
+    "type": "recipient",
+    "condition": "送男性",
+    "recommendation": "向日葵+红掌+尤加利，阳刚利落；色调以黄/橙/绿为主，避免粉色系；包装选简约深色。"
+  },
+  {
+    "id": "P_MAT_TEXTURE",
+    "type": "material",
+    "condition": "质感对比",
+    "recommendation": "光滑（玫瑰/郁金香）+绒质（紫罗兰/银叶菊）+蓬松（满天星/蕾丝花），三种质感搭配出层次。"
+  },
+  {
+    "id": "P_MAT_SEASONAL",
+    "type": "material",
+    "condition": "季节限定搭配",
+    "recommendation": "春季：郁金香+洋牡丹+雪柳；夏季：向日葵+百日草+醉蝶花；秋季：大丽花+金丝桃+桂花；冬季：腊梅+朱顶红+蝴蝶兰。"
   }
 ]

@@ -16,6 +16,18 @@ pytest 验证程序契约；场景评测验证真实模型的工具选择、结�
 python scripts/validate_eval_set.py
 ```
 
+真实 HTTP 评测（报告默认写入已忽略的 `evals/results/`）：
+
+```bash
+# H5 同源代理注入平台 Key
+python scripts/run_eval.py --base-url http://129.204.85.139/agent
+
+# 直连智能体：由进程环境提供 Key，不要写进命令或报告
+EVAL_PLATFORM_API_KEY=... python scripts/run_eval.py --base-url http://127.0.0.1:8000
+```
+
+默认即使有失败也输出完整报告并返回 0；发布质量门使用 `--strict`。当前判定覆盖 UI 与工具白名单/黑名单，`checks` 中的自然语言质量项仍需人工或后续规则评分。
+
 ## 真实评测记录
 
 每次模型、prompt、工具范围或业务护栏变化，都记录：

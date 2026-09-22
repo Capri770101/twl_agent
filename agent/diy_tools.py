@@ -11,6 +11,8 @@ from backend.storage import tasks
 
 async def _store_diy_plan(plan: dict, _context: dict | None) -> None:
     """把最新 DIY 方案写入当前会话。"""
+    if plan.get('validation_status') == 'blocked':
+        return
     uid = (_context or {}).get('user_id', '')
     sid = (_context or {}).get('session_id', '')
     if not uid or not sid:
@@ -50,6 +52,8 @@ async def generate_diy_plan(requirements: str, shop_id: str='', _context: dict |
         shop_id=str(shop_id or (_context or {}).get('shop_id') or '').strip(),
         session_requirement=(_context or {}).get('requirement'),
     )
+    if plan.get('validation_status') == 'blocked':
+        return json.dumps({'ok': False, 'error': '方案未通过硬约束校验', 'validation_errors': plan.get('validation_errors', [])}, ensure_ascii=False)
     await _store_diy_plan(plan, _context)
     return json.dumps(plan, ensure_ascii=False)
 
@@ -66,6 +70,8 @@ async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) 
     # 位置必须在 annotate 之后 —— 它依赖最新的 unavailable_materials。
     if isinstance(new_plan, dict):
         new_plan['copy_text'] = build_plan_copy_text(new_plan)
+    if isinstance(new_plan, dict) and new_plan.get('validation_status') == 'blocked':
+        return json.dumps({'ok': False, 'error': '改版未通过硬约束校验', 'validation_errors': new_plan.get('validation_errors', [])}, ensure_ascii=False)
     await _store_diy_plan(new_plan, _context)
     return json.dumps(new_plan, ensure_ascii=False)
 

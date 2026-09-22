@@ -44,3 +44,41 @@ def annotate_plan_validation(plan: dict[str, Any], requirement: Any = None) -> d
         plan.pop('validation_errors', None)
         plan['validation_status'] = 'ok'
     return plan
+
+
+def repair_plan(plan: dict[str, Any], requirement: Any = None) -> dict[str, Any]:
+    """对明确、无歧义的硬约束做确定性修正，无法安全修正的预算问题保持阻断。"""
+    if not isinstance(plan, dict):
+        return plan
+    design = plan.get('design') if isinstance(plan.get('design'), dict) else None
+    if design is None:
+        return annotate_plan_validation(plan, requirement)
+    excluded = set(str(x) for x in (plan.get('exclude_flowers') or []) if x)
+    excluded.update(str(x) for x in (getattr(requirement, 'excluded_flowers', []) or []) if x)
+
+    def allowed(item: Any) -> bool:
+        return isinstance(item, dict) and item.get('name') and not any(bad in str(item['name']) for bad in excluded)
+
+    for key in ('main_flowers', 'fillers', 'foliage'):
+        design[key] = [item for item in (design.get(key) or []) if allowed(item)]
+
+    single = getattr(requirement, 'single_flower', None) if requirement is not None else None
+    if single:
+        matching = [item for item in design['main_flowers'] if single in str(item.get('name') or '')]
+        if matching:
+            design['main_flowers'] = matching[:1]
+        design['fillers'] = []
+        design['foliage'] = []
+
+    expected = getattr(requirement, 'stem_count', None) if requirement is not None else None
+    if expected is not None and design['main_flowers']:
+        # 明确单花取全部支数；多主花无法知道用户想如何分配，不擅自改动。
+        if len(design['main_flowers']) == 1:
+            design['main_flowers'][0]['qty'] = int(expected)
+
+    errors = validate_plan(plan, requirement)
+    plan['validation_errors'] = errors
+    plan['validation_status'] = 'blocked' if errors else 'ok'
+    if not errors:
+        plan.pop('validation_errors', None)
+    return plan

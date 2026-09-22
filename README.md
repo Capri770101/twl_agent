@@ -18,7 +18,7 @@
 | 部署形态 | Docker Compose **6 服务**：常驻 4（`postgres` / `agent` / `nginx` / `dashboard`）+ 体验版 2（`postgres-demo` / `agent-demo`，profile `demo`） |
 | 对外入口 | 生产 API `https://api.tiaowulan.com` · 体验演示页 `https://api.tiaowulan.com/demo/` · 官网体验窗 `https://www.tiaowulan.com/agent.html` |
 | 监控面板 | `https://api.tiaowulan.com/dashboard/` |
-| 自动化测试 | **764 条** pytest（`pytest -q` 全绿）+ 场景评测集 + 对话冒烟脚本 |
+| 自动化测试 | **789 条** pytest（`pytest -q` 全绿）+ 场景评测集 + 对话冒烟脚本 |
 | 当前生产开关 | `CARE_TOOL_SCOPE_ENABLED=false`、`AGENT_INTENT_ROUTING_ENABLED=false` |
 | 当前演示开关 | 两项均为 `true`，用于真实 token / 延迟 / 质量对比 |
 | 文档组织 | 本 README → [`DELIVERY.md`](./DELIVERY.md) → `docs/`；历史资料见 `docs/archive/` |
@@ -175,7 +175,7 @@ flora_agent_package/
 │   ├── gen_demo_env.py        ←   从生产 .env 派生 .env.demo
 │   ├── eval_retrieval.py      ←   检索评测
 │   └── ...
-├── tests/                     ← pytest（764 条）
+├── tests/                     ← pytest（789 条）
 ├── evals/                     ← 真实业务场景评测集（JSONL）
 ├── docs/                      ← 项目文档集（按编号导航）
 ├── deploy/                    ← nginx.conf / 证书脚本 / 监控脚本 / env.demo.example
@@ -368,7 +368,7 @@ docker compose --profile demo down                            # 停（卷保留�
 
 | 层 | 内容 | 命令 |
 |---|---|---|
-| 单元 / 集成 | **764 条** pytest（含结构护栏、prompt 契约、卡片对齐、检索、路由、方案校验回归门） | `pytest -q` |
+| 单元 / 集成 | **789 条** pytest（含结构护栏、prompt 契约、卡片对齐、检索、路由、方案校验和 HTTP 评测回归门） | `pytest -q` |
 | 场景评测集 | 商品 / DIY / 养护 / 生图 / 贺卡 / 混合需求 | `python scripts/validate_eval_set.py` |
 | 对话冒烟 | 40+ 条测试词按分组跑**真实对话**，自动比对产出类型 + 文本质量 | `python scripts/agent_smoke.py --group <组>` |
 | 检索评测 | 50 条 golden queries，基线 hit@5 = 0.92 / MRR = 0.8667 | `python scripts/eval_retrieval.py` |

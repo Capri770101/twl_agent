@@ -4,13 +4,13 @@
 
 | 域 | 文件 | 当前条目 | 用途 |
 |---|---|---:|---|
-| flower | `flowers.json` | 42 | 花材、别名、花语、颜色和养护关联 |
+| flower | `flowers.json` | 78 | 花材、别名、花语、颜色和养护关联 |
 | style | `styles.json` | 12 | 风格、适用场景和视觉特征 |
-| scene | `scenes.json` | 24 | 送花场景、对象、语气和推荐约束 |
-| pairing | `pairings.json` | 24 | 色彩、结构、花材和包装搭配规则 |
+| scene | `scenes.json` | 32 | 送花场景、对象、语气和推荐约束 |
+| pairing | `pairings.json` | 40 | 色彩、结构、花材和包装搭配规则 |
 | budget | `budget.json` | 6 | 预算档和花材/包装分配 |
 | packaging | `packaging.json` | 7 | 包装风格和适用场景 |
-| care | `care.json` | 8 | 醒花、剪根、换水、保鲜和常见问题 |
+| care | `care.json` | 30 | 醒花、剪根、换水、保鲜、安全和单品养护 |
 | colors | `colors.json` | 41 | 色系和颜色语义 |
 
 检索实现：关键词命中保底 + 字符 n-gram TF-IDF；可选 embedding 默认关闭。`knowledge_manifest.json` 是域清单，不是外部数据自动下载器。

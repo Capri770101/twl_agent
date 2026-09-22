@@ -642,5 +642,205 @@
     "meaning_tone": "真挚谢意、温暖回馈",
     "budget_anchor": "T2",
     "notes": "康乃馨表敬意与感恩，配向日葵添暖意；色调温馨不艳。"
+  },
+  {
+    "id": "SC_PROMOTION",
+    "name": "升职/工作周年",
+    "keywords": [
+      "升职",
+      "晋升",
+      "升迁",
+      "工作周年",
+      "入职"
+    ],
+    "recommended_style": "S_MODERN",
+    "recommended_substyle": "",
+    "color_tone": [
+      "香槟",
+      "白",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "香槟玫瑰",
+      "蝴蝶兰",
+      "红掌"
+    ],
+    "meaning_tone": "前程似锦、实至名归",
+    "budget_anchor": "T3",
+    "notes": "商务场合选低调得体花材，避免过于私人化的红玫瑰；香槟色显高级。"
+  },
+  {
+    "id": "SC_TEACHERS_DAY",
+    "name": "教师节",
+    "keywords": [
+      "教师节",
+      "送老师",
+      "老师"
+    ],
+    "recommended_style": "S_KOREAN",
+    "recommended_substyle": "S_KOREAN_LUXE",
+    "color_tone": [
+      "粉白",
+      "香槟",
+      "浅黄"
+    ],
+    "main_flower_preference": [
+      "康乃馨",
+      "百合",
+      "向日葵"
+    ],
+    "meaning_tone": "师恩难忘、桃李满天下",
+    "budget_anchor": "T2",
+    "notes": "康乃馨表敬意，配百合显高雅；避免过于艳丽的红色，色调温馨得体。"
+  },
+  {
+    "id": "SC_SYMPATHY",
+    "name": "慰问/探望",
+    "keywords": [
+      "慰问",
+      "探望",
+      "看望",
+      "关心"
+    ],
+    "recommended_style": "S_KOREAN",
+    "recommended_substyle": "S_KOREAN_SWEET",
+    "color_tone": [
+      "粉白",
+      "浅黄",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "非洲菊",
+      "向日葵",
+      "小雏菊"
+    ],
+    "meaning_tone": "温暖关怀、早日康复",
+    "budget_anchor": "T1",
+    "notes": "避免浓香花卉和白色菊花（祭奠联想）；选明亮温暖色系，传递积极能量。"
+  },
+  {
+    "id": "SC_CHINESE_NEW_YEAR",
+    "name": "春节/新年",
+    "keywords": [
+      "春节",
+      "新年",
+      "过年",
+      "年宵",
+      "除夕"
+    ],
+    "recommended_style": "S_CHINESE",
+    "recommended_substyle": "",
+    "color_tone": [
+      "红",
+      "金",
+      "橙"
+    ],
+    "main_flower_preference": [
+      "朱顶红",
+      "蝴蝶兰",
+      "腊梅",
+      "红掌"
+    ],
+    "meaning_tone": "红红火火、新年大吉",
+    "budget_anchor": "T3",
+    "notes": "年宵花以红色/金色为主，蝴蝶兰是高端年宵花首选；配红果枝/松枝出年味。"
+  },
+  {
+    "id": "SC_MID_AUTUMN",
+    "name": "中秋",
+    "keywords": [
+      "中秋",
+      "中秋节",
+      "月饼",
+      "团圆"
+    ],
+    "recommended_style": "S_CHINESE",
+    "recommended_substyle": "",
+    "color_tone": [
+      "黄",
+      "金",
+      "白"
+    ],
+    "main_flower_preference": [
+      "桂花",
+      "菊花",
+      "百合"
+    ],
+    "meaning_tone": "花好月圆、阖家团圆",
+    "budget_anchor": "T2",
+    "notes": "桂花是中秋代表花材，配黄色菊花出秋日氛围；避免白色菊花（祭奠联想）。"
+  },
+  {
+    "id": "SC_QIXI",
+    "name": "七夕",
+    "keywords": [
+      "七夕",
+      "七夕节",
+      "中国情人节",
+      "七姐诞"
+    ],
+    "recommended_style": "S_KOREAN",
+    "recommended_substyle": "S_KOREAN_SWEET",
+    "color_tone": [
+      "红",
+      "粉",
+      "香槟"
+    ],
+    "main_flower_preference": [
+      "红玫瑰",
+      "粉玫瑰",
+      "洋桔梗"
+    ],
+    "meaning_tone": "牛郎织女、浪漫爱情",
+    "budget_anchor": "T3",
+    "notes": "七夕是中国传统情人节，红玫瑰/粉玫瑰为主；香槟玫瑰显高级，配洋桔梗提升精致度。"
+  },
+  {
+    "id": "SC_SELF_REWARD",
+    "name": "悦己/送自己",
+    "keywords": [
+      "送自己",
+      "悦己",
+      "自己买花",
+      "犒劳自己"
+    ],
+    "recommended_style": "S_INS",
+    "recommended_substyle": "",
+    "color_tone": [
+      "随性",
+      "自然"
+    ],
+    "main_flower_preference": [
+      "当季花材",
+      "个人偏好"
+    ],
+    "meaning_tone": "取悦自己、享受生活",
+    "budget_anchor": "T1",
+    "notes": "悦己花束不必拘泥寓意，选自己喜欢的颜色和花材；推荐当季花材，性价比高且新鲜。"
+  },
+  {
+    "id": "SC_BUSINESS_GIFT",
+    "name": "商务赠礼",
+    "keywords": [
+      "商务",
+      "客户",
+      "合作伙伴",
+      "公司"
+    ],
+    "recommended_style": "S_MODERN",
+    "recommended_substyle": "",
+    "color_tone": [
+      "香槟",
+      "白",
+      "绿"
+    ],
+    "main_flower_preference": [
+      "蝴蝶兰",
+      "香槟玫瑰",
+      "红掌"
+    ],
+    "meaning_tone": "合作愉快、前程似锦",
+    "budget_anchor": "T4",
+    "notes": "商务场合选低调得体花材，避免过于私人化的红玫瑰；蝴蝶兰/香槟玫瑰显档次，包装选简约深色。"
   }
 ]
