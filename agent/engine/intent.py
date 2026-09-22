@@ -23,15 +23,17 @@ def classify(message: str) -> IntentRoute | None:
     text = str(message or '').strip()
     if not text:
         return None
-    if any(w in text for w in ('方案', '定制', 'DIY', '自己配', '自己搭')) and any(w in text for w in ('效果图', '出图', '生成图')):
+    # “定制并出图”需要设计工具；“不要出图”不是生图意图。
+    image_requested = any(w in text for w in ('效果图', '出图', '生成图', '看看成品')) and not any(w in text for w in ('不要图', '不要生图', '不要效果图', '不用效果图', '不出图', '别出图'))
+    new_design = any(w in text.lower() for w in ('定制', 'diy', '自己配', '自己搭', '设计一束', '设计一个', '改成', '换成', '换个配色'))
+    if image_requested and not new_design and any(w in text for w in ('这个方案', '此方案', '该方案', '给「', '给“')):
         return IntentRoute('image', 2, _IMAGE)
-    if any(w in text for w in ('效果图', '出图', '生成图', '看看成品')) and any(w in text for w in ('这个方案', '此方案', '该方案', '给「', '给“')):
-        return IntentRoute('image', 2, _IMAGE)
-    if any(w in text for w in ('祝福', '贺卡', '寄语')) and not any(w in text for w in ('买', '推荐', '预算')):
+    if any(w in text for w in ('祝福', '贺卡', '寄语')) and not new_design and not any(w in text for w in ('买', '推荐', '预算')):
         return IntentRoute('greeting', 3, _GREETING)
-    explicit_diy = any(w in text for w in ('定制', 'DIY', '自己配', '自己搭', '专属方案', '独一无二'))
+    explicit_diy = new_design or any(w in text for w in ('专属方案', '独一无二'))
+    declines_diy = any(w in text.lower() for w in ('不要定制', '不用定制', '不想定制', '不要diy', '不用diy'))
     constrained_single = ('不要配花' in text or '纯' in text) and bool(re.search(r'\d+\s*(?:朵|枝|支)', text))
-    if explicit_diy or constrained_single:
+    if (explicit_diy and not declines_diy) or (constrained_single and not any(w in text for w in ('现成', '现货'))):
         return IntentRoute('design', 4, _DIY)
     stripped = re.sub(r'(?:不要|不用|无需)(?:方案和图片|方案和效果图|方案|图片|效果图)', '', text)
     if len(stripped) <= 120 and any(w in stripped for w in ('怎么养', '如何养', '养护', '换水', '剪根', '保鲜', '醒花')) and not any(w in stripped for w in ('推荐', '买', '送', '预算', '方案', '店', '价格')):

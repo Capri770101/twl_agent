@@ -39,6 +39,13 @@ def tool_names(response: dict[str, Any]) -> list[str]:
 
 def judge(case: dict[str, Any], response: dict[str, Any]) -> tuple[bool, list[str]]:
     issues: list[str] = []
+    reply = str(response.get('reply') or '').strip()
+    if not reply:
+        issues.append('empty reply')
+    if str(case.get('intent')) == 'qa' and any(phrase in reply for phrase in ('请查看下方卡片', '服务暂时开小差', '思考得太久')):
+        issues.append('qa did not provide a substantive answer')
+    if response.get('ui') == 'plan_card' and not (response.get('data') or {}).get('plans'):
+        issues.append('plan_card missing plans')
     ui = str(response.get('ui') or '')
     expected = str(case.get('expected_ui') or '')
     if expected and ui != expected:

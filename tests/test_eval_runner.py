@@ -15,4 +15,10 @@ def test_judge_detects_ui_and_forbidden_tools():
 
 def test_judge_passes_expected_response():
     case = {'expected_ui': 'text', 'allowed_tools': ['retrieve_knowledge', 'respond_to_user'], 'forbidden_tools': ['generate_diy_plan']}
-    assert judge(case, {'ui': 'text', 'tool_calls': [{'name': 'retrieve_knowledge'}]}) == (True, [])
+    assert judge(case, {'ui': 'text', 'reply': '水变浑浊时及时换水并清洗花瓶。', 'tool_calls': [{'name': 'retrieve_knowledge'}]}) == (True, [])
+
+
+def test_qa_placeholder_is_not_a_pass():
+    passed, issues = judge({'intent': 'qa', 'expected_ui': 'text'}, {'ui': 'text', 'reply': '我已经为你整理好相关结果啦，请查看下方卡片～'})
+    assert not passed
+    assert any('substantive' in issue for issue in issues)

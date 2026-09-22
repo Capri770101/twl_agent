@@ -113,7 +113,8 @@ def allowed_entities() -> set[str]:
         return set(route_scope or ())
     items = raw.replace('，', ',').split(',')
     configured = {x.strip().lower() for x in items if x.strip()}
-    return configured.intersection(route_scope) if route_scope is not None else configured
+    # 空集合是旧接口的“不限制”语义；交集为空必须显式拒绝，而不是重新开放。
+    return (configured.intersection(route_scope) or {'__deny_all__'}) if route_scope is not None else configured
 
 
 def _narrow_entity_schema(spec: ToolSpec, allowed: set[str]) -> ToolSpec:

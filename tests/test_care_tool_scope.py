@@ -48,3 +48,17 @@ def test_buying_route_limits_platform_entity(monkeypatch):
         spec = next(t for t in to_openai_tools() if t['function']['name'] == 'platform_db_query_entity')
         assert spec['function']['parameters']['properties']['entity']['enum'] == ['plan']
     asyncio.run(run(None, 'u', '预算200送妈妈，推荐一束好养的花'))
+
+
+def test_disjoint_entity_scope_denies_all(monkeypatch):
+    from agent.toolkit import allowed_entities
+    from agent.data_tools import platform_db_query_entity
+    import json
+    monkeypatch.setattr(settings, 'PLATFORM_ALLOWED_ENTITIES', 'shop')
+    token = active_entities.set(frozenset({'plan'}))
+    try:
+        assert allowed_entities() == {'__deny_all__'}
+        assert all(t['function']['name'] != 'platform_db_query_entity' for t in to_openai_tools())
+        assert json.loads(platform_db_query_entity('unused', 'shop'))['ok'] is False
+    finally:
+        active_entities.reset(token)

@@ -27,3 +27,10 @@ def test_mixed_message_is_conservative():
 def test_explicit_diy_and_strict_single_flower_route():
     assert classify('我想定制一束白绿色花束').name == 'design'
     assert classify('只要11朵粉玫瑰，不要配花').name == 'design'
+
+
+def test_design_with_image_keeps_design_tools():
+    assert classify('帮我定制一束花并生成效果图').name == 'design'
+    assert classify('设计一束花并配贺卡').name == 'design'
+    assert classify('不要定制，想买现成的').name == 'buying'
+    assert classify('这个方案不要效果图') is None
