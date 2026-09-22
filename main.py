@@ -30,6 +30,7 @@ from backend.routers.auth import router as auth_router
 from backend.routers.metrics import router as metrics_router
 from backend.routers.learning import router as learning_router
 from backend.routers.agent_page import router as agent_page_router
+from backend.routers.greeting import router as greeting_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.APP_ENV == 'dev' else logging.INFO,
@@ -89,6 +90,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(chat_router)
+app.include_router(greeting_router)
 app.include_router(auth_router)
 app.include_router(metrics_router)
 app.include_router(learning_router)

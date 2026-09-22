@@ -10,7 +10,7 @@
 | 当前源码修订 | 使用 `git rev-parse HEAD` 获取；不在文档写死当前 HEAD |
 | 功能基线提交 | `3feadb2` |
 | 评测与路由提交 | `779ada3` |
-| 全量测试 | `780 passed`（2026-09-22，本地） |
+| 全量测试 | `784 passed`（2026-09-22，本地） |
 | 原生产 API | `api.tiaowulan.com` 已停用，不作为当前验收入口 |
 | 开发验收 | 本机 API / 容器内网；连接地址由部署方配置 |
 
@@ -29,6 +29,7 @@ AGENT_INTENT_ROUTING_ENABLED=false
 - 商品、店铺数据只读查询；订单和用户实体默认拒绝。
 - DIY 方案是估算方案，不是平台 SKU；当前不创建真实订单、不收款、不分账。
 - 生图为异步任务：响应返回 `task_id` / `poll`，客户端轮询 `GET /tasks/{task_id}`。
+- 个性化贺卡开发接口：`POST /greetings/draft` 生成可编辑文案，`POST /greetings/render` 生成 PNG；当前订单摘要由宿主提供，接口尚未绑定真实订单事件。
 - 前端只能渲染后端结构化 `diy=true` 的方案，不得从自然语言猜 DIY 卡。
 
 ## 关键目录
