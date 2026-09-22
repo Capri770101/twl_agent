@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "automated_visual_scoring": false,
+  "cases": [
+    {"id":"white-green","flowers":[{"name":"白玫瑰","qty":11}],"packaging":"雾面韩素纸","review":["白绿色保持","层次清晰且花头不被遮挡","数量与方案比较"]},
+    {"id":"single-simple","flowers":[{"name":"粉玫瑰","qty":1}],"packaging":"单支简包","review":["没有额外花材","简包需求优先于多层默认","无额外高成本饰品"]},
+    {"id":"gift-box","flowers":[{"name":"康乃馨","qty":11}],"packaging":"礼盒花","review":["保持礼盒器型","盒体和花材比例合理","无品牌与乱码"]},
+    {"id":"basket","flowers":[{"name":"向日葵","qty":5}],"packaging":"提篮","review":["保留提篮和提手","花材符合方案","包装不喧宾夺主"]},
+    {"id":"vase","flowers":[{"name":"郁金香","qty":9}],"packaging":"玻璃瓶插","review":["不擅自改成纸包花束","玻璃材质自然","颜色与数量符合需求"]}
+  ],
+  "procedure":"同一方案分别使用旧、新提示词各生成至少3张；记录模型、尺寸、种子（若支持）、耗时、费用。人工盲评包装质量、约束符合度及可制作性，每项1-5分；接口成功不等于视觉通过。"
+}

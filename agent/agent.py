@@ -29,6 +29,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.engine.llm import call_llm, call_llm_stream
+from agent.knowledge_answer import knowledge_fallback_reply as _knowledge_fallback_reply
 from agent.engine.tool_scope import scoped_tools, active_tools
 from agent.engine.intent import classify
 from agent.engine.state import SessionStage
@@ -1968,6 +1969,10 @@ class ReActAgent:
         history_for_llm = _trim_history_for_llm(history, settings.HISTORY_CHAR_LIMIT)
         # 本轮问的是平台事实类信息（店铺/商品）→ 注入「必须先查证」指令，防编造（见 _platform_fact_hint）
         platform_facts = _platform_fact_hint(message)
+        # 定制花束不是平台在售商品事实，不能用“必须查商品”纠正设计工具。
+        current_route = classify(message) if settings.AGENT_INTENT_ROUTING_ENABLED else None
+        if current_route and current_route.name == 'design':
+            platform_facts = ''
         platform_sources = _platform_source_ids()
         # 四项确定性护栏的剩余额度（逻辑统一在 _check_guards()，这里只管状态）。
         _guards = _GuardBudget()
@@ -2172,6 +2177,10 @@ class ReActAgent:
         # （原先这 8 步是硬编码散在这里的，顺序语义只能靠读代码推断 —— review 第 2 条）。
         # ⚠️ 改清理逻辑请改那张表，不要在这里加调用。
         final_reply = _run_cleanup_pipeline(final_reply, ui=ui, data=data, tool_log=tool_log)
+        if route and route.name == 'qa' and ui == UIType.TEXT and (
+            not final_reply.strip() or final_reply in {_EMPTY_CARD_FALLBACK, _EMPTY_TEXT_FALLBACK}
+        ):
+            final_reply = _run_cleanup_pipeline(_knowledge_fallback_reply(tool_log), ui=ui, data=data, tool_log=tool_log)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
