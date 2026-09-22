@@ -5,6 +5,7 @@ def test_route_care():
     route = classify('玫瑰怎么养得久？只讲养护，不要方案和图片。')
     assert route and route.name == 'qa' and route.max_iterations == 2
     assert 'retrieve_knowledge' in route.tools
+    assert classify('鲜花多久换一次水？').name == 'qa'
 
 
 def test_route_image():

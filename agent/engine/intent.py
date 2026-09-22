@@ -36,7 +36,8 @@ def classify(message: str) -> IntentRoute | None:
     if (explicit_diy and not declines_diy) or (constrained_single and not any(w in text for w in ('现成', '现货'))):
         return IntentRoute('design', 4, _DIY)
     stripped = re.sub(r'(?:不要|不用|无需)(?:方案和图片|方案和效果图|方案|图片|效果图)', '', text)
-    if len(stripped) <= 120 and any(w in stripped for w in ('怎么养', '如何养', '养护', '换水', '剪根', '保鲜', '醒花')) and not any(w in stripped for w in ('推荐', '买', '送', '预算', '方案', '店', '价格')):
+    care_words = ('怎么养', '如何养', '养护', '换水', '多久换', '换一次水', '剪根', '保鲜', '醒花')
+    if len(stripped) <= 120 and any(w in stripped for w in care_words) and not any(w in stripped for w in ('推荐', '买', '送', '预算', '方案', '店', '价格')):
         return IntentRoute('qa', 2, _CARE)
     if any(w in text for w in ('想买现成', '买现成', '推荐一束', '推荐花束', '有什么花', '在售')) or ('预算' in text and any(w in text for w in ('送', '推荐', '买'))):
         return IntentRoute('buying', 3, _BUYING)
