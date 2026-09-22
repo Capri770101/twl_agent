@@ -2421,6 +2421,11 @@ class ReActAgent:
             ui = UIType.TEXT
             data = {}
             logger.info('[agent] 知识问答轮次，丢弃 LLM 擅自推送的方案卡')
+        if _qa_intent and ui == UIType.TEXT and (
+            not final_reply.strip() or final_reply.strip() in {_EMPTY_CARD_FALLBACK, '好的，收到你的想法啦，请稍等～'}
+        ):
+            final_reply = _knowledge_fallback_reply(tool_log)
+            logger.warning('[agent] 知识问答模型正文为空，已使用检索结果兜底')
 
         # ── 5.5 L3 澄清式追问：信息不足 → 先问清楚，不推猜出来的方案卡 ──
         # 模型若自报 missing（缺关键信息）却仍产出了 DIY 方案卡，这里**确定性地**拦下：
