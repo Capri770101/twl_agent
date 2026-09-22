@@ -1268,6 +1268,24 @@ def _anchor_style(plan: dict) -> None:
         plan['substyle_id'] = None
         plan['substyle'] = None
 
+def _modern_packaging_prompt(packaging: str, style_label: str = '') -> str:
+    """把抽象包装名转成生图模型可理解的现代包装视觉规范。"""
+    text = f'{packaging} {style_label}'
+    if any(k in text for k in ('礼盒', '盒')):
+        return '现代结构礼盒包装：硬挺盒体、内衬固定花泥、盒口有层次外翻纸艺、细缎带或烫金小卡点缀，像当代花店精品礼盒，不是老式纸盒'
+    if '瓶插' in text or '花瓶' in text or '玻璃' in text or '亚克力' in text:
+        return '现代桌面瓶插：简洁透明玻璃或磨砂器皿，花材松弛有留白，器皿比例精致，适合当代家居摄影，不是老式塑料花瓶'
+    if any(k in text for k in ('花篮', '提篮', '篮')):
+        return '现代手提花篮包装：轻量藤编或极简哑光提篮，花材自然高低错落，搭配织带提手和少量装饰，不是传统对称大花篮'
+    if any(k in text for k in ('牛皮', '自然', '北欧')):
+        return '现代自然系包装：双层或多层牛皮纸与半透明硫酸纸叠搭，露出枝干和叶材线条，麻绳或窄织带收口，松弛但有设计感'
+    if any(k in text for k in ('雾面', '韩素', '韩式', 'ins', '奶油')):
+        return '现代花店包装：两到三层低饱和雾面纸叠搭，内层半透明纸形成褶皱和层次，外层不规则折角，细缎带或窄丝带收口，留白充足，精致轻盈'
+    if any(k in text for k in ('单支', '简包')):
+        return '现代单支花包装：小面积双层半透明纸与窄丝带，保留花茎线条和呼吸感，简洁但有精致细节，不是随意一层纸包裹'
+    return '现代花店精品包装：多层纸材叠搭、立体折角、适量半透明材质、细缎带收口和精致小卡，包装有层次和设计感，避免单层纸和老式大蝴蝶结'
+
+
 def _effect_prompt_from_design(design: dict, style_label: str = '韩式',
                                packaging: str = '花束') -> str:
     """按方案的**真实花材与支数**重建生图提示词（确定性生成，不允许 LLM 自由发挥）。
@@ -1318,14 +1336,16 @@ def _effect_prompt_from_design(design: dict, style_label: str = '韩式',
                     total += int(q)
 
     # 单一花材：只描述一种花，避免残留「搭配满天星」等外搭措辞。
+    packaging_visual = _modern_packaging_prompt(pk, style_label)
+    modern_negative = '避免老旧十年前花店风、单层牛皮纸、廉价塑料包装、过大俗气蝴蝶结、对称传统大花束、过度拥挤、塑料质感'
     if main and not fillers and not foliage:
         f0 = main_raw[0] if isinstance(main_raw[0], dict) else {}
         nm = str(f0.get('name') or main).strip()
         q = f0.get('qty')
         qtext = f'共 {int(q)} 枝' if isinstance(q, (int, float)) and int(q) > 0 else ''
         return (f'{style_label}风格纯{nm}花束，仅使用{nm}一种花材'
-                f'{("（" + qtext + "）") if qtext else ""}，{pk}包装，色调统一，'
-                f'背景干净柔和，摄影级静物，高级感')
+                f'{("（" + qtext + "）") if qtext else ""}。方案包装类型为「{pk}」；{packaging_visual}，色调统一，'
+                f'背景干净柔和，现代花店电商摄影，摄影级静物，高级感。{modern_negative}')
 
     segs: list[str] = []
     if main:
@@ -1338,7 +1358,7 @@ def _effect_prompt_from_design(design: dict, style_label: str = '韩式',
     detail = '；'.join(segs) or '花材随机搭配'
     return (f'{style_label}风格花束，严格按下列花材与枝数插制'
             f'（数量不要增减、花材不要替换）：{detail}。{qty_note}，'
-            f'色调{colors}，{pk}包装，背景干净柔和，摄影级静物，高级感')
+            f'色调{colors}。方案包装类型为「{pk}」；{packaging_visual}，背景干净柔和，现代花店电商摄影，摄影级静物，高级感。{modern_negative}')
 
 
 def _design_qty_map(design: dict) -> dict[str, int]:

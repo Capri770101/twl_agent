@@ -13,6 +13,7 @@ from agent.tools import (
     _design_qty_map,
     _effect_prompt_from_design,
     _merge_plan,
+    _modern_packaging_prompt,
 )
 
 
@@ -47,6 +48,22 @@ def test_prompt_degrades_for_legacy_rows_without_qty():
 def test_prompt_never_blank():
     for d in ({}, {'main_flowers': []}, {'main_flowers': ['玫瑰']}):
         assert _effect_prompt_from_design(d).strip(), d
+
+
+def test_modern_packaging_prompt_avoids_old_style_defaults():
+    prompt = _effect_prompt_from_design(
+        {'main_flowers': [{'name': '玫瑰', 'qty': 11}], 'color_scheme': ['白', '绿']},
+        '韩式高级', '雾面韩素纸',
+    )
+    assert '两到三层' in prompt
+    assert '老旧十年前花店风' in prompt
+    assert '单层牛皮纸' in prompt
+
+
+def test_packaging_types_have_specific_visual_language():
+    assert '硬挺盒体' in _modern_packaging_prompt('礼盒花')
+    assert '透明玻璃' in _modern_packaging_prompt('瓶插')
+    assert '藤编' in _modern_packaging_prompt('提篮 / 野餐篮')
 
 
 def test_merge_plan_rebuilds_prompt_from_final_qty():
