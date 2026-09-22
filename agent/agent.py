@@ -1983,8 +1983,6 @@ class ReActAgent:
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
         route = classify(message) if settings.AGENT_INTENT_ROUTING_ENABLED else None
         if route and route.tools is not None:
-            active_tools.set(route.tools)
-        if route and route.tools is not None:
             system += f'\n本轮意图是 {route.name}，只使用当前工具列表完成任务；不要改做商品推荐、DIY 方案或其他未请求能力。'
         elif active_tools.get() is not None:
             system += '\n本轮只回答养护问题：按当前工具列表检索知识，结果充分后直接文字回答，不推荐商品、不设计方案、不生图。工具结果不足则如实说明，不重复相同检索。'

@@ -107,10 +107,13 @@ def allowed_entities() -> set[str]:
         raw = str(getattr(settings, 'PLATFORM_ALLOWED_ENTITIES', '') or '').strip()
     except Exception:
         return set()
+    from agent.engine.tool_scope import active_entities
+    route_scope = active_entities.get()
     if not raw:
-        return set()
+        return set(route_scope or ())
     items = raw.replace('，', ',').split(',')
-    return {x.strip().lower() for x in items if x.strip()}
+    configured = {x.strip().lower() for x in items if x.strip()}
+    return configured.intersection(route_scope) if route_scope is not None else configured
 
 
 def _narrow_entity_schema(spec: ToolSpec, allowed: set[str]) -> ToolSpec:

@@ -20,4 +20,10 @@ def test_route_greeting():
 
 
 def test_mixed_message_is_conservative():
-    assert classify('预算200送妈妈，推荐一束好养的花') is None
+    route = classify('预算200送妈妈，推荐一束好养的花')
+    assert route and route.name == 'buying' and route.max_iterations == 3
+
+
+def test_explicit_diy_and_strict_single_flower_route():
+    assert classify('我想定制一束白绿色花束').name == 'design'
+    assert classify('只要11朵粉玫瑰，不要配花').name == 'design'

@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from agent.engine.tool_scope import is_standalone_care, scoped_tools, active_tools, CARE_TOOLS
+from agent.engine.tool_scope import is_standalone_care, scoped_tools, active_tools, active_entities, CARE_TOOLS
 from agent.toolkit import to_openai_tools, execute_tool
 from backend.config import settings
 
@@ -38,3 +38,13 @@ def test_disabled_by_default_path(monkeypatch):
     async def run(self, user_id, message):
         assert active_tools.get() is None
     asyncio.run(run(None, 'u', '玫瑰养护'))
+
+
+def test_buying_route_limits_platform_entity(monkeypatch):
+    monkeypatch.setattr(settings, 'AGENT_INTENT_ROUTING_ENABLED', True)
+    @scoped_tools
+    async def run(self, user_id, message):
+        assert active_entities.get() == frozenset({'plan'})
+        spec = next(t for t in to_openai_tools() if t['function']['name'] == 'platform_db_query_entity')
+        assert spec['function']['parameters']['properties']['entity']['enum'] == ['plan']
+    asyncio.run(run(None, 'u', '预算200送妈妈，推荐一束好养的花'))
