@@ -7,21 +7,21 @@
 | 项目 | 值 |
 |---|---|
 | 智能体版本 | `1.2.0` |
-| 当前文档 HEAD | `51fc096` |
+| 当前源码修订 | 使用 `git rev-parse HEAD` 获取；不在文档写死当前 HEAD |
 | 功能基线提交 | `3feadb2` |
 | 评测与路由提交 | `779ada3` |
-| 全量测试 | `764 passed` |
-| 生产 API | `https://api.tiaowulan.com` |
-| 演示页 | `https://api.tiaowulan.com/demo/` |
+| 全量测试 | `780 passed`（2026-09-22，本地） |
+| 原生产 API | `api.tiaowulan.com` 已停用，不作为当前验收入口 |
+| 开发验收 | 本机 API / 容器内网；连接地址由部署方配置 |
 
-生产默认保持：
+配置默认值（域名停用后未重新核验运行服务器状态）：
 
 ```dotenv
 CARE_TOOL_SCOPE_ENABLED=false
 AGENT_INTENT_ROUTING_ENABLED=false
 ```
 
-演示环境开启这两个开关做真实质量和性能对比。养护场景实测输入由约 79k 降至约 13k，但仍需继续观察质量后才可生产开启。
+历史演示曾开启这两个开关做单次样本对比；该记录不是当前部署状态或性能保证。
 
 ## 系统边界
 
@@ -52,6 +52,7 @@ tests/                         pytest 回归测试
 ```bash
 python -m pytest -q
 python scripts/validate_eval_set.py
+python scripts/validate_knowledge.py
 git diff --check
 docker compose build agent agent-demo
 ```
