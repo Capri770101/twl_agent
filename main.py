@@ -73,7 +73,7 @@ _docs_kwargs = {} if settings.API_DOCS_ENABLED else {
 app = FastAPI(
     title='跳舞兰花卉智能体 API',
     description='跳舞兰花卉智能体：基于 ReAct 的花艺顾问 AI，支持微信小程序等多平台接入',
-    version='1.2.0',
+    version='1.3.0',
     lifespan=lifespan,
     **_docs_kwargs,
 )
