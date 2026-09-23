@@ -5,6 +5,10 @@ from typing import Any
 
 
 def validate_plan(plan: dict[str, Any], requirement: Any = None) -> list[str]:
+    """返回硬约束错误列表（只有这些会触发 blocked）。
+
+    软约束（预算超出、支数不一致）记录在 warnings 字段但不阻断方案返回。
+    """
     errors: list[str] = []
     if not isinstance(plan, dict):
         return ['方案不是对象']
@@ -15,24 +19,35 @@ def validate_plan(plan: dict[str, Any], requirement: Any = None) -> list[str]:
     if not main:
         errors.append('缺少主花')
     all_names = [str(x.get('name')) for x in main + fillers + foliage]
-    single = getattr(requirement, 'single_flower', None) if requirement is not None else None
-    if single and any(single not in name for name in all_names):
-        errors.append(f'违反单一花材约束：{single}')
     excluded = set(getattr(requirement, 'excluded_flowers', []) or []) if requirement is not None else set()
     excluded.update(str(x) for x in (plan.get('exclude_flowers') or []))
     for name in all_names:
         if any(bad and bad in name for bad in excluded):
             errors.append(f'包含排除花材：{name}')
+    return list(dict.fromkeys(errors))
+
+
+def validate_plan_warnings(plan: dict[str, Any], requirement: Any = None) -> list[str]:
+    """返回软约束警告（不阻断方案，供模型和前端参考）。"""
+    warnings: list[str] = []
+    if not isinstance(plan, dict):
+        return warnings
+    design = plan.get('design') if isinstance(plan.get('design'), dict) else {}
+    main = [x for x in (design.get('main_flowers') or []) if isinstance(x, dict) and x.get('name')]
+    single = getattr(requirement, 'single_flower', None) if requirement is not None else None
+    all_names = [str(x.get('name')) for x in main]
+    if single and any(single not in name for name in all_names):
+        warnings.append(f'违反单一花材约束：{single}')
     expected_stems = getattr(requirement, 'stem_count', None) if requirement is not None else None
     if expected_stems is not None and main:
         actual = sum(int(x.get('qty') or 0) for x in main)
         if actual != int(expected_stems):
-            errors.append(f'主花支数不一致：期望{expected_stems}，实际{actual}')
+            warnings.append(f'主花支数不一致：期望{expected_stems}，实际{actual}')
     budget = getattr(requirement, 'budget_num', None) if requirement is not None else None
     price = plan.get('budget_num') or plan.get('price') or plan.get('estimated_price_num')
     if budget is not None and isinstance(price, (int, float)) and price > float(budget) * 1.15:
-        errors.append(f'预算超出：方案{price}，预算{budget}')
-    return list(dict.fromkeys(errors))
+        warnings.append(f'预算超出：方案{price}，预算{budget}')
+    return warnings
 
 
 def annotate_plan_validation(plan: dict[str, Any], requirement: Any = None) -> dict[str, Any]:
@@ -77,8 +92,12 @@ def repair_plan(plan: dict[str, Any], requirement: Any = None) -> dict[str, Any]
             design['main_flowers'][0]['qty'] = int(expected)
 
     errors = validate_plan(plan, requirement)
+    warnings = validate_plan_warnings(plan, requirement)
     plan['validation_errors'] = errors
-    plan['validation_status'] = 'blocked' if errors else 'ok'
+    plan['validation_warnings'] = warnings
+    plan['validation_status'] = 'blocked' if errors else ('has_warnings' if warnings else 'ok')
     if not errors:
         plan.pop('validation_errors', None)
+    if not warnings:
+        plan.pop('validation_warnings', None)
     return plan
