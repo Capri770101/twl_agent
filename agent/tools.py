@@ -61,7 +61,9 @@ async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict
     """
     uid = (_context or {}).get('user_id', '')
     sid = (_context or {}).get('session_id', '')
-    if plan in ('latest', 'latest_diy', '', None):
+    if plan == 'latest_diy':
+        return await memory.get_session_json(uid, sid, 'latest_diy_plan') if sid else None
+    if plan in ('latest', '', None):
         if sid:
             selected = await memory.get_session_json(uid, sid, 'selected_plan')
             if selected:

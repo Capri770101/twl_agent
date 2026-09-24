@@ -1854,6 +1854,8 @@ class ReActAgent:
                         'reply': getattr(result, 'reply', '') or '',
                         'ui': getattr(_ui, 'value', 'text') if _ui is not None else 'text',
                         'data': getattr(result, 'data', None) or {},
+                        # 语音播报文案（ChatResponse validator 已按 UI 类型生成）
+                        'speech_text': getattr(result, 'speech_text', '') or '',
                     })
                 except asyncio.TimeoutError:
                     logger.warning('[agent] 流式对话超时（%.0fs）', settings.request_timeout)
@@ -2465,7 +2467,7 @@ class ReActAgent:
 
         # ── 6. 方案即生图 ──
         diy_done = _diy_produced
-        eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
+        eff_done = bool(_extract_image_task(tool_log).get('task_id'))
         # 产出新方案 → 清掉上一张图的补调标记，让新方案能重新触发一次生图
         if diy_done:
             await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
@@ -2492,7 +2494,7 @@ class ReActAgent:
         # 用户说什么都回同一句「正在为您生成效果图预览」，且每句话都新建一个生图任务烧 API。
         eff_confirmed = await mem_store.get_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED) == '1'
         eff_forced = await mem_store.get_session_flag(user_id, sid, _FLAG_IMAGE_FORCED) == '1'
-        eff_done = any(tc.name == 'generate_effect_image' and tc.status == 'ok' for tc in tool_log)
+        eff_done = bool(_extract_image_task(tool_log).get('task_id'))
         # 本轮模型**自己**真的调了生图 → 同样标记「本会话已出过图」。否则下一轮只要 ui 不是
         # plan_card 就会再补调一次；线上实测（2026-09-16）：用户随后问「数据库包括哪些」，
         # 系统又白烧一次生图 API（image_forced 原先只在「补调成功」时置位，漏了这条路径）。
@@ -2541,6 +2543,13 @@ class ReActAgent:
                     data['result_url'] = eff['result_url']
                 tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok', source='system'))
                 new_msgs.append({'role': 'tool', 'content': json.dumps(eff, ensure_ascii=False), 'tool_call_id': 'forced_effect_image'})
+
+        # 所有回复分支统一绑定真实任务，包括没有 respond_to_user 的工具轮次。
+        image_task = _extract_image_task(tool_log)
+        if image_task.get('task_id') and not _clarified:
+            data = {**data, **image_task}
+            if not isinstance(data.get('poll'), str) or not data['poll']:
+                data['poll'] = f"/tasks/{image_task['task_id']}"
 
         # ── 8. 回复清理 ──
         final_reply = _clean_reply(final_reply)

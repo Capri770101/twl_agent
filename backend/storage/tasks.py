@@ -303,6 +303,78 @@ async def create_image_task(prompt: str, user_id: str | None = None) -> str:
     return task_id
 
 
+def _run_greeting_task(task_id: str, prompt: str, overlay: dict) -> None:
+    try:
+        asyncio.run(_generate_greeting_async(task_id, prompt, overlay))
+    except asyncio.CancelledError:
+        logger.warning('[tasks] 贺卡任务被取消 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='任务被取消')
+    except Exception:
+        logger.exception('[tasks] 贺卡后台执行异常 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='贺卡后台执行异常')
+
+
+def _run_greeting_task_guarded(task_id: str, prompt: str, overlay: dict) -> None:
+    try:
+        _run_greeting_task(task_id, prompt, overlay)
+    finally:
+        _release_image_slot()
+
+
+async def _generate_greeting_async(task_id: str, prompt: str, overlay: dict) -> None:
+    """AI 背景生图 + Pillow 叠字合成贺卡。
+
+    纯 AI 出图有两个实测问题：中文文字必乱码、画面不像贺卡（没有卡片版式）。
+    因此分工固定：Qwen 只负责生成花卉背景，文字/称呼/落款由 Pillow 绘制在
+    半透明书写面板上，保证可读性与贺卡版式。生图源不可用时回退纯模板合成。
+    """
+    try:
+        from agent.skills.skill_greeting import compose_card_over_background, _render_card_image
+
+        bg: bytes | None = None
+        if settings.IMAGE_PROVIDER == 'qwen' and (settings.IMAGE_API_KEY or settings.llm_api_key):
+            bg = await _generate_with_qwen(prompt)
+        elif settings.IMAGE_PROVIDER == 'hy' and settings.HY_API_KEY:
+            bg = await _generate_with_hy(prompt)
+
+        if bg:
+            png = await asyncio.to_thread(
+                compose_card_over_background, bg,
+                overlay.get('text', ''), overlay.get('recipient', ''),
+                overlay.get('sender', ''), overlay.get('template', 'warm'),
+            )
+        else:
+            rendered = await asyncio.to_thread(
+                _render_card_image, overlay.get('text', ''),
+                overlay.get('recipient', ''), overlay.get('sender', ''),
+                overlay.get('template', 'warm'),
+            )
+            png = rendered['bytes']
+
+        result_url = save_generated(f'greet_{task_id}.png', png)
+        _update_task(task_id, 'done', result_url=result_url)
+    except Exception as e:  # noqa: BLE001
+        logger.exception('[tasks] 贺卡合成失败 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error=str(e) or '贺卡生成失败')
+
+
+async def create_greeting_card_task(prompt: str, overlay: dict, user_id: str | None = None) -> str:
+    """创建贺卡合成任务（AI 背景 + 文字叠加），复用生图槽位与 /tasks/{id} 轮询契约。"""
+    task_id = uuid.uuid4().hex[:16]
+    _save_task(task_id, 'processing', prompt, user_id=user_id)
+    if not _try_reserve_image_slot():
+        logger.warning('[tasks] 贺卡队列已满，拒绝新任务 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='贺卡生成排队已满，请稍后重试')
+        return task_id
+    try:
+        _IMAGE_EXECUTOR.submit(_run_greeting_task_guarded, task_id, prompt, overlay)
+    except Exception:
+        _release_image_slot()
+        logger.exception('[tasks] 贺卡任务提交失败 task_id=%s', task_id)
+        _update_task(task_id, 'failed', error='贺卡任务提交失败，请稍后重试')
+    return task_id
+
+
 async def get_image_task(task_id: str, user_id: str | None = None) -> dict[str, Any]:
     """获取任务状态；提供 user_id 时严格按归属过滤，否则仅内部调用。
 

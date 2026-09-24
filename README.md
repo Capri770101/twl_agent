@@ -51,7 +51,8 @@
 | 🗣️ **对话推荐** | 基于场景（送女友 / 送长辈 / 慰问 / 开业）的花礼推荐，**理解口语化表达**（「手头不宽裕」「想让她开心一下」） | `POST /chat` |
 | 🌸 **DIY 方案设计** | 花材清单 → 完整方案（含配花 / 叶材 / 包装 / 支数），支持「单一花材严格语义」 | `generate_diy_plan` · `revise_diy_plan` |
 | 🎨 **AI 生图** | 按方案**真实花材与支数**生成效果图（768×1024），OSS 转存防失效；异步任务 + 轮询 | `generate_effect_image` · `GET /tasks/{task_id}` |
-| 💌 **AI 电子贺卡** | 5 套模板（暖色 / 淡粉 / 绿色 / 信纸 / 夜色），可定制文案与署名，水印固定「以花传情」 | `suggest_greetings` · `render_greeting_card` |
+| 💌 **AI 电子贺卡** | AI 生成花卉背景 + 服务端排版文字（异步任务），文案可定制称呼/署名，5 套色调模板 | `suggest_greetings` · `POST /greetings/render` |
+| 🎙️ **语音输入/播报** | ASR 转写用户语音；TTS 播报「结果一句话 + 下一步操作」，不念全文；按文案哈希缓存 | `POST /speech/transcribe` · `POST /speech/tts` |
 | 🏪 **平台商品只读查询** | 实时查平台在售商品（图片 / 价格 / 花材构成 / 评分 / 库存），**自动去重并渲染商品卡** | `platform_db_query_entity` |
 | 🧠 **多轮会话** | 按 `session_id` 保持上下文；需求跨轮累积（送花对象 / 场合 / 预算 / 色系） | `GET /conversations/{id}/messages` |
 | 🔍 **跨会话历史检索** | 按关键词回溯该用户**所有**历史会话，回答「上次那家店 / 我之前买过什么」 | `search_history` |
@@ -122,6 +123,7 @@
 |---|---|---|
 | LLM（对话） | OpenAI 兼容接口（生产当前为阿里云百炼 Qwen 兼容配置） | 由 `LLM_BASE_URL` / `LLM_MODEL` 决定；演示路由已对独立养护和贺卡请求做工具收窄实验 |
 | LLM（生图） | `IMAGE_PROVIDER` 配置的 qwen / hy / mock | qwen 走原生 multimodal-generation；生产是否真实出图取决于图片供应商配置 |
+| 语音（TTS/ASR） | 百炼原生 `qwen3-tts-flash` / `qwen3-asr-flash` | 复用 `LLM_API_KEY`；`SPEECH_ENABLED=false` 可整体关闭；详见 `docs/SPEECH_API.md` |
 | LLM SDK | `openai` Python SDK（兼容模式） | 同一套接口可切其它兼容厂商 |
 | Agent 框架 | 自研 ReAct（`agent/engine`） | 工具注册表 + 多轮记忆 + 流式回调 + 轮数上限 |
 | 后端框架 | FastAPI + Pydantic v2 | 异步路由 + 自动 OpenAPI 文档 |
@@ -576,3 +578,6 @@ docker compose --profile demo down                            # 停（卷保留�
 ---
 
 > **项目状态**：🟢 在跑 · **最后核验**：2026-09-21（759 测试全绿 · 生产 + 体验栈均 healthy）
+# 本轮审查
+
+2026-09-24 预览图链路、语音与贺卡联动修复及验证范围见 [审查记录](docs/REVIEW-20260924.md)。

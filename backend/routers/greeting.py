@@ -13,7 +13,7 @@ from backend.execution import run_worker
 from backend.rate_limit import check_rate_limit
 from backend.config import settings
 from agent.engine.llm import call_llm
-from agent.skills.skill_greeting import render_greeting_card
+from backend.storage.tasks import create_greeting_card_task
 
 router = APIRouter(prefix='/greetings', tags=['greetings'])
 logger = logging.getLogger('greeting_api')
@@ -96,12 +96,38 @@ async def render(req: RenderRequest, authenticated: str | None = Depends(current
     authorize(req.user_id, authenticated)
 
     async def generate():
-        data = json.loads(await render_greeting_card(
-            req.text, recipient=req.recipient, sender=req.sender, occasion=req.occasion,
-            template=req.template, _context={'user_id': req.user_id},
-        ))
-        if data.get('error') or not data.get('image_url'):
-            raise ValueError('render failed')
-        return {'ui': 'greeting_card', 'data': data, 'ai_generated': True}
+        # 分工（2026-09-24 实测修正）：AI 直接生成"贺卡"会得到花卉照片——中文乱码、
+        # 没有卡片版式。因此 Qwen 只生成花卉背景，正文/称呼/落款由服务端 Pillow
+        # 绘制在渐变磨砂文字区上，保证文字可读、版式像贺卡，且背景每次不同。
+        prompt = (
+            f'为一张竖版鲜花贺卡生成背景图，场合：{req.occasion or "日常祝福"}，'
+            f'风格基调：{req.template}，送给：{req.recipient or "重要的人"}。'
+            '构图硬性要求：新鲜花材（玫瑰、小苍兰、洋桔梗等应季鲜花）与绿叶集中分布在画面顶部和左右边缘，'
+            '形成自然的花环式环绕；画面下半部必须是干净柔和的浅色纸张或布纹底，不放置任何花材，'
+            '用于后期叠加祝福文字。整体为高级花店品牌视觉，柔和自然光，摄影级质感，'
+            '色彩根据场合自然变化，淡雅高级不艳俗。'
+            '禁止生成任何文字、字母、数字、水印、logo、边框，禁止出现乱码。'
+        )
+        task_id = await create_greeting_card_task(prompt, {
+            'text': req.text,
+            'recipient': req.recipient,
+            'sender': req.sender,
+            'template': req.template,
+        }, user_id=req.user_id)
+        return {
+            'ui': 'greeting_card',
+            'data': {
+                'task_id': task_id,
+                'poll': f'/tasks/{task_id}',
+                'text': req.text,
+                'recipient': req.recipient,
+                'sender': req.sender,
+                'template': req.template,
+                'occasion': req.occasion,
+                'ai_visual': True,
+                'note': '背景由 AI 生图生成，文字由服务端排版叠加，保证清晰可读。',
+            },
+            'ai_generated': True,
+        }
 
     return await execute(req.user_id, generate)

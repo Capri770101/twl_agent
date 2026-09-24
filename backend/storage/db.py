@@ -67,6 +67,22 @@ _SCHEMA = [
         error TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )""",
+    # ── 语音用量埋点（供 /api/metrics/speech 面板使用）──
+    # kind: tts=文本转语音 / asr=语音转文本；units: TTS 记字符数、ASR 记音频秒数（对应用量计费口径）。
+    # cached=true 表示 TTS 命中缓存（未调上游，零成本）。IF NOT EXISTS，init_db 自动建，存量无感升级。
+    """CREATE TABLE IF NOT EXISTS speech_logs (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        platform_id TEXT,
+        kind TEXT NOT NULL,
+        model TEXT,
+        units INTEGER NOT NULL DEFAULT 0,
+        cached BOOLEAN NOT NULL DEFAULT FALSE,
+        latency_ms INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
 ]
 
 _INDEXES = [
@@ -78,6 +94,8 @@ _INDEXES = [
     'CREATE INDEX IF NOT EXISTS idx_call_logs_created ON call_logs(created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_call_logs_platform ON call_logs(platform_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_tool_call_logs_call ON tool_call_logs(call_log_id)',
+    'CREATE INDEX IF NOT EXISTS idx_speech_logs_created ON speech_logs(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_speech_logs_kind ON speech_logs(kind, created_at DESC)',
 ]
 
 

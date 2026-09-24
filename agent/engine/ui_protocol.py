@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class UIType(StrEnum):
@@ -79,6 +79,23 @@ class ChatResponse(BaseModel):
     # 也不符合"在适当位置标识"的要求）：接入方拿到这两个字段后，在界面显著位置展示即可。
     ai_generated: bool = True
     content_disclosure: str = AI_CONTENT_DISCLOSURE
+    # 确定性语音引导，由客户端交给 /speech/tts；不朗读完整卡片。
+    speech_text: str = ""
+
+    @model_validator(mode='after')
+    def _fill_speech_text(self) -> 'ChatResponse':
+        """集中填充所有响应路径；播报失败不影响对话。"""
+        if self.speech_text:
+            return self
+        try:
+            from backend.config import settings
+            if not settings.SPEECH_ENABLED:
+                return self
+            from agent.speech_script import build_speech_text
+            self.speech_text = build_speech_text(str(self.ui), self.data, self.reply)
+        except Exception:  # noqa: BLE001
+            self.speech_text = ''
+        return self
 
 
 class ErrorResponse(BaseModel):

@@ -29,7 +29,8 @@ AGENT_INTENT_ROUTING_ENABLED=false
 - 商品、店铺数据只读查询；订单和用户实体默认拒绝。
 - DIY 方案是估算方案，不是平台 SKU；当前不创建真实订单、不收款、不分账。
 - 生图为异步任务：响应返回 `task_id` / `poll`，客户端轮询 `GET /tasks/{task_id}`。
-- 个性化贺卡开发接口：`POST /greetings/draft` 生成可编辑文案，`POST /greetings/render` 生成 PNG；当前订单摘要由宿主提供，接口尚未绑定真实订单事件。
+- 个性化贺卡开发接口：`POST /greetings/draft` 生成可编辑文案，`POST /greetings/render` 返回异步任务（AI 背景 + 服务端排版文字，轮询 `GET /tasks/{id}` 取图）；当前订单摘要由宿主提供，接口尚未绑定真实订单事件。
+- 语音接口：`POST /speech/transcribe`（音频转文字）与 `POST /speech/tts`（文字转语音，WAV）；`/chat` 响应带 `speech_text` 播报文案（只念操作引导）。前端录音需 HTTPS，详见 `docs/SPEECH_API.md`。
 - 前端只能渲染后端结构化 `diy=true` 的方案，不得从自然语言猜 DIY 卡。
 
 ## 关键目录
@@ -39,8 +40,10 @@ agent/agent.py                 ReAct 主循环、护栏、UI 推导
 agent/engine/intent.py         候选意图路由
 agent/engine/tool_scope.py     请求级工具范围
 agent/plan_validator.py        DIY 方案确定性校验
+agent/speech_script.py         语音播报文案模板（按 UI 类型引导操作）
 agent/toolkit.py               工具注册与执行
 backend/routers/chat.py        /chat 与 /chat/stream
+backend/routers/speech.py      /speech/tts 与 /speech/transcribe
 backend/data_gateway/          数据源授权和只读查询
 backend/storage/               PostgreSQL 会话、任务和记忆
 evals/flower_scenarios.jsonl   真实场景评测集
@@ -81,3 +84,6 @@ curl http://127.0.0.1:8010/health
 代码必须先提交并更新 `CHANGELOG.md`，通过测试和 Docker 构建；先演示、后生产。发布前备份数据库、旧代码和镜像，记录 commit、开关和发布目录。回滚优先恢复旧镜像或关闭 feature flag，不删除数据库字段和运行数据。
 
 H5 是独立仓库，当前版本和发布入口见 `D:\Work\tiaowulan\H5\README.md`、`CHANGELOG.md` 与 `docs/RELEASE_PROCESS.md`。
+# 2026-09-24 交付补充
+
+本轮预览图可靠性、语音播报、贺卡订单与文档整理见 [审查记录](docs/REVIEW-20260924.md)。本轮提交不等于线上部署。

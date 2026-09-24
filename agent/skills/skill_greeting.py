@@ -565,6 +565,107 @@ def _render_card_image(text: str, recipient: str, sender: str, template: str) ->
     return {'bytes': buf.getvalue(), 'fitted_text': fitted, 'font_size': used_size}
 
 
+def compose_card_over_background(bg_bytes: bytes, text: str, recipient: str, sender: str, template: str) -> bytes:
+    """把 AI 生成的花卉背景与文字合成为一张真正的贺卡。
+
+    实测教训（2026-09-24）：
+    - 只交给 AI 直接生成"贺卡"，结果是花卉照片——中文必乱码、没有卡片版式；
+    - 第一版合成用大面积不透明白板盖住背景，花卉被遮死，效果像"照片上贴白纸"。
+    现在的分工：AI 生成花卉背景（花材集中在顶部/边角），文字绘制在下部的
+    渐变磨砂区（上透明下乳白），既露出花艺质感，又保证正文可读。
+    """
+    from PIL import Image, ImageDraw, ImageFilter
+
+    import io
+
+    w, h = settings.CARD_WIDTH or 900, settings.CARD_HEIGHT or 1200
+    tpl = _TEMPLATES.get(template) or _TEMPLATES['warm']
+    ink = tpl['ink']
+
+    try:
+        bg = Image.open(io.BytesIO(bg_bytes)).convert('RGB')
+    except Exception:  # noqa: BLE001
+        raise RuntimeError('AI 背景图解析失败')
+
+    # 等比缩放并居中裁切到贺卡画布尺寸，避免拉伸变形
+    scale = max(w / bg.width, h / bg.height)
+    bg = bg.resize((int(bg.width * scale), int(bg.height * scale)), Image.LANCZOS)
+    left = (bg.width - w) // 2
+    top = (bg.height - h) // 2
+    img = bg.crop((left, top, left + w, top + h)).convert('RGBA')
+
+    # 文字区毛玻璃：对下半部做轻模糊，让背景花卉柔和虚化，文字更突出
+    frost_zone_top = int(h * 0.42)
+    blurred = img.filter(ImageFilter.GaussianBlur(6))
+    zone_mask = Image.new('L', (w, h), 0)
+    zone_draw = ImageDraw.Draw(zone_mask)
+    zone_draw.rectangle([0, frost_zone_top, w, h], fill=255)
+    img = Image.composite(blurred, img, zone_mask)
+
+    # 渐变乳白遮罩：从文字区顶部（全透明）到底部（近实色），过渡自然
+    veil = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    veil_draw = ImageDraw.Draw(veil)
+    veil_start = frost_zone_top - 60
+    rows = h - veil_start
+    base_rgb = tpl['bg_bottom']
+    for i in range(rows):
+        t = i / max(1, rows - 1)
+        # ease-in：顶部几乎透明，底部接近纯白（最高 236）
+        alpha = int(236 * (t ** 1.6))
+        veil_draw.line([(0, veil_start + i), (w, veil_start + i)], fill=base_rgb + (alpha,))
+    img = Image.alpha_composite(img, veil)
+
+    layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+
+    # 细边框：整卡内缩描边，做出"卡片"轮廓感
+    m = 34
+    draw.rounded_rectangle([m, m, w - m, h - m], radius=22, outline=tpl['frame'] + (160,), width=2)
+
+    # 称呼：文字区顶部居中
+    y_cursor = frost_zone_top + 46
+    if recipient:
+        r_text = recipient.strip()[:24]
+        r_size = 50 if len(r_text) <= 8 else (42 if len(r_text) <= 14 else 34)
+        r_font = _load_font(r_size)
+        rw = _text_width(r_text, r_font)
+        draw.text(((w - rw) / 2, y_cursor), r_text, font=r_font, fill=ink)
+        y_cursor += int(r_size * 1.55)
+
+    # 分隔装饰：细线 + 中央小花
+    div_y = y_cursor + 8
+    draw.line([(w / 2 - 120, div_y), (w / 2 - 24, div_y)], fill=tpl['frame'] + (170,), width=1)
+    draw.line([(w / 2 + 24, div_y), (w / 2 + 120, div_y)], fill=tpl['frame'] + (170,), width=1)
+    _draw_blossom(draw, w / 2, div_y, 9, tpl['accent'])
+
+    # 正文：居中排版，行距加大，字色用深墨保证可读
+    body_area = (110, div_y + 40, w - 110, h - 190)
+    text_len = len(text)
+    body_max = 44 if text_len <= 24 else (38 if text_len <= 60 else (32 if text_len <= 120 else 27))
+    _fit_and_draw_text(draw, text, body_area, ink, body_max, 20, 1.66)
+
+    # 落款：右下
+    if sender:
+        s_text = '—— ' + sender.strip()[:30]
+        s_font = _load_font(30 if len(s_text) <= 12 else 24)
+        sw = _text_width(s_text, s_font)
+        draw.text((w - m - 40 - sw, h - 132), s_text, font=s_font, fill=ink)
+
+    # AIGC 标识（合规要求，保持可见但克制）
+    ai_font = _load_font(15)
+    ai_text = 'AI 生成'
+    aw = _text_width(ai_text, ai_font)
+    draw.text(((w - aw) / 2, h - 64), ai_text, font=ai_font, fill=ink[:3] + (120,))
+
+    img = Image.alpha_composite(img, layer)
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
 # --------------------------------------------------------------------------- #
 # 四、工具 2：render_greeting_card —— 渲染电子贺卡图
 # --------------------------------------------------------------------------- #

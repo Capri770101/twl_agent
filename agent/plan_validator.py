@@ -34,10 +34,15 @@ def validate_plan_warnings(plan: dict[str, Any], requirement: Any = None) -> lis
         return warnings
     design = plan.get('design') if isinstance(plan.get('design'), dict) else {}
     main = [x for x in (design.get('main_flowers') or []) if isinstance(x, dict) and x.get('name')]
+    fillers = [x for x in (design.get('fillers') or []) if isinstance(x, dict) and x.get('name')]
+    foliage = [x for x in (design.get('foliage') or []) if isinstance(x, dict) and x.get('name')]
     single = getattr(requirement, 'single_flower', None) if requirement is not None else None
     all_names = [str(x.get('name')) for x in main]
-    if single and any(single not in name for name in all_names):
-        warnings.append(f'违反单一花材约束：{single}')
+    if single:
+        # 「只要某种花」= 主花必须全是该花材，且不应再掺配花/叶材。
+        # 只比对主花名称会漏掉「玫瑰 + 满天星」这类实际违反单一花材的方案。
+        if any(single not in name for name in all_names) or fillers or foliage:
+            warnings.append(f'违反单一花材约束：{single}')
     expected_stems = getattr(requirement, 'stem_count', None) if requirement is not None else None
     if expected_stems is not None and main:
         actual = sum(int(x.get('qty') or 0) for x in main)

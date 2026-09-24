@@ -332,6 +332,16 @@ async def get_messages(conversation_id: str, user_id: str, limit: int = 50, auth
     return await mem_store.load_history(conversation_id, limit)
 
 
+@router.delete('/conversations/{conversation_id}')
+async def delete_conversation(conversation_id: str, user_id: str, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
+    """删除当前用户的一条会话及其消息。"""
+    require_user(user_id, authenticated_user)
+    deleted = await mem_store.delete_conversation(conversation_id, user_id=user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail='会话不存在')
+    return {'ok': True, 'session_id': conversation_id}
+
+
 @router.post('/conversations')
 async def create_conversation(req: CreateConvRequest, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
     require_user(req.user_id, authenticated_user)

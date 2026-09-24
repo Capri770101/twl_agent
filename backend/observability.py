@@ -130,3 +130,31 @@ def record_llm(prompt_tokens: int = 0, completion_tokens: int = 0, error: bool =
         logger.warning('[observability] token 用量写入失败 cid=%s', cid, exc_info=True)
     finally:
         current.reset(token)
+
+
+def record_speech_call(
+    user_id: str,
+    platform_id: str | None,
+    kind: str,
+    model: str,
+    units: int = 0,
+    cached: bool = False,
+    latency_ms: int = 0,
+    status: str = 'success',
+    error: str | None = None,
+) -> None:
+    """记录一次语音调用（TTS/ASR），供 /api/metrics/speech 面板统计用量与成本。
+
+    kind: 'tts' | 'asr'；units 对应用量计费口径（TTS=字符数，ASR=音频秒数）。
+    cached=True 表示 TTS 命中缓存未调上游（零成本）。
+    与其它埋点一致 best-effort：失败只记 warning，绝不影响语音主链路。
+    """
+    try:
+        with transaction() as conn:
+            conn.execute(
+                'INSERT INTO speech_logs (user_id, platform_id, kind, model, units, cached, latency_ms, status, error, created_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
+                (user_id, platform_id, kind, model, int(units or 0), bool(cached), int(latency_ms or 0), status, str(error)[:500] if error else None),
+            )
+    except Exception as exc:  # noqa: BLE001 — 监控失败绝不影响业务
+        logger.warning('[observability] record_speech_call 失败 kind=%s: %s', kind, exc)

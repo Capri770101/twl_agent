@@ -1,10 +1,12 @@
 # 文档地图
 
-新增开发接口：[个性化贺卡 API](GREETING_API.md)，当前未部署，订单摘要由接入方提供。
+新增开发接口：[个性化贺卡 API](GREETING_API.md)、[语音 API（TTS/ASR）](SPEECH_API.md)。贺卡订单摘要由接入方提供；语音前端录音需 HTTPS（见 SPEECH_API.md）。
 
 接收方 AI 先读根目录 `README.md` 和 `DELIVERY.md`。本文用于定位专题文档。
 
 ## 当前规范
+
+本轮审查与交付边界：[2026-09-24 联动审查](REVIEW-20260924.md)。
 
 | 文档 | 用途 |
 |---|---|
@@ -21,6 +23,8 @@
 | `EVALUATION.md` | 真实模型场景评测规范 |
 | `KNOWLEDGE_BASE.md` | 知识域、添加规则和质量门 |
 | `IMAGE_STYLE_REFERENCE.md` | 店铺风格参考生图现状与下一阶段 |
+| `GREETING_API.md` | 贺卡文案草稿与渲染接口 |
+| `SPEECH_API.md` | 语音输入（ASR）与语音播报（TTS）接口 |
 | `dev-and-release-workflow.md` | 开发、版本和发布流程 |
 
 ## 接入与业务专题

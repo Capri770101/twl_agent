@@ -24,9 +24,14 @@ tone 支持 warm/literary/playful/formal/deep。
 {"user_id":"换票返回的用户ID","text":"用户确认后的正文","recipient":"亲爱的你","sender":"爱你的我","occasion":"生日","template":"blush"}
 ```
 
-返回 `{ui:"greeting_card",data:{image_url,text,recipient,sender,template,...},ai_generated:true}`。
+返回 `{ui:"greeting_card",data:{task_id,poll,text,recipient,sender,template,ai_visual,note},ai_generated:true}`。
 正文最多200字，template 支持 warm/blush/green/letter/night。
-此接口直接渲染提供的文字，不再调用文案模型。图片是本地PNG，返回相对地址时拼接当前API地址。
+
+> 契约变更（2026-09-24）：贺卡视觉不再同步 Pillow 模板合成（千篇一律），改为
+> **AI 生成花卉背景 + 服务端排版文字**的异步任务。响应给 `task_id` 和 `poll`
+> （`/tasks/{id}`），前端轮询到 `status=done` 后取 `result_url`（相对路径拼接当前
+> API 地址，PNG）。文字不交给模型绘制（中文必乱码），由服务端叠在背景上保证可读。
+> 轮询契约与效果图一致，见 `05-前端对接契约.md` 的 image_task 部分。
 
 ## 错误与限制
 

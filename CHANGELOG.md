@@ -1,5 +1,34 @@
 # 智能体版本记录
 
+## 未发布 — 语音能力与贺卡视觉升级（2026-09-24）
+
+### 语音（TTS / ASR）
+
+- 新增 `/speech/tts`（文本转语音）与 `/speech/transcribe`（语音转文本），走百炼原生
+  `qwen3-tts-flash` / `qwen3-asr-flash`，复用 `LLM_API_KEY`，与对话、生图同厂商。
+- `/chat` 响应新增 `speech_text` 字段：按 UI 类型确定性生成「结果一句话 + 下一步操作」，
+  语音只念引导不念全文（零 LLM 成本）；`SPEECH_ENABLED=false` 时为空串。
+- TTS 结果按 `(model, voice, text)` 哈希缓存落 `data/generated/speech_*.wav`，同文案不重复合成。
+- 端点要求 Bearer + user_id 归属校验、按用户限流、音频体积/MIME 双重校验；上游音频 URL 下载前做 SSRF 校验。
+- 语音用量并入现有监控面板：新增 `speech_logs` 表 + `record_speech_call` 埋点 +
+  `GET /api/metrics/speech`，面板加「语音用量」卡片（TTS 字符/缓存命中、ASR 秒数、错误、延迟）。
+- 新增 `scripts/try_speech.py` 试用脚本：无需前端即可 TTS 试听、ASR 转写、回环验证。
+- 前端录音需 HTTPS（手机浏览器 `getUserMedia` 安全上下文限制），智能体端点与传输层无关，已可用。
+
+### 贺卡视觉
+
+- `/greetings/render` 由同步 Pillow 模板合成改为**异步任务**：AI 生成花卉背景 + 服务端排版文字，
+  响应给 `task_id`/`poll`，前端轮询取 `result_url`（契约同 image_task）。
+- 解决两版实测问题：纯 AI 出图中文乱码、不像贺卡；纯 Pillow 合成千篇一律。
+- 生图提示词强制花材集中在顶部/边缘、下半部留净底，禁止任何文字/水印。
+
+### 修复
+
+- `validate_plan_warnings` 单一花材约束回归：此前只比对主花名称，漏判「主花 + 配花/叶材」
+  仍违反单一花材的情况；现一并检查 fillers/foliage。
+- `tests/test_greeting_api.py` 过期用例随 render 异步化更新为断言任务契约。
+- 本地全量 pytest 通过（系统 Python 3.12 + psycopg；flora-dev venv 的 pytest 仍损坏，未使用）。
+
 ## 未发布 — 真实评测后续修复（2026-09-22）
 
 - 养护问句补充“多久换一次水”等自然表达识别。
@@ -110,3 +139,8 @@
 
 验证：全量 pytest；演示和生产健康检查及对话冒烟。实际结果见服务器发布目录。
 回退：使用发布目录记录的旧镜像重建 agent/agent-demo，配置和数据库不变。
+# 2026-09-24 鲁棒性审查
+
+- 修复生图错误被误判成功、无最终工具回复时任务信息丢失、latest_diy 引用旧成品。
+- ASR 限量读取、试用脚本错误退出码、监控延迟加权；增加预览图回归测试。
+- 更新联动审查文档，归档早期贺卡验收快照。

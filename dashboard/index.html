@@ -62,6 +62,41 @@
         </div>
       </section>
 
+      <!-- 语音用量（TTS/ASR，近 24h） -->
+      <section class="card">
+        <div class="card-head">
+          <h3>语音用量</h3>
+          <span class="card-sub">近 24 小时 · TTS 按字符 / ASR 按秒计费</span>
+        </div>
+        <div class="kpis">
+          <div class="kpi">
+            <div class="kpi-label">TTS 合成</div>
+            <div class="kpi-val" id="kpiTtsCalls">—</div>
+            <div class="kpi-foot" id="kpiTtsChars">— 字符</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">TTS 缓存命中</div>
+            <div class="kpi-val" id="kpiTtsCache">—</div>
+            <div class="kpi-foot">命中即零成本</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">ASR 转写</div>
+            <div class="kpi-val" id="kpiAsrCalls">—</div>
+            <div class="kpi-foot" id="kpiAsrSeconds">— 秒音频</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">语音错误</div>
+            <div class="kpi-val" id="kpiSpeechErr">—</div>
+            <div class="kpi-foot">TTS + ASR 失败数</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">语音平均延迟</div>
+            <div class="kpi-val" id="kpiSpeechLat">—</div>
+            <div class="kpi-foot">TTS / ASR 成功调用</div>
+          </div>
+        </div>
+      </section>
+
       <!-- 趋势（整行铺满，最醒目） -->
       <section class="card">
         <div class="card-head">

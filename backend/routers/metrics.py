@@ -145,6 +145,53 @@ async def tools(request: Request) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+@router.get('/speech')
+async def speech(request: Request, hours: int = Query(24, ge=1, le=720)) -> dict[str, Any]:
+    """语音用量：TTS/ASR 调用数、用量（字符/秒）、缓存命中、错误、平均延迟。
+
+    units 口径：TTS=字符数，ASR=音频秒数（对应百炼计费维度）。
+    cached_saves 仅对 TTS 有意义：命中缓存次数 = 省掉的上游合成次数。
+    """
+    _verify(request)
+    with transaction() as conn:
+        rows = conn.execute(
+            """
+            SELECT kind,
+                   count(*) AS calls,
+                   count(*) FILTER (WHERE status='error') AS errors,
+                   count(*) FILTER (WHERE cached) AS cached_hits,
+                   COALESCE(SUM(units) FILTER (WHERE status='success'), 0)::bigint AS units_total,
+                   COALESCE(ROUND(AVG(latency_ms) FILTER (WHERE status='success')),0)::bigint AS avg_latency_ms,
+                   max(created_at) AS last_at
+            FROM speech_logs
+            WHERE created_at >= NOW() - (? || ' hours')::interval
+            GROUP BY kind
+            """,
+            (hours,),
+        ).fetchall()
+    by_kind = {r['kind']: dict(r) for r in rows}
+    tts = by_kind.get('tts') or {}
+    asr = by_kind.get('asr') or {}
+    return {
+        'hours': hours,
+        'tts': {
+            'calls': tts.get('calls', 0),
+            'errors': tts.get('errors', 0),
+            'cached_hits': tts.get('cached_hits', 0),
+            'chars': tts.get('units_total', 0),
+            'avg_latency_ms': tts.get('avg_latency_ms', 0),
+            'last_at': tts.get('last_at'),
+        },
+        'asr': {
+            'calls': asr.get('calls', 0),
+            'errors': asr.get('errors', 0),
+            'seconds': asr.get('units_total', 0),
+            'avg_latency_ms': asr.get('avg_latency_ms', 0),
+            'last_at': asr.get('last_at'),
+        },
+    }
+
+
 @router.get('/stream')
 async def stream(request: Request) -> StreamingResponse:
     """SSE 实时流：每 2s 轮询 call_logs 新行并推送，供面板实时刷新。

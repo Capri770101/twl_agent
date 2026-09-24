@@ -230,6 +230,23 @@ async function loadTools() {
   );
 }
 
+async function loadSpeech() {
+  const s = await api('/speech?hours=24');
+  const tts = s.tts || {}, asr = s.asr || {};
+  $('kpiTtsCalls').textContent = fmtNum(tts.calls);
+  $('kpiTtsChars').textContent = fmtNum(tts.chars) + ' 字符';
+  $('kpiTtsCache').textContent = fmtNum(tts.cached_hits);
+  $('kpiAsrCalls').textContent = fmtNum(asr.calls);
+  $('kpiAsrSeconds').textContent = fmtNum(asr.seconds) + ' 秒音频';
+  const errs = (tts.errors || 0) + (asr.errors || 0);
+  $('kpiSpeechErr').textContent = fmtNum(errs);
+  // 按成功调用数加权，不能用调用更多的一方冒充整体平均延迟。
+  const ttsOk = Math.max(0, (tts.calls || 0) - (tts.errors || 0));
+  const asrOk = Math.max(0, (asr.calls || 0) - (asr.errors || 0));
+  const lat = (ttsOk + asrOk) ? ((tts.avg_latency_ms || 0) * ttsOk + (asr.avg_latency_ms || 0) * asrOk) / (ttsOk + asrOk) : 0;
+  $('kpiSpeechLat').textContent = fmtDur(lat);
+}
+
 /* ---------- 实时调用流（表格） ---------- */
 
 function addFeedRow(d) {
@@ -277,7 +294,7 @@ function startStream() {
 
 async function refreshAll() {
   try {
-    await Promise.all([loadSummary(), loadCalls(), loadPlatforms(), loadTools()]);
+    await Promise.all([loadSummary(), loadCalls(), loadPlatforms(), loadTools(), loadSpeech()]);
     renderFeedEmpty();
     setConn('on', '已连接');
   } catch (e) {

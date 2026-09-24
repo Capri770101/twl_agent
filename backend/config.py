@@ -107,6 +107,17 @@ class Settings(BaseSettings):
     CARD_WIDTH: int = 900  # 贺卡画布宽(px)
     CARD_HEIGHT: int = 1200  # 贺卡画布高(px)
 
+    # ── 语音能力（TTS / ASR，阿里云百炼原生接口，复用 LLM_API_KEY）──
+    # SPEECH_ENABLED=false 时 /speech/* 端点返回 503（fail-closed），chat 响应不带 speech_text。
+    SPEECH_ENABLED: bool = True
+    SPEECH_API_KEY: str = ""  # 留空回退 LLM_API_KEY（同厂商复用）
+    SPEECH_TTS_MODEL: str = "qwen3-tts-flash"
+    SPEECH_TTS_VOICE: str = "Cherry"
+    SPEECH_ASR_MODEL: str = "qwen3-asr-flash"
+    SPEECH_TTS_MAX_CHARS: int = 300   # 播报文案上限：语音只念操作引导，不念全文
+    SPEECH_ASR_MAX_BYTES: int = 10 * 1024 * 1024  # 上传音频上限 10MB
+    SPEECH_ASR_MAX_SECONDS: int = 60  # 前端录音建议上限；服务端目前按字节限制上传
+
     # ── 微信小程序 ──
     WECHAT_APPID: str = Field(default="", validation_alias=AliasChoices('WECHAT_APPID', 'WX_APPID'))
     WECHAT_SECRET: str = Field(default="", validation_alias=AliasChoices('WECHAT_SECRET', 'WX_SECRET'))
