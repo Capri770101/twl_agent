@@ -303,6 +303,33 @@ async def create_image_task(prompt: str, user_id: str | None = None) -> str:
     return task_id
 
 
+async def get_or_create_preview(prompt: str, user_id: str, session_id: str, fingerprint: str) -> str:
+    """跨进程串行化同一视觉请求；在锁内复查任务，避免重复上游计费。
+
+    任务先独立提交后再记关联；进程在两次提交之间崩溃仍可能留孤立任务，
+    不承诺崩溃场景 exactly-once。锁由 PostgreSQL 在事务结束时释放。
+    """
+    import hashlib
+    import json
+    key = 'preview_' + fingerprint
+    lock_id = int.from_bytes(hashlib.sha256(f'{user_id}:{session_id}:{key}'.encode()).digest()[:8], 'big', signed=True)
+    with transaction() as conn:
+        conn.execute('SELECT pg_advisory_xact_lock(?)', (lock_id,))
+        row = conn.execute('SELECT value FROM memories WHERE user_id=? AND category=? AND key=?',
+                           (user_id, session_id, key)).fetchone()
+        cached = json.loads(row['value']) if row else {}
+        if cached.get('task_id'):
+            state = await get_image_task(cached['task_id'], user_id=user_id)
+            if state.get('status') in ('processing', 'done'):
+                return cached['task_id']
+        task_id = await create_image_task(prompt, user_id=user_id)
+        conn.execute(
+            'INSERT INTO memories(user_id, category, key, value, confidence, created_at, updated_at) VALUES (?,?,?,?,1,NOW(),NOW()) '
+            'ON CONFLICT (user_id, category, key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()',
+            (user_id, session_id, key, json.dumps({'task_id': task_id})))
+    return task_id
+
+
 def _run_greeting_task(task_id: str, prompt: str, overlay: dict) -> None:
     try:
         asyncio.run(_generate_greeting_async(task_id, prompt, overlay))

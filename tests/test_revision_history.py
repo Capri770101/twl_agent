@@ -13,6 +13,33 @@ def storage(monkeypatch):
     async def put(u, s, k, v): data[u, s, k] = copy.deepcopy(v)
     monkeypatch.setattr(memory, 'get_session_json', get)
     monkeypatch.setattr(memory, 'set_session_json', put)
+    from contextlib import contextmanager
+    class Result:
+        def __init__(self, rows): self.rows = rows
+        def fetchone(self): return self.rows[0] if self.rows else None
+        def fetchall(self): return self.rows
+    class Conn:
+        def execute(self, sql, args):
+            if 'FOR UPDATE' in sql:
+                assert 'session_id = ?' in sql
+                return Result([{'user_id': 'u'}])
+            if 'pg_advisory_xact_lock' in sql:
+                return Result([])
+            if sql.startswith('SELECT value'):
+                u, s, k = args
+                return Result([{'value': json.dumps(data[u,s,k])}] if (u,s,k) in data else [])
+            if sql.startswith('SELECT key'):
+                u, s, *keys = args
+                return Result([{'key': k, 'value': json.dumps(data[u,s,k])} for k in keys if (u,s,k) in data])
+            if sql.startswith('INSERT INTO memories'):
+                u, s, k, value, *_ = args
+                data[u,s,k] = json.loads(value)
+                return Result([])
+            raise AssertionError(sql)
+    @contextmanager
+    def transaction(): yield Conn()
+    monkeypatch.setattr(memory, 'transaction', transaction)
+    monkeypatch.setattr(tools.tasks, 'transaction', transaction)
     return data
 
 

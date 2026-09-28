@@ -342,6 +342,19 @@ async def delete_conversation(conversation_id: str, user_id: str, authenticated_
     return {'ok': True, 'session_id': conversation_id}
 
 
+@router.get('/conversations/{conversation_id}/plans')
+async def get_plan_versions(conversation_id: str, user_id: str, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
+    """当前用户会话内的完整方案快照，恢复操作仍走串行对话通路。"""
+    require_user(user_id, authenticated_user)
+    conversation = await mem_store.get_conversation(conversation_id)
+    if not conversation or conversation.get('user_id') != user_id:
+        raise HTTPException(status_code=403, detail='无权访问该会话')
+    versions = await mem_store.get_session_json(user_id, conversation_id, 'diy_plan_versions')
+    current = await mem_store.get_session_json(user_id, conversation_id, 'latest_diy_plan')
+    return {'versions': versions if isinstance(versions, list) else [],
+            'current_plan_id': current.get('plan_id') if isinstance(current, dict) else None}
+
+
 @router.post('/conversations')
 async def create_conversation(req: CreateConvRequest, authenticated_user: str | None = Depends(current_user)) -> dict[str, Any]:
     require_user(req.user_id, authenticated_user)

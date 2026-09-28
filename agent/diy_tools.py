@@ -21,21 +21,9 @@ async def _store_diy_plan(plan: dict, _context: dict | None) -> None:
         return
     # 延迟导入，避免循环依赖
     from backend.storage import memory as _memory
-    history = await _memory.get_session_json(uid, sid, 'diy_plan_versions') or []
-    if not isinstance(history, list):
-        history = []
-    previous = await _memory.get_session_json(uid, sid, 'latest_diy_plan')
-    for candidate in (previous, plan):
-        if isinstance(candidate, dict) and candidate.get('plan_id') and not any(p.get('plan_id') == candidate['plan_id'] for p in history):
-            snapshot = copy.deepcopy(candidate)
-            snapshot['version'] = len(history) + 1
-            history.append(snapshot)
-    stored = next((p for p in history if p.get('plan_id') == plan.get('plan_id')), None)
-    if stored:
-        plan['version'] = stored['version']
-    await _memory.set_session_json(uid, sid, 'diy_plan_versions', history)
-    await _memory.set_session_json(uid, sid, 'latest_diy_plan', plan)
-    await _memory.set_session_json(uid, sid, 'selected_plan', plan)
+    selected = await _memory.store_plan_version(uid, sid, plan)
+    plan.clear()
+    plan.update(selected)
 
 
 def _parse_plan(plan: str) -> dict:

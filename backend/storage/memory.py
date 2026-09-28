@@ -177,6 +177,35 @@ async def set_session_json(user_id: str, session_id: str, key: str, value: Any) 
     await upsert_user_memory(user_id, session_id, key, json.dumps(value, ensure_ascii=False))
 
 
+async def store_plan_version(user_id: str, session_id: str, plan: dict) -> dict:
+    """会话行锁保护快照编号和当前方案的同一事务写入。"""
+    import copy
+    with transaction() as conn:
+        row = conn.execute('SELECT user_id FROM sessions WHERE session_id = ? FOR UPDATE', (session_id,)).fetchone()
+        if not row or row['user_id'] != user_id:
+            raise ValueError('无权修改该会话方案')
+        rows = conn.execute('SELECT key, value FROM memories WHERE user_id = ? AND category = ? AND key IN (?, ?)',
+                            (user_id, session_id, 'diy_plan_versions', 'latest_diy_plan')).fetchall()
+        values = {r['key']: json.loads(r['value']) for r in rows}
+        history = values.get('diy_plan_versions') or []
+        previous = values.get('latest_diy_plan')
+        exists = any(p.get('plan_id') == plan.get('plan_id') for p in history)
+        if not exists and plan.get('parent_id') and previous and plan['parent_id'] != previous.get('plan_id'):
+            raise ValueError('方案已被其他请求更新，请基于当前版本重试')
+        for candidate in (previous, plan):
+            if candidate and not any(p.get('plan_id') == candidate.get('plan_id') for p in history):
+                snapshot = copy.deepcopy(candidate)
+                snapshot['version'] = max((int(p.get('version', 0)) for p in history), default=0) + 1
+                history.append(snapshot)
+        selected = next(p for p in history if p.get('plan_id') == plan.get('plan_id'))
+        for key, value in (('diy_plan_versions', history), ('latest_diy_plan', selected), ('selected_plan', selected)):
+            conn.execute(
+                'INSERT INTO memories(user_id, category, key, value, confidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?) '
+                'ON CONFLICT (user_id, category, key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at',
+                (user_id, session_id, key, json.dumps(value, ensure_ascii=False), 1.0, _now(), _now()))
+    return copy.deepcopy(selected)
+
+
 async def set_session_flag(user_id: str, session_id: str, key: str, value: str) -> None:
     await upsert_user_memory(user_id, f'flag:{session_id}', key, value)
 

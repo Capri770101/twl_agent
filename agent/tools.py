@@ -119,10 +119,9 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
             logger.warning('[tools] 店铺风格参考提取失败，回退原始生图 prompt', exc_info=True)
     if not prompt:
         return json.dumps({'error': '方案缺少可生图的描述信息'}, ensure_ascii=False)
-    task_id = await tasks.create_image_task(prompt, user_id=(_context or {}).get('user_id'))
+    task_id = (await tasks.get_or_create_preview(prompt, uid, sid, digest) if uid and sid
+               else await tasks.create_image_task(prompt, user_id=uid))
     result: dict[str, Any] = {'task_id': task_id, 'poll': f'/tasks/{task_id}'}
-    if uid and sid:
-        await memory.set_session_json(uid, sid, 'preview_' + digest, {'task_id': task_id, 'plan_id': plan_obj.get('plan_id')})
     try:
         st = await tasks.get_image_task(task_id, user_id=(_context or {}).get('user_id'))
         if st.get('status') == 'done' and st.get('result_url'):

@@ -192,6 +192,20 @@ async def speech(request: Request, hours: int = Query(24, ge=1, le=720)) -> dict
     }
 
 
+@router.get('/images')
+async def image_metrics(request: Request, hours: int = Query(24, ge=1, le=720)) -> dict[str, Any]:
+    """预览和贺卡共用任务表：记录创建量、完成率及数据库记录的耗时。"""
+    _verify(request)
+    with transaction() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS total, count(*) FILTER (WHERE status='done') AS completed, "
+            "count(*) FILTER (WHERE status='failed') AS failed, "
+            "count(*) FILTER (WHERE status='processing') AS processing, "
+            "COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (updated_at-created_at))) FILTER (WHERE status='done')),0) AS avg_seconds "
+            "FROM image_tasks WHERE created_at >= NOW() - (? || ' hours')::interval", (hours,)).fetchone()
+    return {'hours': hours, **(dict(row) if row else {})}
+
+
 @router.get('/stream')
 async def stream(request: Request) -> StreamingResponse:
     """SSE 实时流：每 2s 轮询 call_logs 新行并推送，供面板实时刷新。
