@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import copy
+import re
 from typing import Any
 
 from agent.toolkit import register_tool
@@ -19,6 +21,19 @@ async def _store_diy_plan(plan: dict, _context: dict | None) -> None:
         return
     # 延迟导入，避免循环依赖
     from backend.storage import memory as _memory
+    history = await _memory.get_session_json(uid, sid, 'diy_plan_versions') or []
+    if not isinstance(history, list):
+        history = []
+    previous = await _memory.get_session_json(uid, sid, 'latest_diy_plan')
+    for candidate in (previous, plan):
+        if isinstance(candidate, dict) and candidate.get('plan_id') and not any(p.get('plan_id') == candidate['plan_id'] for p in history):
+            snapshot = copy.deepcopy(candidate)
+            snapshot['version'] = len(history) + 1
+            history.append(snapshot)
+    stored = next((p for p in history if p.get('plan_id') == plan.get('plan_id')), None)
+    if stored:
+        plan['version'] = stored['version']
+    await _memory.set_session_json(uid, sid, 'diy_plan_versions', history)
     await _memory.set_session_json(uid, sid, 'latest_diy_plan', plan)
     await _memory.set_session_json(uid, sid, 'selected_plan', plan)
 
@@ -61,9 +76,28 @@ async def generate_diy_plan(requirements: str, shop_id: str='', _context: dict |
 @register_tool(name='revise_diy_plan', description='基于已有方案 + 自然语言反馈，调整出下一版花艺方案：可调预算（便宜点/高档）、改风格、改色系、移除指定花材（不要X/去掉X）。返回带 version 与 parent_id 的可追溯新方案。改版会继承原方案的店铺限定，原料不会跳出该店在售范围。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '上一版方案 JSON 或含 JSON 的文本'}, 'feedback': {'type': 'string', 'description': '用户反馈，如 便宜点/换成红玫瑰/不要康乃馨/颜色再大胆'}}, 'required': ['plan', 'feedback']}, inject_context=True, tags=['diy'])
 async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) -> str:
     from agent.tools import annotate_shop_materials, build_plan_copy_text, revise_with_llm
-
+    from backend.storage import memory as _memory
     ctx_shop = str((_context or {}).get('shop_id') or '').strip()
+    ctx = _context or {}
+    if ctx.get('user_id') and ctx.get('session_id'):
+        latest = await _memory.get_session_json(ctx['user_id'], ctx['session_id'], 'latest_diy_plan')
+        if not latest:
+            return json.dumps({'ok': False, 'error': '当前会话没有可修订的方案，请先生成方案'}, ensure_ascii=False)
+        restore = re.fullmatch(r'\s*(?:请)?(?:用回|恢复到|恢复|回到|切回)(?:第)?([一二三四五六七八九十]|\d+)版[。！!\s]*', feedback)
+        if restore:
+            raw = restore.group(1)
+            version = int(raw) if raw.isdigit() else '一二三四五六七八九十'.index(raw) + 1
+            history = await _memory.get_session_json(ctx['user_id'], ctx['session_id'], 'diy_plan_versions') or []
+            target = next((p for p in history if p.get('version') == version), None)
+            if not target:
+                return json.dumps({'ok': False, 'error': '未找到该历史版本，不能凭描述重建，请选择已保存的版本'}, ensure_ascii=False)
+            restored = copy.deepcopy(target)
+            await _store_diy_plan(restored, ctx)
+            return json.dumps(restored, ensure_ascii=False)
+        plan = json.dumps(latest, ensure_ascii=False)
     new_plan = revise_with_llm(plan, feedback, shop_id=ctx_shop)
+    if not isinstance(new_plan, dict) or new_plan.get('error') or new_plan.get('ok') is False:
+        return json.dumps(new_plan, ensure_ascii=False)
     # 改版同样要标注店铺可获得性（原料可能被换掉，标注必须跟着重算）
     new_plan = annotate_shop_materials(new_plan, ctx_shop)
     # 「复制用料清单」文本必须跟着重算：改版换过花材/预算后，旧清单就错了。

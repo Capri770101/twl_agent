@@ -92,6 +92,23 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
     plan_obj = await _resolve_session_plan(plan, _context)
     if not plan_obj:
         return json.dumps({'error': '未找到可生图的方案，请先设计或选择方案'}, ensure_ascii=False)
+    import hashlib
+    visual = plan_obj.get('design') or {}
+    identity = {k: visual.get(k) for k in ('color_scheme', 'packaging')}
+    for group in ('main_flowers', 'fillers', 'foliage'):
+        identity[group] = sorted((str(f.get('name', '')), f.get('qty', 0)) for f in visual.get(group, []) if isinstance(f, dict))
+    identity['style'] = plan_obj.get('style')
+    identity['shop_id'] = (_context or {}).get('shop_id') or plan_obj.get('shop_id')
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    uid, sid = (_context or {}).get('user_id'), (_context or {}).get('session_id')
+    cached = await memory.get_session_json(uid, sid, 'preview_' + digest) if uid and sid else None
+    if isinstance(cached, dict) and cached.get('task_id'):
+        state = await tasks.get_image_task(cached['task_id'], user_id=uid)
+        if state.get('status') in ('processing', 'done'):
+            result = {'task_id': cached['task_id'], 'poll': '/tasks/' + cached['task_id'], 'reused': True, 'plan_id': plan_obj.get('plan_id')}
+            if state.get('result_url'):
+                result['result_url'] = state['result_url']
+            return json.dumps(result, ensure_ascii=False)
     prompt = (plan_obj.get('effect_prompt') or plan_obj.get('desc') or plan_obj.get('name') or '花束').strip()
     shop_id = str((_context or {}).get('shop_id') or plan_obj.get('shop_id') or '').strip()
     if shop_id:
@@ -104,6 +121,8 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
         return json.dumps({'error': '方案缺少可生图的描述信息'}, ensure_ascii=False)
     task_id = await tasks.create_image_task(prompt, user_id=(_context or {}).get('user_id'))
     result: dict[str, Any] = {'task_id': task_id, 'poll': f'/tasks/{task_id}'}
+    if uid and sid:
+        await memory.set_session_json(uid, sid, 'preview_' + digest, {'task_id': task_id, 'plan_id': plan_obj.get('plan_id')})
     try:
         st = await tasks.get_image_task(task_id, user_id=(_context or {}).get('user_id'))
         if st.get('status') == 'done' and st.get('result_url'):
@@ -310,13 +329,10 @@ def _extract_feedback(feedback: str) -> dict[str, Any]:
     import re
     dims: dict[str, str] = {}
     exclude: set[str] = set()
-    m = re.search('(\\d{2,5})\\s*(?:元|块|块钱)?', feedback)
-    if m:
-        dims['budget'] = m.group(1)
-    elif any(k in feedback for k in ('便宜', '低价', '省', '预算低', '降档')):
-        dims['budget'] = '120'
-    elif any(k in feedback for k in ('高档', '贵一点', '升级', '好一点', '加预算')):
-        dims['budget'] = '500'
+    budget_text = re.sub(r'(预算|价格)\s*(?:改为|改成|调整为|调整到|降到|降为|提高到|增加到|设为|调到)', r'\1', feedback)
+    _, amount, _, _ = _extract_budget(budget_text)
+    if amount is not None:
+        dims['budget'] = str(int(amount)) if amount.is_integer() else str(amount)
     for kw, val in _STYLE_KW.items():
         if kw in feedback:
             dims['style'] = val
@@ -1340,7 +1356,7 @@ def _effect_prompt_from_design(design: dict, style_label: str = '韩式',
     # 单一花材：只描述一种花，避免残留「搭配满天星」等外搭措辞。
     packaging_visual = _modern_packaging_prompt(pk, style_label)
     modern_negative = '避免老旧十年前花店风、单层牛皮纸、廉价塑料包装、过大俗气蝴蝶结、对称传统大花束、过度拥挤、塑料质感'
-    if main and not fillers and not foliage:
+    if main and len(main_raw) == 1 and not fillers and not foliage:
         f0 = main_raw[0] if isinstance(main_raw[0], dict) else {}
         nm = str(f0.get('name') or main).strip()
         q = f0.get('qty')
@@ -1999,6 +2015,70 @@ def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: F
         plan['copy_text'] = build_plan_copy_text(plan)
     return plan
 
+def _revise_visual_fields(original: dict, feedback: str) -> dict | None:
+    """局部视觉修订：输出仅应用获准字段，不经过重新选材/支数校正。"""
+    import copy
+    # 按分句识别实际修改对象；「保留预算和花材」不是修改授权。
+    # 保留条件只排除自身，不吞掉同一句中的修改要求。
+    scoped_feedback = re.sub(r'(?:保留|保持)[^，。；,;！!]*?(?=但|只|改|换|调整|[，。；,;！!]|$)', '', feedback)
+    scoped_feedback = re.sub(r'(?:预算|花材|数量|支数)(?:都|全部)?不变', '', scoped_feedback)
+    clauses = re.split(r'[，。；,;！!]|但是|但|同时', scoped_feedback)
+    changes = [c for c in clauses if re.search(r'改|换|调整|变|增加|减少|去掉|不要|便宜|贵', c)
+               and not re.search(r'不要.*(?:图|预览)|不改|保持|保留|不变', c)]
+    packaging = any('包装' in c or '包材' in c for c in changes)
+    colors = any(re.search(r'配色|色系|色调|颜色|色', c) and '包装' not in c and '包材' not in c for c in changes)
+    if not (packaging or colors):
+        return None
+    if packaging and re.search(r'花篮|礼盒|花盒|玻璃|陶瓷|丝绒|改.*材料|换.*材料', scoped_feedback):
+        return {'ok': False, 'error': '更换包装材料或形态需要重新估价，请说明是否允许调整预算；原方案已保留'}
+    if packaging and not any(re.search(r'粉|白|红|蓝|紫|黄|绿|香槟|颜色|色系|色调', c) for c in changes if '包装' in c or '包材' in c):
+        return {'ok': False, 'error': '更换包装材料或形态需要重新估价，请说明要换的材料及是否允许调整预算；原方案已保留'}
+    if any(re.search(r'预算|价格|数量|支数|花材|主花|配花|叶材|风格|玫瑰|康乃馨|洋桔梗|洋橘梗|绣球|向日葵', c) for c in changes):
+        return None
+    allowed = (['color_scheme'] if colors else []) + (['packaging_color'] if packaging else [])
+    try:
+        response = call_llm([
+            {'role': 'system', 'content': '只做局部修订，返回 JSON changes 对象，且只包含这些字段：' + ','.join(allowed) + '。color_scheme 为非空颜色字符串数组；packaging_color 仅为颜色名（例如粉色），禁止包含包装材料、形态和做法。不要输出其他字段。'},
+            {'role': 'user', 'content': json.dumps({'design': original.get('design'), 'feedback': feedback}, ensure_ascii=False)},
+        ], response_format={'type': 'json_object'})
+        decoded = json.loads(response.choices[0].message.content)
+        patch = decoded.get('changes', decoded) if isinstance(decoded, dict) else None
+        if not isinstance(patch, dict) or set(patch) != set(allowed):
+            raise ValueError('invalid revision fields')
+        for key in allowed:
+            value = patch[key]
+            if key == 'color_scheme':
+                if not isinstance(value, list) or not value or len(value) > 8 or any(not isinstance(x, str) or not x.strip() or len(x) > 30 for x in value):
+                    raise ValueError('invalid colors')
+            elif not isinstance(value, str) or not value.strip() or len(value) > 20 or re.search(r'纸|纱|盒|篮|袋|塑料|丝绒|缎|皮|玻璃|陶瓷', value):
+                raise ValueError('invalid packaging')
+        result = copy.deepcopy(original)
+        if colors:
+            result['design']['color_scheme'] = patch['color_scheme']
+        if packaging:
+            old_packaging = str(result['design'].get('packaging') or '原包装')
+            old_packaging = re.sub(r'；包装颜色：[^；]*', '', old_packaging)
+            old_packaging = re.sub(r'(?:香槟|奶白|浅粉|深红|粉|白|红|蓝|紫|黄|绿)色', '', old_packaging)
+            result['design']['packaging'] = old_packaging + '；包装颜色：' + patch['packaging_color'].strip()
+        result['plan_id'] = 'DIY_' + uuid.uuid4().hex[:12]
+        result['version'] = int(original.get('version', 1)) + 1
+        result['parent_id'] = original['plan_id']
+        for key in ('task_id', 'poll', 'result_url', 'effect_image_url', 'image_url', 'image'):
+            result.pop(key, None)
+        design = result['design']
+        result['effect_prompt'] = _effect_prompt_from_design(design, result.get('style', ''), design.get('packaging', '花束'))
+        result['desc'] = '本版仅调整' + '、'.join('配色' if k == 'color_scheme' else '包装' for k in allowed) + '；花材、支数与原参考报价保持不变。'
+        # 原步骤可能带旧配色/包装文案，用中性的引用避免与最终结构冲突。
+        steps = ['按本版用料清单准备花材，保留原方案支数。', '按本版配色搭配花材，完成螺旋扎束。', '按本版包装说明包扎并固定花束。']
+        result['diy_steps'] = steps
+        design['diy_steps'] = steps
+        result['copy_text'] = build_plan_copy_text(result)
+        return result
+    except Exception:
+        logger.exception('[revise] 局部修订失败，原方案保持不变')
+        return {'ok': False, 'error': '本次修改未完成，原方案已保留，请重试'}
+
+
 def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     """语义化改版：RAG 检索 + DeepSeek 基于已有方案与反馈调整，规则引擎兜底。
 
@@ -2006,6 +2086,14 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     shop_id 非空（或从原方案继承）时，改版后的原料仍限定在该店铺在售范围内。
     """
     original = _parse_plan(plan)
+    if not original.get('plan_id') or not isinstance(original.get('design'), dict):
+        return {'ok': False, 'error': '未找到完整的原方案，请先生成方案'}
+    visual = _revise_visual_fields(original, feedback)
+    if visual is not None:
+        return visual
+    feedback_dims = _extract_feedback(feedback)['dims']
+    if 'budget' not in feedback_dims and re.search(r'便宜|省一点|降预算|加预算|贵一点|降低预算|提高预算', feedback):
+        return {'ok': False, 'error': '请告诉我新的预算金额，以及是否允许调整花材数量；原方案已保留'}
     # 店铺锁定沿用原方案，避免改版后跳出该店在售范围。
     shop_id = shop_id or str(original.get('shop_id') or '')
     dims = _dims_from_plan(original)
@@ -2014,7 +2102,16 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
     # （`_build_plan` 会把它持久化到 `plan['exclude_flowers']`，这里并集回来）。
     exclude = set(fb['exclude']) | {str(n) for n in (original.get('exclude_flowers') or [])}
     dims.update(fb['dims'])
-    baseline = _build_plan(dims, version=original.get('version', 1) + 1, parent_id=original.get('plan_id'), exclude_flowers=exclude, shop_id=shop_id)
+    # 修订以实际上一版为底稿，不能重新选花构造一个替代底稿。
+    import copy
+    baseline = copy.deepcopy(original)
+    baseline['plan_id'] = 'DIY_' + uuid.uuid4().hex[:12]
+    baseline['version'] = int(original.get('version', 1)) + 1
+    baseline['parent_id'] = original['plan_id']
+    if 'budget' in fb['dims']:
+        baseline['budget_num'] = float(fb['dims']['budget'])
+    for key in ('task_id', 'poll', 'result_url', 'effect_image_url', 'image_url', 'image'):
+        baseline.pop(key, None)
     if shop_id:
         baseline['shop_id'] = shop_id
     # 继承原方案的单一花材 / 支数约束，避免改版后跑偏。
@@ -2040,6 +2137,15 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
         user = f'已有方案：{json.dumps(original, ensure_ascii=False)}\n用户反馈：{feedback}\n\n{knowledge}'
         resp = call_llm([{'role': 'system', 'content': system}, {'role': 'user', 'content': user}], response_format={'type': 'json_object'})
         llm_plan = json.loads(resp.choices[0].message.content)
+        if not isinstance(llm_plan, dict) or not isinstance(llm_plan.get('design'), dict):
+            raise ValueError('invalid revision design')
+        # 未授权视觉字段使用原稿；费用和图片提示随后基于这些字段重算。
+        requested = re.sub(r'(?:保留|保持)[^，。；,;]*|[^，。；,;]*(?:不变|不改)', '', feedback)
+        for field, pattern in (('packaging', r'包装|包材'), ('color_scheme', r'配色|色系|色调|颜色')):
+            if not re.search(pattern, requested):
+                llm_plan['design'][field] = copy.deepcopy(original['design'].get(field))
+        if not re.search(r'风格|韩式|北欧|法式|日式|复古|自然风', requested):
+            llm_plan['style'] = original.get('style', '')
         new_plan = _merge_plan(baseline, llm_plan, exclude_flowers=exclude)
         new_plan['plan_id'] = baseline['plan_id']
         new_plan['version'] = original.get('version', 1) + 1
@@ -2048,11 +2154,35 @@ def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
         if shop_id:
             new_plan['shop_id'] = shop_id
         from agent.plan_validator import repair_plan
-        return repair_plan(new_plan)
+        new_plan = repair_plan(new_plan)
+        # 用户明确锁定的维度在合并、定价和修复之后再次校验。
+        # 不把不满足要求的方案落库，也不让模型以解释代替约束。
+        before = original.get('design', {})
+        after = new_plan.get('design', {})
+        preserve_materials = bool(re.search(r'(?:保留|保持|不改|不换).{0,12}花材|花材.{0,6}(?:不变|保留|保持)', feedback))
+        preserve_qty = bool(re.search(r'(?:保留|保持|不改).{0,8}(?:数量|支数)|(?:数量|支数).{0,6}不变', feedback))
+        preserve_total = bool(re.search(r'(?:总支数|总数量|总数).{0,6}(?:不变|保持|保留)|(?:保持|保留).{0,6}(?:总支数|总数量|总数)', feedback))
+        preserve_each = bool(re.search(r'(?:每种|各自|各花材).{0,8}(?:数量|支数).{0,6}不变', feedback))
+        def signature(design, quantities=False):
+            return tuple((group, tuple(sorted((str(f.get('name', '')), f.get('qty') if quantities else 0)
+                         for f in design.get(group, []) if isinstance(f, dict))))
+                         for group in ('main_flowers', 'fillers', 'foliage'))
+        if preserve_materials and signature(before) != signature(after):
+            return {'ok': False, 'error': '本次调整未能保留原花材，原方案已保留，请明确允许更换哪些花材'}
+        def total(design):
+            return sum(f.get('qty', 0) for group in ('main_flowers', 'fillers', 'foliage')
+                       for f in design.get(group, []) if isinstance(f, dict) and isinstance(f.get('qty'), (int, float)))
+        if preserve_total and total(before) != total(after):
+            return {'ok': False, 'error': '本次调整未能保留总支数，原方案已保留，请确认是否允许调整数量'}
+        if (preserve_each or (preserve_qty and not preserve_total)) and signature(before, True) != signature(after, True):
+            return {'ok': False, 'error': '本次调整未能保留原支数，原方案已保留，请确认是否允许调整数量'}
+        ceiling = baseline.get('budget_num')
+        if isinstance(ceiling, (int, float)) and isinstance(new_plan.get('price'), (int, float)) and new_plan['price'] > ceiling:
+            return {'ok': False, 'error': f'调整后的估价约 {new_plan["price"]} 元，超过预算 {ceiling:g} 元；原方案已保留，请确认减量或提高预算'}
+        return new_plan
     except Exception:
-        logger.exception('[revise] LLM 语义改版失败，回退规则引擎')
-        from agent.plan_validator import repair_plan
-        return repair_plan(baseline)
+        logger.exception('[revise] LLM 语义改版失败，保留原方案')
+        return {'ok': False, 'error': '本次修改未完成，原方案已保留，请重试'}
 
 _CONFIRM_VALUES = ('confirm', 'reject', 'none')
 _IMAGE_VALUES = ('want', 'decline', 'none')
