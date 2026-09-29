@@ -1,89 +1,64 @@
-# Flora Agent 交付说明
+# 花艺智能体交付说明
 
-> 面向接收方 AI、研发和运维。当前有效结论以本文、README、源码和最新 CHANGELOG 为准；`docs/archive/` 仅供追溯。
+更新：2026-09-29。接收方先读本文及 [配置清单](docs/CONFIGURATION.md)。
 
-## 当前版本
+## 1. 这次应交哪一版
 
-| 项目 | 值 |
-|---|---|
-| 智能体版本 | `1.3.0` |
-| 当前源码修订 | 使用 `git rev-parse HEAD` 获取；不在文档写死当前 HEAD |
-| 功能基线提交 | `3feadb2` |
-| 评测与路由提交 | `779ada3` |
-| 全量测试 | `801 passed`（2026-09-22，本地） |
-| 原生产 API | `api.tiaowulan.com` 已停用，不作为当前验收入口 |
-| 开发验收 | 本机 API / 容器内网；连接地址由部署方配置 |
+**交最新源码时，建议交本地 `58cf23c` 基线及本次文档/配置模板整理，名称标为「1.3.0 后续开发快照（含 1.4.0 客户服务待联调功能）」**。
 
-配置默认值（域名停用后未重新核验运行服务器状态）：
+| 版本 | 实际内容 | 适用交付 |
+|---|---|---|
+| GitHub `main`：`64e0004` | 已包含 9 月 24 日语音/贺卡与 9 月 28 日方案修订、版本历史增量 | 接收方明确不需要新客户服务时，可作为较窄范围基线；不等同已验证生产版本 |
+| 本地 `main`：`58cf23c` | 比 GitHub 多 1 个提交，新增客户服务身份、只读查询、卡片、监控和联调材料 | 本次最新源码交接推荐；客户服务默认关闭 |
+| `VERSION` / FastAPI version：`1.3.0` | 运行版本标记尚未随后续增量提升 | 不能单凭这个号码辨别实际源码 |
+| `releases/v1.4.0/` | 待联调资料 | 不是已发布版本、不是可直接上线的完整升级包 |
 
-```dotenv
-CARE_TOOL_SCOPE_ENABLED=false
-AGENT_INTENT_ROUTING_ENABLED=false
-```
+远端核查通过 HTTPS `git ls-remote` 完成；当前机器 SSH 访问 GitHub 返回 publickey 错误，未安装 `gh`。文档整理纳入独立交付提交；最终提交和源码包 SHA-256 记录在包外的交付清单中。本次不代表打 tag、推送或生产部署。
 
-历史演示曾开启这两个开关做单次样本对比；该记录不是当前部署状态或性能保证。
+若老板要求的是“直接上线的正式版”，应先完成第 5 节真实环境验收，再确定正式版本号；不能把本地单测通过写成线上验收完成。
 
-## 系统边界
+## 2. 交付内容
 
-- 智能体是纯后端 HTTP 服务，不是小程序或 H5 前端。
-- 商品、店铺数据只读查询；订单和用户实体默认拒绝。
-- DIY 方案是估算方案，不是平台 SKU；当前不创建真实订单、不收款、不分账。
-- 生图为异步任务：响应返回 `task_id` / `poll`，客户端轮询 `GET /tasks/{task_id}`。
-- 个性化贺卡开发接口：`POST /greetings/draft` 生成可编辑文案，`POST /greetings/render` 返回异步任务（AI 背景 + 服务端排版文字，轮询 `GET /tasks/{id}` 取图）；当前订单摘要由宿主提供，接口尚未绑定真实订单事件。
-- 语音接口：`POST /speech/transcribe`（音频转文字）与 `POST /speech/tts`（文字转语音，WAV）；`/chat` 响应带 `speech_text` 播报文案（只念操作引导）。前端录音需 HTTPS，详见 `docs/SPEECH_API.md`。
-- 前端只能渲染后端结构化 `diy=true` 的方案，不得从自然语言猜 DIY 卡。
+- 源码、知识库、提示词、测试、依赖、Docker/Compose、配置模板及当前文档。
+- 已有能力：问答、商品/店铺查询、DIY 修改和恢复、版本历史、异步效果图和贺卡、ASR/TTS、监控。
+- 待联调增量：可信客户身份、店铺咨询、本人订单/退款进度查询；详见 [版本范围](releases/v1.4.0/RELEASE_NOTES.md)。
+- H5 为独立项目；新增客户服务需与 H5 的后端及前端一起联调。本次核查其源码基线为 `bedf2d7`，文件版本 `1.0.5`；目标 `1.1.0` 尚未正式发布。
 
-## 关键目录
+源码包不要直接压缩整个工作目录。使用最终提交的 Git 归档或 GitHub 指定提交下载，避免带入 `.env.production`、`.git/`、`.workbuddy/`、缓存和用户数据。Git 归档只含已提交内容，不包含本轮未提交的文档修改。
 
-```text
-agent/agent.py                 ReAct 主循环、护栏、UI 推导
-agent/engine/intent.py         候选意图路由
-agent/engine/tool_scope.py     请求级工具范围
-agent/plan_validator.py        DIY 方案确定性校验
-agent/speech_script.py         语音播报文案模板（按 UI 类型引导操作）
-agent/toolkit.py               工具注册与执行
-backend/routers/chat.py        /chat 与 /chat/stream
-backend/routers/speech.py      /speech/tts 与 /speech/transcribe
-backend/data_gateway/          数据源授权和只读查询
-backend/storage/               PostgreSQL 会话、任务和记忆
-evals/flower_scenarios.jsonl   真实场景评测集
-scripts/validate_eval_set.py   评测集校验
-tests/                         pytest 回归测试
-```
+## 3. 需要单独交接的东西
 
-## 本地验证
+完整变量表、现有文件核查和缺项见 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**。
 
-```bash
-python -m pytest -q
-python scripts/validate_eval_set.py
-python scripts/validate_knowledge.py
-git diff --check
-docker compose build agent agent-demo
-```
+1. 真实运行配置：数据库、模型 API Key、JWT、平台 Key、监控 Key、数据源授权。
+2. 客户服务启用时：与 H5 一致的专用签名密钥、可信 HTTPS 业务入口、两套测试客户及订单。
+3. 基础设施：实际域名、TLS 证书与私钥、服务器访问方式、数据库访问权限。
+4. 延续旧环境时：数据库备份、有效数据源映射、生成图片/音频、必要的运行目录。新装空环境与迁移旧历史是两种交付范围，需明确。
 
-## 生产配置重点
+本地 `.env.production` 在 Git 之外，但仅是部分配置；程序不自动加载该文件。不能声称“生产配置只存在服务器”或“拉 GitHub 即能原样运行”。
 
-生产 `.env` 只存在服务器，不进仓库。核对 `DATABASE_URL`、`JWT_SECRET`、`PLATFORM_API_KEYS`、`PLATFORM_SOURCE_ACCESS`、`AUTH_REQUIRED=true`、`ANONYMOUS_LOGIN_ENABLED=false`、`ENABLE_OPS_TOOLS=false`。不要提交 `.env`、API Key、JWT、数据库密码或证书私钥。
+## 4. 本次验证记录
 
-## 无公网域名时的开发验收
+源码基线 `58cf23c`，2026-09-29，Windows / Python 3.12.3：
 
-`api.tiaowulan.com` 下线不影响本地或内网开发：
+- `python -m pytest -q`：873 项全部通过。
+- `python scripts/validate_eval_set.py`：8 个场景结构有效。
+- `python scripts/validate_knowledge.py`：8 个知识域校验通过。
+- Docker：本机没有 Docker CLI，本次未验证镜像构建/容器启动。
+- 真实业务/模型/数据库/生产服务器：本轮未执行验收。
 
-```bash
-docker compose up -d postgres agent
-curl http://127.0.0.1:8000/health
+测试使用隔离数据与替身，通过不代表真实数据库迁移、自然语言所有场景或手机录音均通过。
 
-docker compose --profile demo up -d --build
-curl http://127.0.0.1:8010/health
-```
+## 5. 尚需完成的验收
 
-本地接入方将 API base URL 指向 `http://127.0.0.1:8000`；容器内接入使用 `http://agent:8000`。贺卡图片返回 `/generated/...png`，本机可通过对应端口的 `/generated/` 路径验收。没有平台数据源时仍可验收知识库、DIY 结构和贺卡渲染，但不能验收实时商品推荐。
+- PostgreSQL 初始化及升级：包括 `speech_logs`、`customer_service_logs`；验证方案事务锁与并发生图复用。
+- 模型供应商可用额度、实际模型 ID、效果图/贺卡视觉、ASR/TTS 实测。
+- 客户服务可信 HTTPS、H5 登录签名与短票据、A 用户不能查 B 用户订单、账号切换、订单/退款状态核对。
+- 真实前端与手机：流式、版本恢复、重试、图片任务、退出登录、录音权限。
+- 店铺独立知识库尚未实现导入/发布服务；当前模板不是运行功能。
 
-## 发布与回滚
+## 6. 发布和回滚
 
-代码必须先提交并更新 `CHANGELOG.md`，通过测试和 Docker 构建；先演示、后生产。发布前备份数据库、旧代码和镜像，记录 commit、开关和发布目录。回滚优先恢复旧镜像或关闭 feature flag，不删除数据库字段和运行数据。
+按 [发布流程](docs/dev-and-release-workflow.md) 记录最终 commit、镜像 ID/摘要、源码包 SHA-256、配置项名称、备份和验收结果。先联调，后正式发布。客户服务未验收前保持 agent/H5 服务端和 H5 构建开关关闭。
 
-H5 是独立仓库，当前版本和发布入口见 `D:\Work\tiaowulan\H5\README.md`、`CHANGELOG.md` 与 `docs/RELEASE_PROCESS.md`。
-# 2026-09-24 交付补充
-
-本轮预览图可靠性、语音播报、贺卡订单与文档整理见 [审查记录](docs/REVIEW-20260924.md)。本轮提交不等于线上部署。
+回滚先关闭新能力再还原应用；新增监控表和运行数据保留。不要因应用回滚而盲目覆盖整库。部署步骤见 [部署手册](docs/07-部署手册.md)。

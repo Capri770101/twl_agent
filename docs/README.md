@@ -1,9 +1,11 @@
 # 文档地图
 
+更新：2026-09-29。交付版本以根 [DELIVERY](../DELIVERY.md) 为准，密钥/外部依赖看 [CONFIGURATION](CONFIGURATION.md)。
+
 客户服务联调交接：[清单](../releases/v1.4.0/HANDOFF-CHECKLIST.md)；店铺资料：[准备规范](SHOP-KNOWLEDGE-IMPORT.md)、[JSON模板](../releases/v1.4.0/shop-knowledge-template.json)。
 
-下一版本规划：[统一客户服务入口 v1.4.0](CUSTOMER-SERVICE-V1.4-PLAN.md)。
-版本日志：[RELEASE_NOTES](../releases/v1.4.0/RELEASE_NOTES.md)；更新文件与升级：[UPGRADE](../releases/v1.4.0/UPGRADE.md)。均为准备稿，非已发布能力。
+下一版本实施计划：[统一客户服务入口 v1.4.0](CUSTOMER-SERVICE-V1.4-PLAN.md)。
+版本范围：[RELEASE_NOTES](../releases/v1.4.0/RELEASE_NOTES.md)；更新文件与升级：[UPGRADE](../releases/v1.4.0/UPGRADE.md)。已有本地实现，未正式发布。
 
 新增开发接口：[个性化贺卡 API](GREETING_API.md)、[语音 API（TTS/ASR）](SPEECH_API.md)。贺卡订单摘要由接入方提供；语音前端录音需 HTTPS（见 SPEECH_API.md）。
 
@@ -17,6 +19,7 @@
 
 | 文档 | 用途 |
 |---|---|
+| `CONFIGURATION.md` | 密钥、配置、证书及数据独立交接清单 |
 | `01-项目概述.md` | 产品与能力概览 |
 | `03-系统架构设计.md` | 组件、数据流和架构决策 |
 | `04-API接口文档.md` | HTTP API 与鉴权 |
@@ -47,7 +50,7 @@
 
 `release-*.md`、`session-memory-release.md`、`platform-access-release.md` 和 `code-review-修复报告.md` 是特定批次记录，不是当前部署手册。当前状态以根目录 `DELIVERY.md`、`CHANGELOG.md` 和源码为准。
 
-`archive/` 中全部文档仅供追溯，可能包含已经淘汰的模型、数据源和部署说明。
+已被替代的旧部署/接入说明和早期贺卡记录已清理，恢复方法见 `archive/README.md`。一次性 release、审查和历史 ADR 仍保留用于追溯，不能当作当前部署状态。`OPTIMIZATION_PLAN.md` 与 `优化路线图.md` 是历史规划；当前待验收范围看 DELIVERY、RELIABILITY-PLAN 和客户服务计划。
 
 ## 维护规则
 

@@ -1,5 +1,20 @@
 # 04 · API 接口文档
 
+> 2026-09-29 更新：示例中的旧域名仅为历史示例，实际 Base URL 由部署方提供，不能硬编码。当前入口与配置见 [DELIVERY](../DELIVERY.md)、[CONFIGURATION](CONFIGURATION.md)。
+
+## 当前增量接口
+
+| 接口 | 契约 |
+|---|---|
+| `GET /conversations/{id}/plans?user_id=...` | Bearer、用户及会话归属校验；返回 `versions` 与 `current_plan_id` |
+| `POST /greetings/draft`、`POST /greetings/render` | 文案草稿及异步贺卡，见 [GREETING_API](GREETING_API.md) |
+| `POST /speech/tts`、`POST /speech/transcribe` | 见 [SPEECH_API](SPEECH_API.md)，聊天含 `speech_text` |
+| `POST /auth/customer-token` | 待联调；body `{"credential":"<H5短期委托票据>"}`，返回 `access_token/user_id/token_type` |
+| `/chat`、`/chat/stream` 客户服务 | Bearer 客户身份 + `X-Customer-Credential` 请求头，票据绑定当前身份；默认关闭 |
+| `GET /api/metrics/speech`、`/images`、`/customer-service` | 监控密钥保护，`hours` 参数；真实数据库验收见交付说明 |
+
+客户服务不提供可任意传 user_id 的订单查询接口；通用网关仍拒绝 order/user。`UIType` 新增 customer_orders/customer_shops/customer_login；`/ui-contract` 的旧静态示例未覆盖全部增量，见 [前端契约](05-前端对接契约.md)。
+
 ## 文档信息
 
 | 项 | 值 |
@@ -228,7 +243,7 @@ data: {"session_id":"fee6e395a3db41a0acaec1228bcb95e1"}
 
 > ⚠️ 成功值是 **`done`**，不是 `completed`。
 > ⚠️ 服务重启时遗留 `processing` 会被批量置 `failed`（`tasks.py:56-62`）。
-> ⚠️ `result_url` 为**相对路径**（`IMAGE_PUBLIC_BASE_URL` 当前为空），前端必须拼 `https://api.tiaowulan.com`（已实测 200）。
+> `result_url` 为相对路径时拼接本次部署的 API/代理入口；配置了 `IMAGE_PUBLIC_BASE_URL` 时可返回完整 URL。
 
 ### 2.11 免鉴权端点：`GET /ui-contract` / `GET /health`
 
@@ -249,7 +264,7 @@ curl -s https://api.tiaowulan.com/ui-contract | jq '.required_components'
  "note": "本后端只产出结构化 ui/data/action，前端渲染由宿主平台负责。"}
 ```
 
-`/health`：`{"status": "ok", "service": "flora-agent", "version": "1.0.0", "env": "prod"}`
+`/health`：`{"status":"ok"}`，不返回版本或环境。
 
 ### 2.13 `GET /api/metrics/*` — 调用监控（受 `DASHBOARD_API_KEY` 保护）
 
@@ -269,7 +284,7 @@ curl -s https://api.tiaowulan.com/ui-contract | jq '.required_components'
  "active_platforms_24h": 2, "active_users_24h": 17, "avg_latency_24h": 15230}
 ```
 
-> ⚠️ **已知缺陷**：`_verify()`（`metrics.py:49-58`）**只读 Header，不读 query `?key=`**，而 `dashboard/app.js:266` 建 SSE 用的正是 `?key=`，浏览器 `EventSource` 又无法自定义 Header → **面板实时流当前必然 401**。支持 query 的 `require_dashboard()` 目前无任何端点引用。修复前请用带 Header 的客户端验证（见 [09 §7](./09-测试与验收.md)）。
+> 监控鉴权已支持 Header 与 SSE 的 query `?key=`；早期“实时流必然 401”问题已经修复。不要把带密钥的 URL 贴入共享日志。
 
 ## 3. 错误码对照表
 
@@ -294,7 +309,7 @@ curl -s https://api.tiaowulan.com/ui-contract | jq '.required_components'
 
 ## 4. 联调顺序建议
 
-1. **域名白名单**：小程序后台 → 开发设置 → request 合法域名，加 `https://api.tiaowulan.com`
+1. **域名白名单**：经宿主后端代理时配置宿主的实际 HTTPS 域名，不直接使用历史智能体域名。
 2. **鉴权闭环**（阻塞其余）：宿主后端 `X-API-Key` → `/auth/token` → 拿 `user_id` → 立刻调 `GET /auth/me` 与 `POST /chat` 各一次，确认不 403
 3. **跑通 `/chat`**：先用非流式拿到 `session_id`，确认 `reply/ui/data` 结构
 4. **渲染卡片**：先做 `text` + `plan_card`，其余按 `/ui-contract` 补齐；缺失一律按 `reply` 文本降级
