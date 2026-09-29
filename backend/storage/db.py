@@ -20,6 +20,11 @@ from backend.config import settings
 _thread_local = threading.local()
 
 _SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS customer_service_logs (
+        id BIGSERIAL PRIMARY KEY, operation TEXT NOT NULL, result_code TEXT NOT NULL,
+        latency_ms INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
+    'CREATE INDEX IF NOT EXISTS idx_customer_service_logs_created ON customer_service_logs(created_at DESC)',
     """CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, stage TEXT NOT NULL DEFAULT 'analyze', title TEXT, preview TEXT, shop_id TEXT, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS messages (id BIGSERIAL PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, ui TEXT, data TEXT, created_at TIMESTAMPTZ NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS memories (id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, category TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)""",

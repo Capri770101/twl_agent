@@ -119,6 +119,10 @@ class Settings(BaseSettings):
     SPEECH_ASR_MAX_SECONDS: int = 60  # 前端录音建议上限；服务端目前按字节限制上传
 
     # ── 微信小程序 ──
+    CUSTOMER_SERVICE_ENABLED: bool = False
+    CUSTOMER_SERVICE_BASE_URL: str = ''  # 固定 HTTPS 业务入口，不允许模型指定 URL
+    CUSTOMER_SERVICE_SECRET: str = ''  # 与 H5 共享的专用委托验签密钥
+
     WECHAT_APPID: str = Field(default="", validation_alias=AliasChoices('WECHAT_APPID', 'WX_APPID'))
     WECHAT_SECRET: str = Field(default="", validation_alias=AliasChoices('WECHAT_SECRET', 'WX_SECRET'))
 

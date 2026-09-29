@@ -206,6 +206,17 @@ async def image_metrics(request: Request, hours: int = Query(24, ge=1, le=720)) 
     return {'hours': hours, **(dict(row) if row else {})}
 
 
+@router.get('/customer-service')
+async def customer_service_metrics(request: Request, hours: int = Query(24, ge=1, le=720)) -> dict[str, Any]:
+    _verify(request)
+    with transaction() as conn:
+        rows = conn.execute("SELECT operation, result_code, count(*) AS calls, "
+                            "COALESCE(ROUND(AVG(latency_ms)),0)::bigint AS avg_latency_ms "
+                            "FROM customer_service_logs WHERE created_at >= NOW() - (? || ' hours')::interval "
+                            "GROUP BY operation, result_code ORDER BY operation, result_code", (hours,)).fetchall()
+    return {'hours': hours, 'rows': [dict(r) for r in rows]}
+
+
 @router.get('/stream')
 async def stream(request: Request) -> StreamingResponse:
     """SSE 实时流：每 2s 轮询 call_logs 新行并推送，供面板实时刷新。

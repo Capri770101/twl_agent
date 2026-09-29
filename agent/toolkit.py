@@ -65,6 +65,9 @@ def visible_tool_specs() -> list[ToolSpec]:
         可见的 :class:`ToolSpec` 列表（顺序与注册顺序一致）。
     """
     specs = get_tool_specs()
+    from backend.config import settings
+    if not settings.CUSTOMER_SERVICE_ENABLED:
+        specs = [s for s in specs if 'customer_service' not in s.tags]
     from agent.engine.tool_scope import active_tools
     scope = active_tools.get()
     if scope is not None:

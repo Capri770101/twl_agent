@@ -158,7 +158,7 @@ def test_routes_forward_authenticated_platform(monkeypatch, streaming):
     async def scenario():
         req = chat.ChatRequest(message='查商品', user_id='u', session_id='s')
         route = chat.chat_stream if streaming else chat.chat
-        result = await route(req, None, authenticated_user='u', user_info=TokenPayload('u', 'verified'))
+        result = await route(req, SimpleNamespace(headers={}), authenticated_user='u', user_info=TokenPayload('u', 'verified'))
         if streaming:
             async for _ in result.body_iterator:
                 pass

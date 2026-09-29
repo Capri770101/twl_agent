@@ -21,6 +21,9 @@ class UIType(StrEnum):
     PLAN_CARD = "plan_card"
     SHOP_CARD = "shop_card"
     ORDER_CARD = "order_card"
+    CUSTOMER_ORDERS = "customer_orders"  # 本人订单只读查询，不是创建订单
+    CUSTOMER_SHOPS = "customer_shops"
+    CUSTOMER_LOGIN = "customer_login"
     PAY_JUMP = "pay_jump"
     IMAGE_TASK = "image_task"  # 生图结果：同步已 done 直接给 result_url，异步给 poll 轮询
     GREETING_CARD = "greeting_card"  # 电子贺卡：模板合成已同步完成，data 直接含 image_url

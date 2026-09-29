@@ -22,6 +22,16 @@ from backend.storage.db import transaction
 
 logger = logging.getLogger('observability')
 
+
+def record_customer_query(operation: str, code: str, latency_ms: int) -> None:
+    """只记录操作和错误码；不记录凭据、订单内容或客户身份。"""
+    try:
+        with transaction() as conn:
+            conn.execute('INSERT INTO customer_service_logs(operation, result_code, latency_ms) VALUES (?,?,?)',
+                         (operation, code, latency_ms))
+    except Exception:
+        logger.warning('[observability] customer query metric unavailable')
+
 # 当前请求的 call_log id；在异步请求上下文（chat.py）中设置/读取。
 _call_id: ContextVar[int | None] = ContextVar('call_id', default=None)
 

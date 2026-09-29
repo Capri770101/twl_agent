@@ -189,6 +189,8 @@ async def chat(
     """与智能体对话，返回结构化 UI 响应。"""
     require_user(req.user_id, authenticated_user)
     _enforce_rate_limit(req.user_id, request)
+    from backend.customer_identity import bound_customer_credential
+    customer_credential = bound_customer_credential(request.headers.get('X-Customer-Credential', ''), authenticated_user)
     logger.info('chat user=%s msg=%s', req.user_id, req.message[:80])
 
     # ── 监控埋点：入口 ──
@@ -214,7 +216,8 @@ async def chat(
         try:
             result = await asyncio.wait_for(
                 get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
-                                 entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform),
+                                 entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform,
+                                 customer_credential=customer_credential),
                 timeout=settings.REQUEST_TIMEOUT
             )
         except asyncio.TimeoutError:
@@ -251,6 +254,8 @@ async def chat_stream(
     """SSE 流式对话端点。"""
     require_user(req.user_id, authenticated_user)
     _enforce_rate_limit(req.user_id, request)
+    from backend.customer_identity import bound_customer_credential
+    customer_credential = bound_customer_credential(request.headers.get('X-Customer-Credential', ''), authenticated_user)
     logger.info('chat/stream user=%s msg=%s', req.user_id, req.message[:80])
 
     # ── 监控埋点：入口 ──
@@ -277,7 +282,8 @@ async def chat_stream(
             return
         try:
             async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
-                                                     entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform):
+                                                     entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform,
+                                                     customer_credential=customer_credential):
                 event_type = evt.get('event', 'text')
                 if event_type == 'error':
                     _ok = False

@@ -248,6 +248,21 @@ async function loadSpeech() {
 }
 
 /* ---------- 实时调用流（表格） ---------- */
+async function loadCustomerService() {
+  try {
+    const data = await api('/customer-service?hours=24');
+    const rows = data.rows || [];
+    const total = rows.reduce((sum, r) => sum + Number(r.calls || 0), 0);
+    const success = rows.filter(r => r.result_code === 'SUCCESS').reduce((sum, r) => sum + Number(r.calls || 0), 0);
+    $('customerSummary').textContent = total ? `近24小时 · ${total}次 · 查询成功率 ${(success / total * 100).toFixed(1)}%` : '近24小时 · 暂无查询';
+    const labels = { shops: '店铺咨询', orders: '订单查询', after_sales: '售后查询' };
+    $('customerRows').innerHTML = rows.length ? rows.map(r => `<tr><td>${escapeHtml(labels[r.operation] || r.operation)}</td><td>${escapeHtml(r.result_code)}</td><td>${fmtNum(r.calls)}</td><td>${fmtDur(r.avg_latency_ms)}</td></tr>`).join('') : '<tr class="empty-row"><td colspan="4">暂无数据（可能尚未开启新功能）</td></tr>';
+  } catch (e) {
+    $('customerSummary').textContent = '客户服务统计暂不可用';
+    $('customerRows').textContent = '';
+    if (e.message === 'unauthorized' || e.message === 'disabled') throw e;
+  }
+}
 
 function addFeedRow(d) {
   const tbody = $('liveFeed');
@@ -294,7 +309,7 @@ function startStream() {
 
 async function refreshAll() {
   try {
-    await Promise.all([loadSummary(), loadCalls(), loadPlatforms(), loadTools(), loadSpeech()]);
+    await Promise.all([loadSummary(), loadCalls(), loadPlatforms(), loadTools(), loadSpeech(), loadCustomerService()]);
     renderFeedEmpty();
     setConn('on', '已连接');
   } catch (e) {

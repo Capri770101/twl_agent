@@ -33,6 +33,17 @@ class TokenExchangeRequest(BaseModel):
     external_user_id: str = Field(min_length=1, max_length=128)
 
 
+class CustomerLoginRequest(BaseModel):
+    credential: str = Field(min_length=1, max_length=2048)
+
+
+@router.post('/customer-token')
+async def customer_login(req: CustomerLoginRequest) -> dict[str, str]:
+    from backend.customer_identity import customer_subject
+    uid = customer_subject(req.credential)
+    return {'access_token': create_access_token(uid, platform='customer_h5'), 'user_id': uid, 'token_type': 'bearer'}
+
+
 @router.post('/token')
 async def exchange_token(req: TokenExchangeRequest, platform_id: str = Depends(require_platform_key)) -> dict[str, str]:
     """通用 token 交换接口（多平台接入）。

@@ -23,7 +23,15 @@ def classify(message: str) -> IntentRoute | None:
     text = str(message or '').strip()
     if not text:
         return None
+    if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '售后进度', '查订单')):
+        from backend.config import settings
+        if settings.CUSTOMER_SERVICE_ENABLED:
+            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'respond_to_user', 'show_options'}))
     # “定制并出图”需要设计工具；“不要出图”不是生图意图。
+    if any(w in text for w in ('营业时间', '几点关门', '几点开门', '店铺地址', '配送范围', '配送规则')):
+        from backend.config import settings
+        if settings.CUSTOMER_SERVICE_ENABLED:
+            return IntentRoute('shop_service', 3, frozenset({'query_shop_service', 'respond_to_user', 'show_options'}))
     image_requested = any(w in text for w in ('效果图', '出图', '生成图', '看看成品')) and not any(w in text for w in ('不要图', '不要生图', '不要效果图', '不用效果图', '不出图', '别出图'))
     new_design = any(w in text.lower() for w in ('定制', 'diy', '自己配', '自己搭', '设计一束', '设计一个', '改成', '换成', '换个配色'))
     if image_requested and not new_design and any(w in text for w in ('这个方案', '此方案', '该方案', '给「', '给“')):

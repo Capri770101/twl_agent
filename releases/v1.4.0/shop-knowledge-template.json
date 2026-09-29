@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "platform_id": "REPLACE_WITH_PLATFORM_ID",
+  "shop_id": "REPLACE_WITH_SHOP_ID",
+  "documents": [
+    {
+      "document_id": "delivery-policy",
+      "version": 1,
+      "topic": "delivery",
+      "status": "draft",
+      "content": "",
+      "source": { "name": "", "provided_by_role": "shop_operator" },
+      "effective_from": null,
+      "effective_to": null,
+      "updated_at": null
+    }
+  ]
+}

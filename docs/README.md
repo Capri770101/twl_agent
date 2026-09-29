@@ -1,5 +1,10 @@
 # 文档地图
 
+客户服务联调交接：[清单](../releases/v1.4.0/HANDOFF-CHECKLIST.md)；店铺资料：[准备规范](SHOP-KNOWLEDGE-IMPORT.md)、[JSON模板](../releases/v1.4.0/shop-knowledge-template.json)。
+
+下一版本规划：[统一客户服务入口 v1.4.0](CUSTOMER-SERVICE-V1.4-PLAN.md)。
+版本日志：[RELEASE_NOTES](../releases/v1.4.0/RELEASE_NOTES.md)；更新文件与升级：[UPGRADE](../releases/v1.4.0/UPGRADE.md)。均为准备稿，非已发布能力。
+
 新增开发接口：[个性化贺卡 API](GREETING_API.md)、[语音 API（TTS/ASR）](SPEECH_API.md)。贺卡订单摘要由接入方提供；语音前端录音需 HTTPS（见 SPEECH_API.md）。
 
 接收方 AI 先读根目录 `README.md` 和 `DELIVERY.md`。本文用于定位专题文档。

@@ -1805,12 +1805,12 @@ from backend.execution import run_worker, checkpoint
 class ReActAgent:
     """基于 ReAct + 状态机的导购智能体。"""
 
-    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None) -> ChatResponse:
+    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='') -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
         loop = asyncio.get_running_loop()
-        return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id), user_id, settings.request_timeout)
+        return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential), user_id, settings.request_timeout)
 
-    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None):
+    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str=''):
         """流式异步入口：yield SSE 事件字典，供 /chat/stream 消费。
 
         事件类型：
@@ -1839,7 +1839,7 @@ class ReActAgent:
                 # 否则消费端 `await queue.get()` 会永久阻塞 —— SSE 挂死、用户转圈不停。
                 try:
                     result = await asyncio.wait_for(
-                        run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id), user_id, settings.request_timeout),
+                        run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential), user_id, settings.request_timeout),
                         timeout=settings.request_timeout,
                     )
                     # done 事件带**经清理链处理过**的完整结果：流式期间推的是模型原始
@@ -1884,7 +1884,7 @@ class ReActAgent:
 
     @scoped_agent_run
     @scoped_tools
-    async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None) -> ChatResponse:
+    async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, customer_credential: str='') -> ChatResponse:
         t0 = time.perf_counter()
         # 本轮硬性时间预算（P0 防线程裸跑）：比调用方 wait_for(REQUEST_TIMEOUT) 略早收口，留收尾余量。
         _deadline = t0 + max(10.0, settings.request_timeout - _DEADLINE_MARGIN)
@@ -2057,7 +2057,7 @@ class ReActAgent:
                 # 前几轮说过的「送妈妈、预算200」仍生效）。
                 tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
                             'shop_id': shop_id, 'entry': entry, 'product_id': product_id,
-                            'product_title': product_title, 'requirement': req_acc}
+                            'product_title': product_title, 'requirement': req_acc, 'customer_credential': customer_credential}
                 if len(exec_idx) > 1:
                     gathered = await asyncio.gather(
                         *(execute_tool(tool_calls[i]['name'], tool_calls[i]['arguments'], tool_ctx)
@@ -2552,6 +2552,40 @@ class ReActAgent:
                 data['poll'] = f"/tasks/{image_task['task_id']}"
 
         # ── 8. 回复清理 ──
+        # 私人订单卡只从本轮成功业务工具生成，不接受模型自行编造卡片数据。
+        if ui in (UIType.CUSTOMER_ORDERS, UIType.CUSTOMER_SHOPS, UIType.CUSTOMER_LOGIN):
+            ui, data = UIType.TEXT, {}
+        for record in reversed(tool_log):
+            if record.name not in ('query_my_orders', 'query_my_after_sales', 'query_shop_service'):
+                continue
+            try:
+                payload = json.loads(record.result) if isinstance(record.result, str) else record.result
+                if isinstance(payload, dict) and payload.get('code') == 'AUTH_REQUIRED':
+                    ui, data = UIType.CUSTOMER_LOGIN, {'message': '请登录后查询本人的订单和售后进度'}
+                elif record.name == 'query_shop_service' and record.status == 'ok' and isinstance(payload, dict) and payload.get('ok') is True:
+                    ui, data = UIType.CUSTOMER_SHOPS, {**payload['data'], 'fetched_at': payload.get('fetched_at')}
+            except (ValueError, TypeError, KeyError):
+                pass
+            break
+        customer_card_verified = False
+        for record in reversed(tool_log):
+            if record.name not in ('query_my_orders', 'query_my_after_sales'):
+                continue
+            try:
+                payload = json.loads(record.result) if isinstance(record.result, str) else record.result
+                if record.status == 'ok' and isinstance(payload, dict) and payload.get('ok') is True:
+                    result = payload.get('data') or {}
+                    items = result.get('items') if 'items' in result else [result]
+                    if isinstance(items, list):
+                        customer_card_verified = True
+                        ui = UIType.CUSTOMER_ORDERS
+                        data = {'items': items, 'has_more': result.get('has_more', False),
+                                'page': result.get('page', 1), 'fetched_at': payload.get('fetched_at')}
+            except (ValueError, TypeError):
+                pass
+            break
+        if ui == UIType.CUSTOMER_ORDERS and not customer_card_verified:
+            ui, data = UIType.TEXT, {}
         final_reply = _clean_reply(final_reply)
         if ui in (UIType.ORDER_CARD, UIType.PAY_JUMP):
             final_reply = re.sub('[，,]?共\\s*\\d+[\\d.]*\\s*元', '', final_reply)
