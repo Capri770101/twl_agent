@@ -245,7 +245,8 @@ def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
     Returns:
         可能已追加要点的回复；非卡片类型、reply 足够长或无可用字段时原样返回。
     """
-    if ui not in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD, UIType.PAY_JUMP, UIType.IMAGE_TASK, UIType.GREETING_CARD):
+    if ui not in (UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD, UIType.PAY_JUMP, UIType.IMAGE_TASK, UIType.GREETING_CARD,
+                  UIType.CUSTOMER_ORDERS, UIType.CUSTOMER_SHOPS, UIType.CUSTOMER_LOGIN):
         return reply
     if len((reply or '').strip()) >= _CARD_SUMMARY_MIN_REPLY:
         return reply
@@ -258,6 +259,7 @@ def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
         UIType.PAY_JUMP: '订单信息已生成，确认无误就可以去支付啦～',
         UIType.IMAGE_TASK: '效果图正在生成中，稍等一下就好～',
         UIType.GREETING_CARD: '贺卡已经做好啦，看看喜欢吗？',
+        UIType.CUSTOMER_LOGIN: '订单和售后信息需要登录后才能查询，点下方登录后回来继续问我就行～',
     }
     if ui in _simple:
         logger.info('[agent] 卡片回复过短，已自动追加要点（%s）', ui.value)
@@ -275,6 +277,41 @@ def _ensure_card_summary(reply: str, ui: UIType, data: dict[str, Any]) -> str:
             price = (plan or {}).get('price')
             lines.append(f'- {name}（{price:g} 元）' if isinstance(price, (int, float)) and price > 0 else f'- {name}')
         head = '给你挑的是这几款：'
+    elif ui == UIType.CUSTOMER_SHOPS:
+        # 门店咨询卡：把店名 / 城市 / 营业时间写成可读要点（电话留卡片里按需展示）。
+        shops = [s for s in (data.get('shops') or [])[:4] if isinstance(s, dict)]
+        for shop in shops:
+            name = str(shop.get('name') or '').strip()
+            if not name:
+                continue
+            bits: list[str] = []
+            city = str(shop.get('city') or '').strip()
+            if city:
+                bits.append(city)
+            hours = str(shop.get('business_hours') or '').strip()
+            if hours:
+                bits.append(hours)
+            lines.append(f'- {name}' + (f'（{"、".join(bits)}）' if bits else ''))
+        head = '查到这些门店：'
+    elif ui == UIType.CUSTOMER_ORDERS:
+        # 订单查询卡：列订单号 + 状态（金额分转元），与 query_my_orders 返回字段对齐。
+        _status_label = {'pending': '待支付', 'paid': '已支付待接单', 'making': '制作中', 'delivering': '配送中',
+                         'completed': '已完成', 'cancelled': '已取消', 'refund_applying': '退款审核中',
+                         'refunding': '退款处理中', 'refunded': '已退款', 'refund_failed': '退款失败'}
+        for order in (data.get('items') or [])[:4]:
+            if not isinstance(order, dict) or not order.get('id'):
+                continue
+            oid = str(order['id'])
+            shown = oid if len(oid) <= 22 else oid[:19] + '…'
+            bits2: list[str] = []
+            status = _status_label.get(str(order.get('status') or ''), '')
+            if status:
+                bits2.append(status)
+            cents = order.get('total_price_cents')
+            if isinstance(cents, (int, float)) and cents > 0:
+                bits2.append(f'{cents / 100:g} 元')
+            lines.append(f'- {shown}' + (f'（{"、".join(bits2)}）' if bits2 else ''))
+        head = '查到这些订单：'
     else:
         for shop in (data.get('shops') or [])[:4]:
             name = str((shop or {}).get('name') or '').strip()

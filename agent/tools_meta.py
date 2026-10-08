@@ -34,13 +34,20 @@ from agent.engine.ui_protocol import AgentActionType, UIType
 #: 卡片类 UI。两处用到它：
 #:   ① 「要点兜底」—— 带卡片但回复过短时补一句基于卡片数据的说明；
 #:   ② 「独白兜底」—— 卡片场景要给卡片版文案，否则会出现「已为你准备好」（却没有卡片）。
+#: 客户服务三卡（customer_orders / customer_shops / customer_login）同为卡片形态：
+#: 2026-10-08 线上实测，customer_shops 漏登导致「请查看下方卡片」空壳回复无人兜底
+#: （卡片里明明有 13 家店的真实数据）。customer_login 卡片内容固定，走 _simple 短语。
 CARD_UIS: tuple[UIType, ...] = (
     UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD,
     UIType.PAY_JUMP, UIType.IMAGE_TASK, UIType.GREETING_CARD,
+    UIType.CUSTOMER_ORDERS, UIType.CUSTOMER_SHOPS, UIType.CUSTOMER_LOGIN,
 )
 
 #: UI → 前端动作。接入方按 `action.type` 决定跳哪个页面。
 #: ⚠️ 新增 UI 类型**必须**在这里登记，否则会静默退化成 `SHOW_TEXT`（用户看不到卡片）。
+#: 客户服务三卡：H5 前端按响应 `cards[].ui` 选择组件渲染（CustomerOrdersCard /
+#: CustomerShopsCard / 登录引导），**不依赖 action.type 跳页**，登记为 SHOW_TEXT
+#: 即可 —— 未实现对应组件的接入方自然降级为纯文字，不产生错误跳转。
 UI_TO_ACTION: dict[UIType, AgentActionType] = {
     UIType.PLAN_CARD: AgentActionType.SHOW_PLAN,
     UIType.SHOP_CARD: AgentActionType.SHOW_SHOP,
@@ -49,6 +56,9 @@ UI_TO_ACTION: dict[UIType, AgentActionType] = {
     UIType.IMAGE_TASK: AgentActionType.START_IMAGE_TASK,
     UIType.DIALOG_OPTIONS: AgentActionType.SHOW_OPTIONS,
     UIType.TEXT: AgentActionType.SHOW_TEXT,
+    UIType.CUSTOMER_ORDERS: AgentActionType.SHOW_TEXT,
+    UIType.CUSTOMER_SHOPS: AgentActionType.SHOW_TEXT,
+    UIType.CUSTOMER_LOGIN: AgentActionType.SHOW_TEXT,
 }
 
 #: Action → 接入方需具备的能力标签（写进 `/ui-contract`，接入方可据此降级）。
