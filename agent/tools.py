@@ -55,7 +55,7 @@ async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict
     """把工具参数里的方案引用解析为具体方案 dict。
 
     - "latest" / "latest_diy" / 空：会话「最近引用方案」→ 会话最新 DIY 方案；无则返回 None。
-    - 显式 plan_id：仅在命中会话最新 DIY 方案（plan_id 匹配或 DIY_ 前缀）时返回；
+    - 显式 plan_id：精确匹配当前会话最新方案或历史快照，未知 ID 不替换为最新方案；
       平台商品（现有方案）已无本地镜像，由 platform_db_query_entity 查询后按需传递。
     - 解析结果与用户、会话绑定，不再依赖进程级全局状态（并发安全）。
     """
@@ -76,8 +76,11 @@ async def _resolve_session_plan(plan: str | None, _context: dict | None) -> dict
         return None
     if sid:
         diy = await memory.get_session_json(uid, sid, 'latest_diy_plan')
-        if diy and (diy.get('plan_id') == plan or str(plan).startswith('DIY_')):
+        if diy and diy.get('plan_id') == plan:
             return diy
+        history = await memory.get_session_json(uid, sid, 'diy_plan_versions')
+        if isinstance(history, list):
+            return next((p for p in history if isinstance(p, dict) and p.get('plan_id') == plan), None)
     return None
 
 async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None = None) -> str:
@@ -121,7 +124,7 @@ async def generate_effect_image(plan: str = 'latest_diy', _context: dict | None 
         return json.dumps({'error': '方案缺少可生图的描述信息'}, ensure_ascii=False)
     task_id = (await tasks.get_or_create_preview(prompt, uid, sid, digest) if uid and sid
                else await tasks.create_image_task(prompt, user_id=uid))
-    result: dict[str, Any] = {'task_id': task_id, 'poll': f'/tasks/{task_id}'}
+    result: dict[str, Any] = {'task_id': task_id, 'poll': f'/tasks/{task_id}', 'plan_id': plan_obj.get('plan_id')}
     try:
         st = await tasks.get_image_task(task_id, user_id=(_context or {}).get('user_id'))
         if st.get('status') == 'done' and st.get('result_url'):
@@ -1572,7 +1575,9 @@ def _merge_plan(baseline: dict, llm_plan: dict, exclude_flowers: set[str] | None
     if isinstance(ld, dict):
         bd = plan.setdefault('design', {})
         for key in ('main_flowers', 'fillers', 'foliage', 'color_scheme', 'packaging', 'meaning', 'notes', 'diy_steps', 'care_tips', 'card_message', 'budget_breakdown', 'difficulty', 'est_time', 'shelf_life', 'suitable_for', 'caution', 'mood_tags'):
-            if ld.get(key) not in (None, '', []):
+            if key in ('fillers', 'foliage') and isinstance(ld.get(key), list):
+                bd[key] = ld[key]
+            elif ld.get(key) not in (None, '', []):
                 bd[key] = ld[key]
         # LLM 精简输出后 main_flowers 里没有 role / flower_language（2026-09-20 延迟优化）。
         # 这两项都是**知识库静态属性**，从知识库补齐即可 —— 既省 token，

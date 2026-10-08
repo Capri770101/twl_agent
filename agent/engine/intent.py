@@ -15,7 +15,7 @@ class IntentRoute:
 _CARE = frozenset({'retrieve_knowledge', 'respond_to_user', 'search_history', 'get_user_profile'})
 _GREETING = frozenset({'suggest_greetings', 'render_greeting_card', 'respond_to_user', 'show_options'})
 _IMAGE = frozenset({'generate_effect_image', 'respond_to_user'})
-_DIY = frozenset({'retrieve_knowledge', 'generate_diy_plan', 'revise_diy_plan', 'generate_effect_image', 'respond_to_user', 'show_plan_card', 'show_options', 'get_user_profile'})
+_DIY = frozenset({'retrieve_knowledge', 'generate_diy_plan', 'revise_diy_plan', 'prepare_revision', 'generate_effect_image', 'respond_to_user', 'show_plan_card', 'show_options', 'get_user_profile'})
 _BUYING = frozenset({'platform_db_query_entity', 'retrieve_knowledge', 'respond_to_user', 'show_plan_card', 'show_options', 'search_history', 'get_user_profile'})
 
 

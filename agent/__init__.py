@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from agent import data_tools as _data_tools  # noqa: F401
 from agent import diy_tools as _diy_tools  # noqa: F401
+from agent import revision_draft as _revision_draft  # noqa: F401
 from agent import customer_tools as _customer_tools  # noqa: F401
 from agent import memory_tools as _memory_tools  # noqa: F401
 from agent import tools as _tools  # noqa: F401

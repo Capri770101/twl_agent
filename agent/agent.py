@@ -995,6 +995,9 @@ def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, repl
     text = message or ''
     if any(w in text for w in _PLAN_QUESTION_WORDS):
         return False
+    from agent.engine.discussion import is_plan_discussion
+    if is_plan_discussion(text):
+        return False
     # ① **模型已经在口述方案**（回复里有具体花材数量 / 方案+具体价格）→ 必须出卡。
     #    这条刻意不依赖用户话里的关键词：用户可能说得很含蓄
     #    （「她最近心情不太好，我想让她开心一下」——正则抽不出任何"花艺需求"字段），
@@ -1540,7 +1543,9 @@ def _decline_image(message: str) -> bool:
     if any(w in text for w in _IMAGE_DECLINE_WORDS):
         return True
     # 「不用了」「别了」这类省略语，需同时出现图相关词才算拒绝生图
-    return any(w in text for w in _IMAGE_TOPIC_WORDS) and any(w in text for w in _IMAGE_DECLINE_HINT)
+    # 否定必须直接修饰图片，不能把“不要配花…并生成效果图”跨句拼成拒绝。
+    return bool(re.search(r'(?:不要|不用|无需|不需要|别|取消)\s*(?:再|自动|继续)?\s*(?:生成|制作|看|展示)?\s*(?:效果图|预览图|图片|图像|生图|出图|图)', text)
+                or re.search(r'(?:效果图|预览图|图片|生图|出图)[，,：:\s]*(?:就|也|先)?(?:不要|不用|不需要|免了|算了|取消)', text))
 
 
 async def _find_pending_image_task(user_id: str, sid: str) -> dict | None:
@@ -1903,6 +1908,31 @@ class ReActAgent:
         product_title = normalize_product_title(sess_ctx.get('product_title')) or product_title
         entry = normalize_entry(sess_ctx.get('entry'), shop_id, product_id)
         stage = SessionStage(await mem_store.get_stage(sid))
+        from agent.revision_draft import handle_confirmation
+        confirmed_response = await handle_confirmation(user_id, sid, message)
+        if confirmed_response is not None:
+            await mem_store.save_messages(sid, [{'role':'user','content':message},
+                {'role':'assistant','content':confirmed_response.reply,'ui':confirmed_response.ui.value,'data':confirmed_response.data}])
+            await mem_store.update_stage(sid, confirmed_response.stage)
+            if on_event:
+                on_event({'event':'text','content':confirmed_response.reply})
+                if confirmed_response.ui != UIType.TEXT:
+                    on_event({'event':'card','ui':confirmed_response.ui.value,'data':confirmed_response.data})
+            return confirmed_response
+        from agent.restore_plan import restore_version, restore_response
+        requested_version = restore_version(message)
+        if requested_version is not None:
+            restored = await restore_response(user_id, sid, requested_version, image_optout_key=_FLAG_IMAGE_OPTOUT)
+            await mem_store.save_messages(sid, [
+                {'role': 'user', 'content': message},
+                {'role': 'assistant', 'content': restored.reply, 'ui': restored.ui.value, 'data': restored.data},
+            ])
+            await mem_store.update_stage(sid, restored.stage)
+            if on_event:
+                on_event({'event': 'text', 'content': restored.reply})
+                if restored.ui == UIType.PLAN_CARD:
+                    on_event({'event': 'card', 'ui': restored.ui.value, 'data': restored.data})
+            return restored
         if stage == SessionStage.DONE and (not _is_chitchat(message)):
             sid = await mem_store.create_conversation(user_id, title=message[:20], shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title)
             stage = SessionStage.ANALYZE
@@ -1968,9 +1998,17 @@ class ReActAgent:
         # 历史里的方案卡数据（data）不会作为可读内容发给模型 → 抽成摘要注入 prompt，
         # 让模型回答方案细节时有权威依据（避免凭记忆复述造成花材/配色失真）。
         current_plan = await _current_plan_summary(user_id, sid, history)
+        from agent.revision_draft import KEY as revision_draft_key
+        pending_revision = await mem_store.get_session_json(user_id, sid, revision_draft_key)
+        if isinstance(pending_revision, dict):
+            current_plan += '\n待确认修改草稿（尚未执行）：' + str(pending_revision.get('summary', ''))
         history_for_llm = _trim_history_for_llm(history, settings.HISTORY_CHAR_LIMIT)
         # 本轮问的是平台事实类信息（店铺/商品）→ 注入「必须先查证」指令，防编造（见 _platform_fact_hint）
         platform_facts = _platform_fact_hint(message)
+        from agent.engine.discussion import is_plan_discussion
+        discussion_only = is_plan_discussion(message)
+        if discussion_only:
+            platform_facts = ''
         # 定制花束不是平台在售商品事实，不能用“必须查商品”纠正设计工具。
         current_route = classify(message) if settings.AGENT_INTENT_ROUTING_ENABLED else None
         if current_route and current_route.name == 'design':
@@ -1990,7 +2028,9 @@ class ReActAgent:
         )
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
         route = classify(message) if settings.AGENT_INTENT_ROUTING_ENABLED else None
-        if route and route.tools is not None:
+        if discussion_only:
+            system += '\n本轮用户在讨论或询问，不是在授权重新设计。基于当前方案和知识回答疑问，允许复述已有花材、支数及价格；不得创建或修改方案、推荐现成商品、自动生图。说明建议与已执行修改的区别；用户明确确认后再执行。'
+        elif route and route.tools is not None:
             system += f'\n本轮意图是 {route.name}，只使用当前工具列表完成任务；不要改做商品推荐、DIY 方案或其他未请求能力。'
         elif active_tools.get() is not None:
             system += '\n本轮只回答养护问题：按当前工具列表检索知识，结果充分后直接文字回答，不推荐商品、不设计方案、不生图。工具结果不足则如实说明，不重复相同检索。'
@@ -2057,7 +2097,8 @@ class ReActAgent:
                 # 前几轮说过的「送妈妈、预算200」仍生效）。
                 tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
                             'shop_id': shop_id, 'entry': entry, 'product_id': product_id,
-                            'product_title': product_title, 'requirement': req_acc, 'customer_credential': customer_credential}
+                            'product_title': product_title, 'requirement': req_acc, 'customer_credential': customer_credential,
+                            'user_message': message}
                 if len(exec_idx) > 1:
                     gathered = await asyncio.gather(
                         *(execute_tool(tool_calls[i]['name'], tool_calls[i]['arguments'], tool_ctx)
@@ -2179,7 +2220,13 @@ class ReActAgent:
         # （原先这 8 步是硬编码散在这里的，顺序语义只能靠读代码推断 —— review 第 2 条）。
         # ⚠️ 改清理逻辑请改那张表，不要在这里加调用。
         final_reply = _run_cleanup_pipeline(final_reply, ui=ui, data=data, tool_log=tool_log)
-        if route and route.name == 'qa' and ui == UIType.TEXT and (
+        # QA 意图 + 空回复兜底：不依赖 AGENT_INTENT_ROUTING_ENABLED（该开关只管是否
+        # 限制模型工具范围）。classify() 是纯正则、零成本；生产默认路由关闭时
+        # （route=None），知识问答的空壳回复此前没有任何兜底（2026-09-22 评测
+        # qa-care-001 实证：调对工具但回复为空模板）。此处用与 _post_process
+        # 相同的判定口径，在 run() 出口提前救回。
+        _qa_route = route.name if route is not None else classify(message).name if classify(message) is not None else None
+        if _qa_route == 'qa' and ui == UIType.TEXT and (
             not final_reply.strip() or final_reply in {_EMPTY_CARD_FALLBACK, _EMPTY_TEXT_FALLBACK}
         ):
             final_reply = _run_cleanup_pipeline(_knowledge_fallback_reply(tool_log), ui=ui, data=data, tool_log=tool_log)
@@ -2279,6 +2326,18 @@ class ReActAgent:
             session_req: 本会话累积的结构化需求（跨轮合并结果），供 L3 追问兜底判据使用。
         """
         # ── 1. 推导 new_stage / ui / data ──
+        from agent.revision_draft import CONFIRM, CANCEL
+        for record in reversed(tool_log):
+            if record.name not in ('prepare_revision', 'revise_diy_plan'):
+                continue
+            try:
+                pending = json.loads(record.result) if isinstance(record.result, str) else record.result
+                if isinstance(pending, dict) and pending.get('pending_revision'):
+                    reply = '先确认修改内容：\n' + pending['summary'] + '\n当前方案尚未改变。是否按以上内容生成新版？'
+                    return incoming, UIType.DIALOG_OPTIONS, {'options':[{'label':'确认修改并生成新版','value':CONFIRM},{'label':'取消本次修改','value':CANCEL}]}, reply, 'design'
+            except (ValueError, TypeError):
+                pass
+            break
         if respond_args is not None:
             new_stage = self._derive_focus(tool_log, incoming, message)
             if new_stage == SessionStage.DONE:
@@ -2301,7 +2360,12 @@ class ReActAgent:
                 if inferred_ui in _card_types and inferred_data:
                     ui = inferred_ui
                     data = inferred_data
-            elif ui == UIType.PLAN_CARD and inferred_ui == UIType.PLAN_CARD and inferred_data:
+            elif inferred_ui == UIType.PLAN_CARD and inferred_data and (
+                ui == UIType.PLAN_CARD or (
+                    ui in (UIType.TEXT, UIType.DIALOG_OPTIONS, UIType.IMAGE_TASK)
+                    and any(isinstance(p, dict) and p.get('diy') for p in inferred_data.get('plans', []))
+                )
+            ):
                 ui = inferred_ui
                 data = inferred_data
             if inferred_ui in (UIType.ORDER_CARD, UIType.PAY_JUMP) and inferred_data.get('pay_jump'):
@@ -2466,6 +2530,7 @@ class ReActAgent:
             logger.info('[agent] 模型自报缺信息 %s，标记本会话已追问一次', respond_args.get('missing'))
 
         # ── 6. 方案即生图 ──
+        preview_submission_failed = False
         diy_done = _diy_produced
         eff_done = bool(_extract_image_task(tool_log).get('task_id'))
         # 产出新方案 → 清掉上一张图的补调标记，让新方案能重新触发一次生图
@@ -2480,15 +2545,20 @@ class ReActAgent:
                 await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
                 raw = await _gei('latest_diy', {'user_id': user_id, 'session_id': sid, 'location': location})
                 eff = raw if isinstance(raw, dict) else json.loads(raw) if isinstance(raw, str) else {}
-                if 'task_id' in eff:
+                if isinstance(eff, dict) and eff.get('task_id'):
                     data = {**data, 'task_id': eff['task_id'], 'poll': eff.get('poll', True)}
                     if eff.get('result_url'):
                         data['result_url'] = eff['result_url']
                     tool_log.append(ToolCallRecord(name='generate_effect_image', arguments={'plan': 'latest_diy'}, result=json.dumps(eff, ensure_ascii=False), status='ok', source='system'))
                     logger.info('[agent] 方案即生图 task_id=%s', eff['task_id'])
+                else:
+                    preview_submission_failed = True
+                    logger.warning('[agent] 方案即生图未取得任务 user=%s session=%s', user_id, sid)
             except Exception:
+                preview_submission_failed = True
                 logger.exception('[agent] 方案即生图失败')
 
+        from agent.engine.discussion import is_plan_discussion
         # ── 7. 生图补调（幂等 + 去重 + 意图豁免）──
         # 历史坑：这里曾因「标志永不清除 + 不去重 + 硬编码覆盖回复」造成死循环——
         # 用户说什么都回同一句「正在为您生成效果图预览」，且每句话都新建一个生图任务烧 API。
@@ -2508,6 +2578,7 @@ class ReActAgent:
             await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_IMAGE)
             logger.info('[agent] 用户拒绝生图，记录 img_optout 并停止补调')
         elif (eff_confirmed and (not eff_done) and (not eff_forced) and (not _img_optout)
+              and not is_plan_discussion(message)
               and (ui != UIType.PLAN_CARD)
               # L3：本轮若在追问（还没有可信方案），就不要拿上一轮的旧方案去生图
               and (not _clarified)
@@ -2587,6 +2658,8 @@ class ReActAgent:
         if ui == UIType.CUSTOMER_ORDERS and not customer_card_verified:
             ui, data = UIType.TEXT, {}
         final_reply = _clean_reply(final_reply)
+        if preview_submission_failed:
+            final_reply = final_reply.rstrip() + '\n预览图任务暂未提交成功，方案已保留。请稍后说“给当前方案生成效果图”重试。'
         if ui in (UIType.ORDER_CARD, UIType.PAY_JUMP):
             final_reply = re.sub('[，,]?共\\s*\\d+[\\d.]*\\s*元', '', final_reply)
             final_reply = re.sub('[，,]?\\d+[\\d.]*\\s*元[。.?]', '', final_reply)
@@ -2594,7 +2667,9 @@ class ReActAgent:
         if ui.value != UIType.TEXT and (not final_reply or final_reply == '好的，收到你的想法啦，请稍等～'):
             final_reply = ''
         elif not final_reply:
-            final_reply = '我已经为你整理好相关结果啦，请查看下方卡片～' if tool_log else '好的，收到你的想法啦，请稍等～'
+            # ui 为 TEXT 且无任何成功工具结果时，不能声称“结果在卡片里”——根本没有卡片。
+            # 给一句可继续对话的诚实引导，而不是空壳模板（2026-09-22 评测实证问题）。
+            final_reply = _EMPTY_CARD_FALLBACK if tool_log else _EMPTY_TEXT_FALLBACK
 
         return new_stage, ui, data, final_reply, llm_intent
 

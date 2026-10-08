@@ -47,6 +47,13 @@ def _parse_plan(plan: str) -> dict:
 @register_tool(name='generate_diy_plan', description='根据用户需求设计一份结构化 DIY 花艺方案：抽取维度→查知识库→组装主花/配材/配比、色彩方案、包装、寓意文案与预算估算，并返回可供生图的 effect_prompt。输出另含分步插花指引(diy_steps)、养护建议(care_tips)、贺卡寄语文案(card_message)与预算明细(budget_breakdown)。会话已绑定店铺时，方案会优先选用该店在售花材，并在 `unavailable_materials` 里列出该店暂时没有的原料——出现这个字段就必须在回复里如实告知用户，不要隐瞒。', parameters={'type': 'object', 'properties': {'requirements': {'type': 'string', 'description': '用户的 DIY 需求描述'}, 'shop_id': {'type': 'string', 'description': '可选：指定店铺，方案按该店在售花材优先设计。留空则自动使用会话锁定的店铺（若有）'}}, 'required': ['requirements']}, inject_context=True, tags=['diy'])
 async def generate_diy_plan(requirements: str, shop_id: str='', _context: dict | None=None) -> str:
     from agent.tools import design_diy_plan
+    from backend.storage import memory as _memory
+    ctx = _context or {}
+    if ctx.get('user_message') and ctx.get('user_id') and ctx.get('session_id'):
+        current = await _memory.get_session_json(ctx['user_id'], ctx['session_id'], 'latest_diy_plan')
+        if current:
+            from agent.revision_draft import prepare_revision
+            return await prepare_revision(requirements, ctx)
 
     # 会话锁定店铺优先：漏传参数也不会设计出该店没有的原料。
     # 会话累积需求（跨轮补充）一并传入：用户分几轮才说清需求时，方案不会只看最后一句。
@@ -83,6 +90,9 @@ async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) 
             await _store_diy_plan(restored, ctx)
             return json.dumps(restored, ensure_ascii=False)
         plan = json.dumps(latest, ensure_ascii=False)
+        if ctx.get('user_message') and not ctx.get('revision_confirmed'):
+            from agent.revision_draft import prepare_revision
+            return await prepare_revision(feedback, ctx)
     new_plan = revise_with_llm(plan, feedback, shop_id=ctx_shop)
     if not isinstance(new_plan, dict) or new_plan.get('error') or new_plan.get('ok') is False:
         return json.dumps(new_plan, ensure_ascii=False)
@@ -106,5 +116,10 @@ async def revise_diy_plan(plan: str, feedback: str, _context: dict | None=None) 
 @register_tool(name='generate_effect_image', description='为 DIY 方案提交 AI 生图任务，立即返回 task_id（客户端通过 GET /tasks/{task_id} 轮询取图）。用户想看效果图、或你给出方案后希望让他看到成品样子时，**由你主动调用它**；只有拿到 task_id 才算真的提交了任务——没拿到就不能说图已生成。若传入 latest_diy 则使用最近一次设计的方案生成精确 prompt（花材/色彩/形态/包装与方案一致）；也可直接传入自定义描述。', parameters={'type': 'object', 'properties': {'plan': {'type': 'string', 'description': '方案描述或方案 ID；latest/latest_diy 表示使用最近设计的方案'}}, 'required': ['plan']}, tags=['image'], inject_context=True)
 async def generate_effect_image(plan: str='latest_diy', _context: dict | None=None) -> str:
     from agent.tools import generate_effect_image as _generate_effect_image
+    from backend.storage import memory as _memory
+    from agent.revision_draft import KEY
+    ctx = _context or {}
+    if ctx.get('user_id') and ctx.get('session_id') and await _memory.get_session_json(ctx['user_id'], ctx['session_id'], KEY):
+        return json.dumps({'error':'修改草稿尚未确认，请先确认或取消，再生成效果图'}, ensure_ascii=False)
 
     return await _generate_effect_image(plan=plan, _context=_context)

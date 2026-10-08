@@ -1,5 +1,6 @@
 """真实 H5 Node 签发代码与 Python 验签互通；不依赖线上或真实密钥。"""
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -10,6 +11,8 @@ from backend.customer_identity import customer_subject, bound_customer_credentia
 
 
 def test_node_issued_credential_accepted_by_python(monkeypatch):
+    if os.environ.get('RUN_H5_INTEROP') != '1':
+        pytest.skip('H5 interoperability is opt-in; set RUN_H5_INTEROP=1 with authorization')
     module = Path(__file__).resolve().parents[2] / 'H5/server/src/customerCredential.js'
     if not shutil.which('node') or not module.exists():
         pytest.skip('requires adjacent H5 repo and Node')

@@ -32,6 +32,7 @@ from backend.routers.learning import router as learning_router
 from backend.routers.agent_page import router as agent_page_router
 from backend.routers.greeting import router as greeting_router
 from backend.routers.speech import router as speech_router
+from backend.version import VERSION
 
 logging.basicConfig(
     level=logging.DEBUG if settings.APP_ENV == 'dev' else logging.INFO,
@@ -74,7 +75,7 @@ _docs_kwargs = {} if settings.API_DOCS_ENABLED else {
 app = FastAPI(
     title='跳舞兰花卉智能体 API',
     description='跳舞兰花卉智能体：基于 ReAct 的花艺顾问 AI，支持微信小程序等多平台接入',
-    version='1.3.0',
+    version=VERSION,
     lifespan=lifespan,
     **_docs_kwargs,
 )
