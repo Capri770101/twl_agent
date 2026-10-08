@@ -18,7 +18,11 @@ async def query_orders(credential: str, *, order_id: str | None = None, page: in
     base = settings.CUSTOMER_SERVICE_BASE_URL.rstrip('/')
     url = urlsplit(base)
     # 票据属于敏感凭据，只发到运维配置的可信 HTTPS 源，不跟随重定向。
-    if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+    # 本地联调例外（mock 后端）：APP_ENV=dev 且显式 CUSTOMER_SERVICE_ALLOW_INSECURE=true
+    # 时放行 HTTP（见 config.validate_customer_service_transport，生产 fail-closed）。
+    _allow_http = settings.CUSTOMER_SERVICE_ALLOW_INSECURE and settings.APP_ENV.lower() in {'dev', 'development', 'local', 'test'}
+    _scheme_ok = url.scheme == 'https' or (_allow_http and url.scheme == 'http')
+    if not _scheme_ok or not url.hostname or url.username or url.password or url.query or url.fragment:
         return failure('UNSUPPORTED')
     if order_id is not None and (not isinstance(order_id, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', order_id)):
         return failure('INVALID_ARGUMENT')

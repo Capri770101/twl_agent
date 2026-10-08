@@ -55,6 +55,18 @@ class Settings(BaseSettings):
             raise ValueError('生产环境必须配置明确的 ALLOWED_ORIGINS，不能使用 *')
         return self
 
+    @model_validator(mode='after')
+    def validate_customer_service_transport(self) -> 'Settings':
+        """生产环境强制客户服务走 HTTPS：ALLOW_INSECURE 误配也直接失效（fail-closed）。
+
+        背景（2026-10-08）：H5 服务器封禁后，本地联调改用 mock 后端（HTTP）。
+        放行仅限 APP_ENV=dev 且显式 CUSTOMER_SERVICE_ALLOW_INSECURE=true；
+        票据是敏感凭据，生产绝不接受明文传输。
+        """
+        if self.APP_ENV.lower() not in {'dev', 'development', 'local', 'test'}:
+            self.CUSTOMER_SERVICE_ALLOW_INSECURE = False
+        return self
+
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4o-mini"
@@ -122,6 +134,9 @@ class Settings(BaseSettings):
     CUSTOMER_SERVICE_ENABLED: bool = False
     CUSTOMER_SERVICE_BASE_URL: str = ''  # 固定 HTTPS 业务入口，不允许模型指定 URL
     CUSTOMER_SERVICE_SECRET: str = ''  # 与 H5 共享的专用委托验签密钥
+    # 仅本地联调放行 HTTP（mock 后端）。生产 fail-closed：默认 false，且 APP_ENV=prod
+    # 时即便误配 true 也强制视为 false（validator 见下）。
+    CUSTOMER_SERVICE_ALLOW_INSECURE: bool = False
 
     WECHAT_APPID: str = Field(default="", validation_alias=AliasChoices('WECHAT_APPID', 'WX_APPID'))
     WECHAT_SECRET: str = Field(default="", validation_alias=AliasChoices('WECHAT_SECRET', 'WX_SECRET'))

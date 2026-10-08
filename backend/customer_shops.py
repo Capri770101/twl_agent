@@ -11,7 +11,11 @@ async def query_shops(shop_id: str = '', city: str = '', *, transport=None) -> d
         return failure('UNSUPPORTED')
     base = settings.CUSTOMER_SERVICE_BASE_URL.rstrip('/')
     parsed = urlsplit(base)
-    if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    # 公开查询本无票据，但统一走同一可信源策略；HTTP 放行同样仅限
+    # APP_ENV=dev + CUSTOMER_SERVICE_ALLOW_INSECURE=true（本地 mock 联调）。
+    _allow_http = settings.CUSTOMER_SERVICE_ALLOW_INSECURE and settings.APP_ENV.lower() in {'dev', 'development', 'local', 'test'}
+    _scheme_ok = parsed.scheme == 'https' or (_allow_http and parsed.scheme == 'http')
+    if not _scheme_ok or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         return failure('UNSUPPORTED')
     if (shop_id and not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', shop_id)) or len(city) > 80:
         return failure('INVALID_ARGUMENT')
