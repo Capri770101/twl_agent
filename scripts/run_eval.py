@@ -44,6 +44,9 @@ def judge(case: dict[str, Any], response: dict[str, Any]) -> tuple[bool, list[st
         issues.append('empty reply')
     if str(case.get('intent')) == 'qa' and any(phrase in reply for phrase in ('请查看下方卡片', '服务暂时开小差', '思考得太久')):
         issues.append('qa did not provide a substantive answer')
+    # 客服场景同样不容空壳：卡片类回复必须带基于数据的要点（2026-10-08 线上实测教训）
+    if str(case.get('intent')) in ('shop_service', 'customer_service') and '请查看下方卡片' in reply:
+        issues.append('customer service reply is an empty card shell')
     if response.get('ui') == 'plan_card' and not (response.get('data') or {}).get('plans'):
         issues.append('plan_card missing plans')
     ui = str(response.get('ui') or '')
@@ -70,6 +73,13 @@ def exchange_token(client: httpx.Client, base: str, external_id: str, api_key: s
     return {'token': str(data['access_token']), 'user_id': str(data['user_id'])}
 
 
+def customer_credential(client: httpx.Client, mock_base: str) -> str:
+    """从 mock H5 业务后端换 cs1 票据（eval 客服场景用，仅指向本地 mock）。"""
+    response = client.post(mock_base.rstrip('/') + '/credential')
+    response.raise_for_status()
+    return str((response.json().get('data') or {}).get('access_token') or '')
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--base-url', required=True, help='例如 http://127.0.0.1:8000 或 http://H5-IP/agent')
@@ -78,10 +88,14 @@ def main() -> int:
     parser.add_argument('--strict', action='store_true')
     parser.add_argument('--insecure', action='store_true', help='仅 IP HTTPS 临时验收；优先使用可信代理/CA')
     parser.add_argument('--timeout', type=float, default=190.0)
+    parser.add_argument('--customer-mock', type=str, default='',
+                        help='本地 mock H5 业务后端基址（如 http://127.0.0.1:4761/api/customer-service）；'
+                             '启用后带 customer_credential 标记的场景会自动换票并透传')
     args = parser.parse_args()
     base = args.base_url.rstrip('/')
     api_key = os.getenv('EVAL_PLATFORM_API_KEY', '')
     cases = load_cases(args.cases)
+    cs_token = customer_credential(client, args.customer_mock) if args.customer_mock else ''
     run_id = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
     results: list[dict[str, Any]] = []
     with httpx.Client(timeout=args.timeout, verify=not args.insecure) as client:
@@ -90,8 +104,11 @@ def main() -> int:
             row: dict[str, Any] = {'id': case['id'], 'message': case['message']}
             try:
                 identity = exchange_token(client, base, f'eval_{run_id}_{case["id"]}_{uuid.uuid4().hex[:6]}', api_key)
+                chat_headers = {'Authorization': 'Bearer ' + identity['token']}
+                if cs_token and case.get('customer_credential'):
+                    chat_headers['X-Customer-Credential'] = cs_token
                 response = client.post(
-                    base + '/chat', headers={'Authorization': 'Bearer ' + identity['token']},
+                    base + '/chat', headers=chat_headers,
                     json={'user_id': identity['user_id'], 'message': case['message']},
                 )
                 response.raise_for_status()

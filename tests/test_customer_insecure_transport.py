@@ -33,6 +33,8 @@ def test_dev_default_rejects_http(monkeypatch):
     s = _settings()
     monkeypatch.setattr('backend.customer_service.settings', s)
     monkeypatch.setattr('backend.customer_shops.settings', s)
+    # 消除本机 .env（如 dev 联调配置）对全局单例的干扰：强制回默认值
+    monkeypatch.setattr(s, 'CUSTOMER_SERVICE_ALLOW_INSECURE', False, raising=False)
     assert asyncio.run(query_orders('cs1.anything')) == {'ok': False, 'code': 'UNSUPPORTED', 'retryable': False}
     assert asyncio.run(query_shops()) == {'ok': False, 'code': 'UNSUPPORTED', 'retryable': False}
 

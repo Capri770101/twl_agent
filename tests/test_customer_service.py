@@ -36,6 +36,9 @@ def test_missing_identity_and_path_injection_do_not_connect():
 
 def test_http_destination_refused(monkeypatch):
     monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_BASE_URL', 'http://business.example')
+    # 显式确保放行开关关闭（不受本机 .env.local 之类的影响）：HTTP 必须被传输校验拒绝。
+    monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_ALLOW_INSECURE', False)
+    monkeypatch.setattr(settings, 'APP_ENV', 'prod')
     assert asyncio.run(query_orders('cs1.test.signature'))['code'] == 'UNSUPPORTED'
 
 
