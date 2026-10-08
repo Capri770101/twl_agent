@@ -28,7 +28,7 @@ def classify(message: str) -> IntentRoute | None:
         if settings.CUSTOMER_SERVICE_ENABLED:
             return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'respond_to_user', 'show_options'}))
     # “定制并出图”需要设计工具；“不要出图”不是生图意图。
-    if any(w in text for w in ('营业时间', '几点关门', '几点开门', '店铺地址', '配送范围', '配送规则')):
+    if any(w in text for w in ('营业时间', '几点关门', '几点开门', '几点营业', '店铺地址', '门店地址', '在哪地址', '配送范围', '配送规则', '能不能送', '可以配送吗', '电话多少', '联系方式')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
             return IntentRoute('shop_service', 3, frozenset({'query_shop_service', 'respond_to_user', 'show_options'}))
