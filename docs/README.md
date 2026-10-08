@@ -1,5 +1,7 @@
 # 文档地图
 
+当前工作入口：[智能体独立稳定性基线](AGENT-STABILITY-BASELINE.md)、[1.3.1候选日志](../releases/v1.3.1/RELEASE_NOTES.md)。客户服务/H5联调暂停。
+
 更新：2026-09-29。交付版本以根 [DELIVERY](../DELIVERY.md) 为准，密钥/外部依赖看 [CONFIGURATION](CONFIGURATION.md)。
 
 客户服务联调交接：[清单](../releases/v1.4.0/HANDOFF-CHECKLIST.md)；店铺资料：[准备规范](SHOP-KNOWLEDGE-IMPORT.md)、[JSON模板](../releases/v1.4.0/shop-knowledge-template.json)。
@@ -15,7 +17,7 @@
 
 正在推进的迭代：[可靠性实施与验收清单](RELIABILITY-PLAN.md)，包含已部署基线、未完成事项和每批文档要求。
 
-本轮审查与交付边界：[2026-09-24 联动审查](REVIEW-20260924.md)。
+本轮审查与交付边界见 [docs/archive/](archive/)（2026-09-24 联动审查等历史批次记录已归档）。
 
 | 文档 | 用途 |
 |---|---|
@@ -48,9 +50,9 @@
 
 ## 发布与历史记录
 
-`release-*.md`、`session-memory-release.md`、`platform-access-release.md` 和 `code-review-修复报告.md` 是特定批次记录，不是当前部署手册。当前状态以根目录 `DELIVERY.md`、`CHANGELOG.md` 和源码为准。
+一次性发布记录（`release-*.md`、`session-memory-release.md`、`platform-access-release.md`）、审查报告（`REVIEW-20260924.md`、`code-review-修复报告.md`）和历史规划（`OPTIMIZATION_PLAN.md`、`优化路线图.md`）已全部移入 [docs/archive/](archive/)，通过 Git 历史可追溯，不是当前部署手册。当前状态以根目录 `DELIVERY.md`、`CHANGELOG.md` 和源码为准。
 
-已被替代的旧部署/接入说明和早期贺卡记录已清理，恢复方法见 `archive/README.md`。一次性 release、审查和历史 ADR 仍保留用于追溯，不能当作当前部署状态。`OPTIMIZATION_PLAN.md` 与 `优化路线图.md` 是历史规划；当前待验收范围看 DELIVERY、RELIABILITY-PLAN 和客户服务计划。
+已被替代的旧部署/接入说明和早期贺卡记录的清理说明见 `archive/README.md`。当前待验收范围看 DELIVERY、RELIABILITY-PLAN 和客户服务计划。
 
 ## 维护规则
 
