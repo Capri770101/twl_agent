@@ -59,6 +59,10 @@ CUSTOMER_SERVICE_SECRET=<64字符随机密钥>
 3. **评审契约**：`docs/customer-service-contract.md`（v1.4.0 冻结版）。
    特别关注 §8 三条已知差异（AGENT_TARGET、delivery_policy 空、票据 TTL）。
 4. 联调验证场景（照 `evals/flower_scenarios.jsonl` 的 cs-* 四条执行）。
+5. **H5 侧需支持店名查询（可选优化）**：契约 §3 的 `GET /shops` 目前只按 city 过滤，
+   无 name/keyword 参数。agent 侧已做本地关键词过滤降级（提交 `013efb7`），功能可用；
+   但若门店数量增长到数百上千家，本地过滤会拉全量列表。届时建议 H5 给 `/shops`
+   增加 `name=` 查询参数，agent 侧改为透传（一行改动）。
 
 ## 三、智能体侧（我们已完成的开发）
 
@@ -68,8 +72,26 @@ CUSTOMER_SERVICE_SECRET=<64字符随机密钥>
 | `e83a062` | 修复客服三卡未登记 CARD_UIS/UI_TO_ACTION 导致的空壳回复（线上实测发现） |
 | `4e1262f` | 契约冻结文档 + mock H5 后端 + dev-only HTTP 放行（生产 fail-closed） |
 | `fd64bf6` | 离线 e2e 测试（真实工具→mock 全链路）+ eval 场景 8→12 + runner 票据透传 |
+| `47f42d6` | 本交接文档 |
+| `013efb7` | **店名关键词降级**：模型按提示传中文店名 → 后端 ASCII 正则拒收 → 连续重试耗尽迭代 → 用户收到「思考得太久」空壳。工具层本地过滤修复 |
 
-测试基线：**906 passed / 1 skipped**（原 899，新增 7 个客服回归）。
+测试基线：**911 passed / 1 skipped**（原 899，新增 12 个客服回归）。
+
+### agent 服务器（49.232.49.176）当前部署状态
+
+`995da78` / `e83a062` / `013efb7` 的代码改动已生效（base.md、intent.py、tools_meta.py、
+agent.py、customer_tools.py 经 SFTP + docker cp 进容器，已重启验证）。
+
+⚠️ **部署方式是 expedient（docker cp），镜像未重建** —— 容器一旦重建（`docker compose up --force-recreate`
+拉新镜像）会回到旧代码。下次正式发版必须走 git-archive → SFTP → 重建镜像流程，
+把这批改动烘进镜像（涉及提交：`995da78` `e83a062` `013efb7`，共 6 个文件）。
+
+部署后线上实测（直连本机 :8000，真实 LLM）：
+- 「玫瑰怎么养得久」→ retrieve_knowledge，实质养护回答 ✓
+- 「花诺花艺几点营业」→ query_shop_service（店名降级命中 1 家）→ customer_shops 卡片
+  + 要点回复「花诺花艺（福州、08:00-22:00）」✓（空壳 bug 回归确认修复）
+- 遗留观察：模型偶发先试 platform_db_query_entity（被 scope 拒绝后正确转 query_shop_service），
+  多耗 1 轮但不影响结果；后续可在 base.md 客服段补一句「门店信息用 query_shop_service」。
 
 离线联调方法（不碰任何服务器）：
 
