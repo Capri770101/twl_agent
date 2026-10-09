@@ -2,9 +2,22 @@
 import re
 
 
+# 客服/订单语境信号：这类消息里的「怎么样/为什么」是在问订单售后进度，
+# 不是在探讨设计方案。误判成讨论轮次会把工具收窄成 CARE_TOOLS，
+# query_my_orders / query_my_after_sales 被拦截 → 用户问到退款只能得到
+# 「查不到」的兜底话术（2026-10-08 本地联调实测）。
+_CUSTOMER_SERVICE_SIGNAL = re.compile(
+    r'订单|退款|售后|退了|退货|物流|发货|收货|配送|到货|签收|发货了|送到了|客服'
+)
+
+
 def is_plan_discussion(message: str) -> bool:
     text = str(message or '').strip()
     if not text:
+        return False
+    # 客服/订单语境直接放行：走完整 ReAct（模型自己会选 query_my_orders /
+    # query_my_after_sales）。上面那组「怎么样/为什么」讨论信号对这类消息没有区分度。
+    if _CUSTOMER_SERVICE_SIGNAL.search(text):
         return False
     # 明确同时要求执行时不拦；去掉“先别改”等否定执行短语再判断。
     remaining = re.sub(r'(?:先)?(?:不要|不用|别|不需要)(?:再)?(?:改方案|修改|改|生成方案|推荐商品)', '', text)
