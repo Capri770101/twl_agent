@@ -32,6 +32,7 @@ from backend.routers.learning import router as learning_router
 from backend.routers.agent_page import router as agent_page_router
 from backend.routers.greeting import router as greeting_router
 from backend.routers.speech import router as speech_router
+from backend.routers.notifications import router as notifications_router
 from backend.version import VERSION
 
 logging.basicConfig(
@@ -109,6 +110,7 @@ app.include_router(speech_router)
 app.include_router(auth_router)
 app.include_router(metrics_router)
 app.include_router(learning_router)
+app.include_router(notifications_router)
 # 官网演示页（agent.html）体验窗适配端点；未启用时端点表现为 404
 app.include_router(agent_page_router)
 
