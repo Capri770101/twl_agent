@@ -33,7 +33,11 @@ def test_concurrent_scope_and_execution_boundary(monkeypatch):
 
 
 def test_disabled_by_default_path(monkeypatch):
+    # 「默认关闭」= 两个开关都关。必须显式 pin 意图路由：开发机 .env 常把
+    # AGENT_INTENT_ROUTING_ENABLED 设为 true（线上也开着），泄漏进 pytest 会让
+    # classify() 给出 care 路由 scope，本用例就会误判成失败（2026-10-08 实测）。
     monkeypatch.setattr(settings, 'CARE_TOOL_SCOPE_ENABLED', False)
+    monkeypatch.setattr(settings, 'AGENT_INTENT_ROUTING_ENABLED', False)
     @scoped_tools
     async def run(self, user_id, message):
         assert active_tools.get() is None

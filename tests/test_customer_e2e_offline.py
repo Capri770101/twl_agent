@@ -1,4 +1,4 @@
-﻿"""客服场景离线 e2e：mock-LLM 驱动完整 run()，工具层打到本地 mock H5 后端。
+"""客服场景离线 e2e：mock-LLM 驱动完整 run()，工具层打到本地 mock H5 后端。
 
 为什么重要
 ----------
@@ -126,9 +126,9 @@ def test_shop_consultation_real_tool(mock_backend, monkeypatch):
 
 def test_my_orders_real_tool(mock_backend, monkeypatch):
     """我的订单：cs1 票据（mock 签发）→ 真工具查询 → 订单要点。"""
-    # 从 mock 换票
+    # 从 mock 换票（trust_env=False：开发机系统代理会劫持 127.0.0.1 请求成 502 空 body）
     import httpx
-    with httpx.Client(timeout=5) as c:
+    with httpx.Client(timeout=5, trust_env=False) as c:
         r = c.post(f'http://127.0.0.1:{mock_backend}/api/customer-service/credential')
         token = r.json()['data']['access_token']
     turns = [

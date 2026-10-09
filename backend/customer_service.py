@@ -34,7 +34,11 @@ async def query_orders(credential: str, *, order_id: str | None = None, page: in
             return failure('INVALID_ARGUMENT')
         path += '/after-sales'
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False, transport=transport) as client:
+        # trust_env=False：客服请求带敏感 cs1 票据，发往运维钉定的可信源，
+        # 绝不走环境 HTTP(S)_PROXY —— 否则票据会泄漏给无关代理，且后端到后端的
+        # 固定源调用不该受部署机代理干扰（本地实测：系统代理把 127.0.0.1:4000
+        # 劫持成 502）。显式传入的 transport（测试注入）优先级更高，不受影响。
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False, transport=transport) as client:
             response = await client.get(base + path, params={'page': page} if order_id is None else None,
                                         headers={'Authorization': 'Bearer ' + credential})
         if response.status_code == 401:

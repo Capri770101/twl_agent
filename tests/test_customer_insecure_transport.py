@@ -62,3 +62,38 @@ def test_prod_https_unchanged():
                   AUTH_REQUIRED=True, ALLOWED_ORIGINS='https://h5.tiaowulan.com',
                   CUSTOMER_SERVICE_BASE_URL='https://h5.example.com/api/customer-service')
     assert s.CUSTOMER_SERVICE_ALLOW_INSECURE is False
+
+
+def test_env_proxy_does_not_hijack_customer_calls(monkeypatch):
+    """环境代理不得劫持客服调用（trust_env=False 回归）。
+
+    本地实测（2026-10-08）：开发机注册表系统代理 127.0.0.1:7897 被 httpx
+    默认采用，发往 127.0.0.1:4000 的订单查询被代理劫持成 502 空 body——
+    客服请求携带敏感 cs1 票据，泄漏给无关代理更是安全问题。
+    验证方式：HTTP_PROXY 指向死端口，真实网络栈下调用必须仍直连成功。
+    """
+    import threading
+    from http.server import ThreadingHTTPServer
+    from scripts.mock_customer_service import Handler as MockHandler
+
+    MockHandler.secret = b'dev_secret_at_least_32_bytes_padding!!'
+    server = ThreadingHTTPServer(('127.0.0.1', 0), MockHandler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        monkeypatch.setenv('HTTP_PROXY', 'http://127.0.0.1:9')   # 端口 9：必死
+        monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9')
+        monkeypatch.setenv('NO_PROXY', '')                        # 清掉可能的豁免
+        s = _settings(CUSTOMER_SERVICE_ALLOW_INSECURE=True,
+                      CUSTOMER_SERVICE_BASE_URL=f'http://127.0.0.1:{port}/api/customer-service')
+        monkeypatch.setattr('backend.customer_service.settings', s)
+        monkeypatch.setattr('backend.customer_shops.settings', s)
+        shops = asyncio.run(query_shops())
+        assert shops.get('ok') is True, f'门店查询被代理劫持: {shops}'
+        orders = asyncio.run(query_orders(''))
+        assert orders == {'ok': False, 'code': 'AUTH_REQUIRED', 'retryable': False}, \
+            f'订单查询应直达后端并返回凭据错误，而不是代理故障: {orders}'
+    finally:
+        server.shutdown()
+        t.join(timeout=5)

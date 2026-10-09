@@ -20,7 +20,9 @@ async def query_shops(shop_id: str = '', city: str = '', *, transport=None) -> d
     if (shop_id and not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', shop_id)) or len(city) > 80:
         return failure('INVALID_ARGUMENT')
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False, transport=transport) as client:
+        # trust_env=False：与 customer_service.py 同理——固定可信源的后端调用
+        # 不走环境代理（本地系统代理会把 127.0.0.1:4000 劫持成 502）。
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False, trust_env=False, transport=transport) as client:
             r = await client.get(base + '/shops' + ('/' + shop_id if shop_id else ''), params={'city': city} if not shop_id else None)
         if r.status_code == 404:
             return failure('NOT_FOUND')
