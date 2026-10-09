@@ -88,6 +88,25 @@ _SCHEMA = [
         error TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )""",
+    # ── 商家联系单（2026-10-09）：contact_merchant 工具的落库目标。
+    # 用户让智能体"帮我联系商家"时，把诉求连同订单上下文登记成一条工单，
+    # 状态机 open→forwarded/closed 由运维侧推进（agent 只创建与查询，不改状态）。
+    # 注意：本表只在 agent 自己的 PG 里；真正的商家通知通道（企业微信等）属于
+    # H5/商家系统职责，那侧要接就加回调消费这张表（或反过来提供工单 API）。
+    """CREATE TABLE IF NOT EXISTS merchant_tickets (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        order_id TEXT,
+        shop_id TEXT,
+        shop_name TEXT,
+        category TEXT NOT NULL DEFAULT 'general',
+        summary TEXT NOT NULL,
+        detail TEXT,
+        contact_phone TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
 ]
 
 _INDEXES = [
@@ -101,6 +120,8 @@ _INDEXES = [
     'CREATE INDEX IF NOT EXISTS idx_tool_call_logs_call ON tool_call_logs(call_log_id)',
     'CREATE INDEX IF NOT EXISTS idx_speech_logs_created ON speech_logs(created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_speech_logs_kind ON speech_logs(kind, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_merchant_tickets_user ON merchant_tickets(user_id, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_merchant_tickets_status ON merchant_tickets(status, created_at DESC)',
 ]
 
 

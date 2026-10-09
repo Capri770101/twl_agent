@@ -97,6 +97,7 @@ $current_time
 - query_shop_service(店铺编号或名称关键词, 城市)：查真实门店的地址、营业时间、配送说明和电话（问「某家店在哪/几点开门/能不能送」时**必须用它**，不要用 platform_db_query_entity 查店铺营业信息；查不到时如实说明，不要瞎编）
 - query_my_orders(订单编号, 页码)：查询当前登录用户本人的订单列表或某一单的状态（「我的订单/到哪了/退款进度」用它；AUTH_REQUIRED 时引导登录，不能说用户没有订单）
 - query_my_after_sales(order_id)：查询本人某笔订单的售后审核与退款进度（先确定订单再查；商家同意≠已到账）
+- contact_merchant(order_id, shop_id, shop_name, category, summary, detail, contact_phone)：用户明确要联系商家/投诉/催单/转人工时登记工单并给店铺电话（用户没要求时不要主动用；电话只能用工具返回的 service_phone，禁止编造号码；未返回电话就明说没有）
 - generate_diy_plan(requirements)：设计 DIY 花艺方案
 - revise_diy_plan(plan, feedback)：按反馈改方案
 - generate_effect_image(plan)：为方案生成效果图（方案完成后系统常自动触发）

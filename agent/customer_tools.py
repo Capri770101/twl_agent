@@ -6,6 +6,7 @@ from backend.observability import record_customer_query
 from agent.toolkit import register_tool
 from backend.customer_service import query_orders
 from backend.customer_shops import query_shops
+from backend.merchant_contact import contact_merchant as _contact_merchant
 
 #: H5 契约里的门店编号形态（见 docs/customer-service-contract.md §3）。
 #: 不匹配时说明模型把**店名**当编号传了（线上实测高发：提示词写了
@@ -70,4 +71,29 @@ async def query_my_orders(order_id: str = '', page: int = 1, _context: dict | No
                inject_context=True, tags=['customer_service'])
 async def query_my_after_sales(order_id: str, _context: dict | None = None) -> str:
     result = await _tracked('after_sales', query_orders((_context or {}).get('customer_credential', ''), order_id=order_id, after_sales=True))
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@register_tool(name='contact_merchant', description='用户明确要求联系商家/店家、投诉、催单或转人工时调用：登记一条商家联系单（工单）并返回店铺电话。summary 用一句话概括诉求；detail 填用户原话；有订单号必传 order_id。不要在用户没要求时主动调用。回复中提到电话时必须一字不差使用工具返回的 service_phone，未返回电话就明说没有，禁止编造号码。',
+               parameters={'type': 'object', 'properties': {
+                   'order_id': {'type': 'string', 'description': '关联订单号，无则留空'},
+                   'shop_id': {'type': 'string', 'description': '店铺编号（字母数字）'},
+                   'shop_name': {'type': 'string', 'description': '店名关键词（中文店名传这里）'},
+                   'category': {'type': 'string', 'enum': ['general', 'order', 'after_sales', 'custom', 'complaint'], 'description': '诉求类别'},
+                   'summary': {'type': 'string', 'description': '诉求一句话摘要（≤200字）'},
+                   'detail': {'type': 'string', 'description': '用户诉求原话（≤2000字）'},
+                   'contact_phone': {'type': 'string', 'description': '用户愿意留的回拨电话，未提供留空'}},
+                   'required': ['summary'], 'additionalProperties': False},
+               inject_context=True, tags=['customer_service'])
+async def contact_merchant(order_id: str = '', shop_id: str = '', shop_name: str = '', category: str = 'general',
+                           summary: str = '', detail: str = '', contact_phone: str = '', _context: dict | None = None) -> str:
+    user_id = (_context or {}).get('user_id') or ''
+    if not user_id:
+        return json.dumps({'ok': False, 'code': 'AUTH_REQUIRED'}, ensure_ascii=False)
+    shop_id = shop_id or (_context or {}).get('shop_id') or ''
+    if shop_id == 'default':
+        shop_id = ''
+    result = await _tracked('contact_merchant', _contact_merchant(
+        user_id, order_id=order_id, shop_id=shop_id, shop_name=shop_name,
+        category=category, summary=summary, detail=detail, contact_phone=contact_phone))
     return json.dumps(result, ensure_ascii=False, default=str)

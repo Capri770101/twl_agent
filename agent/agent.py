@@ -779,6 +779,42 @@ def _now_context() -> str:
     week_cn = '一二三四五六日'[now.weekday()]
     return f'当前时间：{now:%Y-%m-%d} 星期{week_cn} {now:%H:%M}（北京时间 UTC+8，24 小时制）'
 
+_PHONE_IN_TEXT_RE = re.compile(r'(?:1[3-9]\d{9}|0\d{2,3}-\d{7,8}|\d{3,4}-\d{7,8})')
+
+
+def _guard_merchant_phone(tool_log, reply: str) -> str:
+    """contact_merchant 成功后，回复里只允许出现真实的 service_phone。
+
+    模型会在文案里编造「0571-88886666」这类假号码（实测 3 次中 2 次），
+    提示词约束挡不住——这里是确定性护栏：
+    - 提取本轮 contact_merchant 成功结果里的 service_phone；
+    - 回复中出现的其他号码一律替换为真实号码（无从提取时删号并提示小程序查看）。
+    """
+    if not reply or not tool_log:
+        return reply
+    real_phone = None
+    for record in tool_log:
+        if record.name != 'contact_merchant' or record.status != 'ok':
+            continue
+        try:
+            payload = json.loads(record.result) if isinstance(record.result, str) else record.result
+            if isinstance(payload, dict) and payload.get('ok') is True:
+                real_phone = (payload.get('data') or {}).get('service_phone')
+        except (ValueError, TypeError, AttributeError):
+            continue
+    if not real_phone:
+        return reply
+    real_phone = str(real_phone)
+    found = _PHONE_IN_TEXT_RE.findall(reply)
+    fabricated = [p for p in found if p != real_phone and p.replace('-', '') != real_phone]
+    if not fabricated:
+        return reply
+    logger.warning('[agent] contact_merchant 回复含编造电话 %s（真实=%s），已纠正', fabricated, real_phone)
+    for fake in set(fabricated):
+        reply = reply.replace(fake, real_phone)
+    return reply
+
+
 def _clean_reply(text: str) -> str:
     """清理智能体回复里的 markdown 噪声，让前端纯文本渲染更整洁。
 
@@ -808,6 +844,8 @@ def _is_chitchat(text: str) -> bool:
     if any(k in t for k in ('买', '送', '花', '束', '预算', '方案', 'diy', '自己', '店铺', '下单', '订单', '确认', '选', '要', '想要', '需要', '推荐', '生图', '效果', '图')):
         return False
     return any(w in t for w in _CHITCHAT_WORDS)
+
+
 def _is_simple_chitchat(text: str) -> bool:
     """精确匹配独立寒暄，混合业务请求一律进入正常推理。"""
     compact = re.sub(r'[\s，。！？、,.!?~～]+', '', (text or '').lower())
@@ -2711,6 +2749,12 @@ class ReActAgent:
             break
         if ui == UIType.CUSTOMER_ORDERS and not customer_card_verified:
             ui, data = UIType.TEXT, {}
+        # ── 联系商家电话防幻觉护栏（确定性，非提示词）──
+        # 2026-10-09 实测：模型在 contact_merchant 成功后仍以 ~2/3 概率编造
+        # 座机/手机号写进回复（0571-88886666 等）。工具返回的 service_phone
+        # 是唯一可信号码：回复里出现其他号码 → 删除该号码并就地纠正，
+        # 保证用户拿到的联系方式一定是真的。
+        final_reply = _guard_merchant_phone(tool_log, final_reply)
         final_reply = _clean_reply(final_reply)
         if preview_submission_failed:
             final_reply = final_reply.rstrip() + '\n预览图任务暂未提交成功，方案已保留。请稍后说“给当前方案生成效果图”重试。'

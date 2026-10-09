@@ -26,7 +26,13 @@ def classify(message: str) -> IntentRoute | None:
     if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '售后进度', '查订单')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
-            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'respond_to_user', 'show_options'}))
+            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'contact_merchant', 'respond_to_user', 'show_options'}))
+    # 联系商家/转人工/投诉：明确诉求直接开通行（含 contact_merchant）；
+    # 商家问联系方式本身仍走 shop_service（只查信息不建工单）。
+    if any(w in text for w in ('联系商家', '联系店家', '联系店铺', '转人工', '人工客服', '投诉', '催单', '帮我联系')):
+        from backend.config import settings
+        if settings.CUSTOMER_SERVICE_ENABLED:
+            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'query_shop_service', 'contact_merchant', 'respond_to_user', 'show_options'}))
     # “定制并出图”需要设计工具；“不要出图”不是生图意图。
     if any(w in text for w in ('营业时间', '几点关门', '几点开门', '几点营业', '店铺地址', '门店地址', '在哪地址', '配送范围', '配送规则', '能不能送', '可以配送吗', '电话多少', '联系方式')):
         from backend.config import settings
