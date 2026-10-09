@@ -23,10 +23,22 @@ def classify(message: str) -> IntentRoute | None:
     text = str(message or '').strip()
     if not text:
         return None
-    if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '售后进度', '查订单')):
+    if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '售后进度', '查订单',
+                               '取消订单', '取消这单', '退了这单', '申请退款', '不想要了', '退货退款')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
-            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'contact_merchant', 'respond_to_user', 'show_options'}))
+            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales',
+                                                                  'contact_merchant', 'cancel_my_order',
+                                                                  'apply_refund', 'respond_to_user', 'show_options'}))
+    # 评价口碑：查评价为主（可带店铺信息查询）
+    if any(w in text for w in ('评价', '口碑', '评分怎么样')):
+        from backend.config import settings
+        if settings.CUSTOMER_SERVICE_ENABLED:
+            return IntentRoute('shop_service', 3, frozenset({'query_shop_service', 'query_shop_reviews',
+                                                             'respond_to_user', 'show_options'}))
+    # 提醒/记住日期：含「提醒」的明确请求（口语常见形态都覆盖）
+    if '提醒' in text and not any(w in text for w in ('不要提醒', '不用提醒')):
+        return IntentRoute('reminder', 3, frozenset({'set_reminder', 'query_my_orders', 'respond_to_user', 'show_options'}))
     # 联系商家/转人工/投诉：明确诉求直接开通行（含 contact_merchant）；
     # 商家问联系方式本身仍走 shop_service（只查信息不建工单）。
     if any(w in text for w in ('联系商家', '联系店家', '联系店铺', '转人工', '人工客服', '投诉', '催单', '帮我联系')):

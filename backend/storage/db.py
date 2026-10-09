@@ -107,6 +107,21 @@ _SCHEMA = [
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )""",
+    # ── 订阅提醒（2026-10-10）：set_reminder 工具的落库目标。
+    # 一次性（first_run）或周期（cron）提醒；调度线程到点写入 notifications。
+    # agent 自有能力，不依赖 H5。
+    """CREATE TABLE IF NOT EXISTS reminders (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        content TEXT NOT NULL,
+        cron TEXT,
+        first_run TEXT,
+        repeat BOOLEAN NOT NULL DEFAULT FALSE,
+        next_run TIMESTAMPTZ NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )""",
 ]
 
 _INDEXES = [
@@ -122,6 +137,8 @@ _INDEXES = [
     'CREATE INDEX IF NOT EXISTS idx_speech_logs_kind ON speech_logs(kind, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_merchant_tickets_user ON merchant_tickets(user_id, created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_merchant_tickets_status ON merchant_tickets(status, created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, next_run ASC)',
 ]
 
 

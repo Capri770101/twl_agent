@@ -59,8 +59,20 @@ async def lifespan(app: FastAPI):
         logger.exception('image_tasks 表自检失败：请执行 migrations/001_image_tasks.sql')
         raise RuntimeError('image_tasks 表不可用，请先执行 migrations/001_image_tasks.sql 或检查数据库权限。') from exc
     recover_incomplete_tasks()
+    # 订阅提醒调度（2026-10-10）：每 60s 扫 due 项写 notifications。
+    try:
+        from backend.reminders import start_scheduler
+        start_scheduler()
+        logger.info('提醒调度器已启动（60s 轮询）')
+    except Exception:  # noqa: BLE001 - 调度失败不阻断服务
+        logger.exception('提醒调度器启动失败（提醒功能暂不可用，服务继续）')
     logger.info('跳舞兰花卉智能体服务启动 | env=%s | port=%s', settings.APP_ENV, settings.PORT)
     yield
+    try:
+        from backend.reminders import stop_scheduler
+        stop_scheduler()
+    except Exception:  # noqa: BLE001
+        pass
     logger.info('跳舞兰花卉智能体服务关闭')
 
 
