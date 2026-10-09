@@ -77,6 +77,15 @@ from backend.storage import memory as mem_store
 
 _CHITCHAT_WORDS = ('你好', '您好', '在吗', '在么', '嗨', '哈喽', '谢谢', '感谢', '再见', '拜拜', '哈哈', '辛苦了', '赞', '呵呵')
 
+# 上游 LLM 内容审核的英文拒答串（概率性误伤正常业务消息，如「我感冒了吃什么药」
+# 返回 "[Nudity Detected] I cannot answer this question."）。特征：方括号英文标签
+# + cannot/won't answer 的固定句式，且整段以它开头。命中即替换为中文角色内话术。
+_UPSTREAM_MODERATION_BLOCK_RE = re.compile(
+    r'^\[?[A-Za-z ]{3,40}(?:Detected|Detected\]|Blocked|Flagged|Filter)'
+    r'.{0,40}(?:cannot|can\'t|unable to|won\'t)\s+(?:answer|respond|assist|comply)',
+    re.IGNORECASE,
+)
+
 # 单轮时间预算（P0 防「线程裸跑」）：
 # 调用方（/chat、/chat/stream）在 REQUEST_TIMEOUT 处等待，但 asyncio 超时**只能取消 await**，
 # 杀不掉 run_in_executor 的线程。故 run() 自己也要感知 deadline，预算耗尽时主动收口，
@@ -778,6 +787,14 @@ def _clean_reply(text: str) -> str:
     """
     if not text:
         return text
+    # 上游 LLM 内容审核偶发误伤（本地实测 2026-10-09：问「我感冒了吃什么药」
+    # 概率性返回英文审核拒答文案）。这类英文拒答串对中文用户是彻底的答非所问，
+    # 也暴露内部机制；替换为角色内中文话术，不改变其余回复内容。
+    t = text.strip()
+    if _UPSTREAM_MODERATION_BLOCK_RE.search(t):
+        logger.warning('[agent] 命中上游审核误伤文案，已替换为中文兜底（原文前60字符=%r）', t[:60])
+        return ('这个问题我先不展开哈～我是花艺小助手，医药、法律这类专业问题'
+                '建议找对应的专业人士；选花、搭配、养护的事儿尽管找我 🌸')
     text = text.replace('**', '')
     text = re.sub('(?m)^#{1,6}\\s*', '', text)
     text = re.sub('\\n{3,}', '\n\n', text)

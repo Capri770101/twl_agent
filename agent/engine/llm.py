@@ -122,7 +122,15 @@ def _raw_call(provider: dict[str, str], messages: list[dict[str, Any]], tools: l
     from openai import OpenAI
     # timeout 为该次调用的上限（默认 settings.llm_timeout）；agent 会按本轮剩余预算传入更小的值，
     # 避免「慢 LLM × 多轮 × 重试」把单个请求拖到远超用户可接受的时间。
-    client = OpenAI(base_url=provider['base_url'], api_key=provider['api_key'], timeout=timeout or settings.llm_timeout, max_retries=0)
+    # trust_env=False（经 http_client 注入）：LLM 端点是运维配置的固定源，绝不跟随
+    # 环境 HTTP(S)_PROXY。开发机系统代理（127.0.0.1:7897）会偶发抖动：httpx 默认
+    # trust_env=True 走代理连 dashscope，本地实测一轮多轮 ReAct 被 120s 时间预算
+    # 掐断、用户看到「思考得太久」兜底话术（2026-10-09 对抗测试 R10 复现）。
+    # 与 customer_service.py / customer_shops.py 的 trust_env=False 同一约定：
+    # 后端到固定后端的调用不受部署机代理干扰。
+    import httpx
+    _http = httpx.Client(trust_env=False, timeout=timeout or settings.llm_timeout)
+    client = OpenAI(base_url=provider['base_url'], api_key=provider['api_key'], timeout=timeout or settings.llm_timeout, max_retries=0, http_client=_http)
     kwargs: dict[str, Any] = {'model': provider['model'], 'messages': messages, 'temperature': settings.llm_temperature, 'max_tokens': settings.llm_max_tokens, 'stream': stream}
     if stream:
         kwargs['stream_options'] = {'include_usage': True}
