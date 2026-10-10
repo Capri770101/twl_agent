@@ -1,5 +1,6 @@
 """简化版 memory.py —— 短期记忆 + 长期记忆，用于独立部署。"""
 from __future__ import annotations
+import asyncio
 import json
 import logging
 import uuid
@@ -51,6 +52,11 @@ async def create_conversation(user_id: str, title: str = '新对话', shop_id: s
                               entry: str | None = None, product_id: str | None = None,
                               product_title: str | None = None) -> str:
     """创建新会话，供 chat 路由直接调用。"""
+    return await asyncio.to_thread(_create_conversation, user_id, title, shop_id, entry, product_id, product_title)
+
+
+def _create_conversation(user_id: str, title: str, shop_id: str | None, entry: str | None,
+                         product_id: str | None, product_title: str | None) -> str:
     session_id = uuid.uuid4().hex
     with transaction() as conn:
         conn.execute(
@@ -226,6 +232,10 @@ async def load_display_messages(session_id: str) -> list[dict[str, Any]]:
 
 
 async def load_history(conversation_id: str, limit: int) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(_load_history, conversation_id, limit)
+
+
+def _load_history(conversation_id: str, limit: int) -> list[dict[str, Any]]:
     with transaction() as conn:
         rows = conn.execute(
             "SELECT role, content, ui, data FROM messages WHERE session_id = ? "
@@ -235,27 +245,27 @@ async def load_history(conversation_id: str, limit: int) -> list[dict[str, Any]]
             (conversation_id, max(0, int(limit))),
         ).fetchall()
 
-    messages: list[dict[str, Any]] = []
-    for row in reversed(rows):
-        role = row['role']
-        if role == 'tool':
-            continue
-        msg: dict[str, Any] = {'role': role, 'content': row['content'] or ''}
-        if role == 'assistant':
-            ui = row['ui']
-            if ui:
-                try:
-                    msg['ui'] = json.loads(ui) if isinstance(ui, str) else ui
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            data = row['data']
-            if data:
-                try:
-                    msg['data'] = json.loads(data) if isinstance(data, str) else data
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        messages.append(msg)
-    return messages
+        messages: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            role = row['role']
+            if role == 'tool':
+                continue
+            msg: dict[str, Any] = {'role': role, 'content': row['content'] or ''}
+            if role == 'assistant':
+                ui = row['ui']
+                if ui:
+                    try:
+                        msg['ui'] = json.loads(ui) if isinstance(ui, str) else ui
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                data = row['data']
+                if data:
+                    try:
+                        msg['data'] = json.loads(data) if isinstance(data, str) else data
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            messages.append(msg)
+        return messages
 
 
 async def search_user_history(user_id: str, query: str = '', limit: int = 8, exclude_session: str | None = None) -> list[dict[str, Any]]:
@@ -303,26 +313,42 @@ async def save_message(conversation_id: str, role: str, content: str, ui: Any = 
 
 
 async def update_conversation_preview(conversation_id: str, preview: str) -> None:
+    await asyncio.to_thread(_update_conversation_preview, conversation_id, preview)
+
+
+def _update_conversation_preview(conversation_id: str, preview: str) -> None:
     with transaction() as conn:
         conn.execute('UPDATE sessions SET preview = ?, updated_at = ? WHERE session_id = ?', (preview[:200], _now(), conversation_id))
 
 
 async def list_conversations(user_id: str) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(_list_conversations, user_id)
+
+
+def _list_conversations(user_id: str) -> list[dict[str, Any]]:
     with transaction() as conn:
         rows = conn.execute('SELECT session_id, title, preview, shop_id, created_at, updated_at FROM sessions WHERE user_id = ? ORDER BY updated_at DESC', (user_id,)).fetchall()
-    return [{'id': r['session_id'], 'title': r['title'] or '新对话', 'preview': r['preview'] or '', 'shop_id': r['shop_id'], 'created_at': r['created_at'], 'updated_at': r['updated_at']} for r in rows]
+        return [{'id': r['session_id'], 'title': r['title'] or '新对话', 'preview': r['preview'] or '', 'shop_id': r['shop_id'], 'created_at': r['created_at'], 'updated_at': r['updated_at']} for r in rows]
 
 
 async def get_conversation(conversation_id: str) -> dict[str, Any] | None:
+    return await asyncio.to_thread(_get_conversation, conversation_id)
+
+
+def _get_conversation(conversation_id: str) -> dict[str, Any] | None:
     with transaction() as conn:
         row = conn.execute('SELECT session_id, user_id, title, preview, shop_id, created_at, updated_at FROM sessions WHERE session_id = ?', (conversation_id,)).fetchone()
-    return dict(row) if row else None
+        return dict(row) if row else None
 
 
 async def delete_conversation(conversation_id: str, user_id: str | None = None) -> bool:
+    return await asyncio.to_thread(_delete_conversation, conversation_id, user_id)
+
+
+def _delete_conversation(conversation_id: str, user_id: str | None) -> bool:
     with transaction() as conn:
         if user_id:
-            row = conn.execute('SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ?', (conversation_id, user_id)).fetchone()
+            row = conn.execute('SELECT session_id FROM sessions WHERE session_id = ? AND user_id = ? FOR UPDATE', (conversation_id, user_id)).fetchone()
             if not row:
                 return False
         conn.execute('DELETE FROM messages WHERE session_id = ?', (conversation_id,))

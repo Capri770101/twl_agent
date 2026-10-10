@@ -33,7 +33,7 @@ def store(monkeypatch):
         for statement in _SCHEMA:
             conn.execute(statement)
     else:
-        raw = sqlite3.connect(':memory:')
+        raw = sqlite3.connect(':memory:', check_same_thread=False)
         raw.row_factory = sqlite3.Row
         conn = raw
         raw.executescript('''
