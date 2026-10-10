@@ -32,11 +32,18 @@
 
 ## 修改纪律
 
+- **改行为前先看 [docs/dev-and-release-workflow.md](docs/dev-and-release-workflow.md) 的「日常改动循环」**：定目标 → 冻基准 → 一刀 → 验证 → 提交，不跳步
 - 改 API / 环境变量 / 版本 / 开关时，同步根 README、DELIVERY、CHANGELOG
 - 保持"诚实边界"：不可用的操作返回明确错误码（如 `CHANNEL_UNAVAILABLE`），**不伪称成功**
 - 危险操作（对外发消息、改配置、不可逆写入）保持人工审批或默认关闭
 - 文档与配置示例中**不得**出现真实密钥、令牌、密码、用户 ID
 - 新增文档遵循：每主题只留一份现行文档；被替代的移入 `docs/archive/`（不物理删除），并更新 `docs/README.md` 索引
+
+## 与人类协作的方式
+
+- 一个会话只做一件事；用户没确认计划前不写代码
+- 改完必须贴 `pytest` 和相关校验的真实输出，禁止"应该没问题"
+- 动 `agent.py` / `orchestration/` 前先列风险清单
 
 ## 常用验证命令
 
