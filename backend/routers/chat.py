@@ -1,7 +1,7 @@
 """简化版 chat.py —— 智能体对话端点，用于独立部署。
 
-鉴权说明：本服务为纯智能体封装，不含用户管理。
-宿主平台（小程序/H5）负责用户登录，调用时直接传 user_id 即可。
+鉴权说明：本服务不管理宿主用户；正式实例校验 JWT。
+宿主平台负责登录，并使用授权接口换票；请求里的 user_id 必须与 JWT 身份一致。
 """
 from __future__ import annotations
 import asyncio
@@ -205,7 +205,7 @@ async def chat(
 
     # ── 监控埋点：入口 ──
     _platform = getattr(user_info, 'platform', None) if user_info else None
-    _call_id = record_call_start(req.user_id, _platform, req.session_id, settings.LLM_MODEL)
+    _call_id = await asyncio.to_thread(record_call_start, req.user_id, _platform, req.session_id, settings.LLM_MODEL)
     _t0 = time.perf_counter()
 
     sid = req.session_id
@@ -220,7 +220,8 @@ async def chat(
         )
 
     if not await _acquire_agent_slot():
-        record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='busy', cid=_call_id)
+        if _call_id is not None:
+            await asyncio.to_thread(record_call_end, 'error', int((time.perf_counter() - _t0) * 1000), error='busy', cid=_call_id)
         raise HTTPException(status_code=503, detail='当前咨询较多，请稍后再试', headers={'Retry-After': '3'})
     try:
         try:
@@ -231,10 +232,12 @@ async def chat(
                 timeout=settings.REQUEST_TIMEOUT
             )
         except asyncio.TimeoutError:
-            record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='timeout', cid=_call_id)
+            if _call_id is not None:
+                await asyncio.to_thread(record_call_end, 'error', int((time.perf_counter() - _t0) * 1000), error='timeout', cid=_call_id)
             raise HTTPException(status_code=504, detail='处理超时，请简化问题后重试')
         except Exception as exc:
-            record_call_end('error', int((time.perf_counter() - _t0) * 1000), error=str(exc)[:500], cid=_call_id)
+            if _call_id is not None:
+                await asyncio.to_thread(record_call_end, 'error', int((time.perf_counter() - _t0) * 1000), error=str(exc)[:500], cid=_call_id)
             logger.exception('智能体执行失败')
             raise HTTPException(status_code=500, detail='智能体执行失败，请稍后重试')
     finally:
@@ -243,9 +246,10 @@ async def chat(
     # ── 监控埋点：出口（成功）──
     _latency = int((time.perf_counter() - _t0) * 1000)
     _tool_calls = list(getattr(result, 'tool_calls', []) or [])
-    record_call_end('success', _latency, tool_calls=len(_tool_calls), cid=_call_id)
-    for _tc in _tool_calls:
-        record_tool_call(getattr(_tc, 'name', '?'), getattr(_tc, 'status', 'unknown'), cid=_call_id)
+    if _call_id is not None:
+        await asyncio.to_thread(record_call_end, 'success', _latency, tool_calls=len(_tool_calls), cid=_call_id)
+        for _tc in _tool_calls:
+            await asyncio.to_thread(record_tool_call, getattr(_tc, 'name', '?'), getattr(_tc, 'status', 'unknown'), cid=_call_id)
 
     final_sid = result.session_id
     await mem_store.update_conversation_preview(final_sid, req.message[:60])
@@ -270,7 +274,7 @@ async def chat_stream(
 
     # ── 监控埋点：入口 ──
     _platform = getattr(user_info, 'platform', None) if user_info else None
-    _call_id = record_call_start(req.user_id, _platform, req.session_id, settings.LLM_MODEL)
+    _call_id = await asyncio.to_thread(record_call_start, req.user_id, _platform, req.session_id, settings.LLM_MODEL)
     _t0 = time.perf_counter()
 
     sid = req.session_id
@@ -287,7 +291,8 @@ async def chat_stream(
     async def event_generator():
         _ok = True
         if not await _acquire_agent_slot():
-            record_call_end('error', int((time.perf_counter() - _t0) * 1000), error='busy', cid=_call_id)
+            if _call_id is not None:
+                await asyncio.to_thread(record_call_end, 'error', int((time.perf_counter() - _t0) * 1000), error='busy', cid=_call_id)
             yield f"event: error\ndata: {json.dumps({'message': '当前咨询较多，请稍后再试'}, ensure_ascii=False)}\n\n"
             return
         try:
@@ -311,7 +316,8 @@ async def chat_stream(
         finally:
             _AGENT_SEM.release()
             # 埋点出口：流式场景不细分工具级埋点（无结构化 tool_calls 回传），仅记录状态与耗时
-            record_call_end('success' if _ok else 'error', int((time.perf_counter() - _t0) * 1000), cid=_call_id)
+            if _call_id is not None:
+                await asyncio.to_thread(record_call_end, 'success' if _ok else 'error', int((time.perf_counter() - _t0) * 1000), cid=_call_id)
             _spawn_consolidate(req.user_id, sid)
 
     return StreamingResponse(event_generator(), media_type='text/event-stream',

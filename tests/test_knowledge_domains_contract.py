@@ -1,5 +1,8 @@
 """Public knowledge tool domains must match nonempty persisted data sources."""
-from agent.knowledge.store import query_knowledge, load_manifest, _DOMAINS
+import json
+from pathlib import Path
+
+from agent.knowledge.store import query_knowledge, _DOMAINS
 from agent.toolkit import TOOL_REGISTRY
 
 
@@ -17,3 +20,18 @@ def test_empty_shop_knowledge_domain_is_not_advertised():
     assert 'shop(商家智库)' not in text
     assert '找店铺用 shop 域' not in text
     assert 'colors' in text
+
+
+def test_knowledge_overview_counts_match_current_static_json():
+    root = Path(__file__).resolve().parents[1]
+    overview = (root / 'docs' / '知识库概览.md').read_text(encoding='utf-8')
+    knowledge = root / 'agent' / 'knowledge'
+    total = 0
+    for domain, filename in _DOMAINS.items():
+        if domain == 'proven':
+            continue
+        count = len(json.loads((knowledge / filename).read_text(encoding='utf-8')))
+        assert f'| `{domain}` | `{filename}` | {count} |' in overview
+        total += count
+    assert f'静态域合计 **{total} 条**' in overview
+    assert '`shop` **不是知识检索域**' in overview

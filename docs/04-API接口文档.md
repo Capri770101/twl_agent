@@ -297,7 +297,7 @@ curl -s https://api.tiaowulan.com/ui-contract | jq '.required_components'
 | 401 | `监控密钥无效` | `metrics.py:46,58` | `DASHBOARD_API_KEY` 不对 |
 | 403 | `无权访问其他用户的数据` | `auth.py:89` | **请求体 `user_id` ≠ JWT `sub`** → 用派生值 |
 | 403 | `无权访问该会话` | `chat.py:169` | 会话不属于该用户 |
-| 403 | `匿名登录已禁用…` | `auth.py:57` | 生产禁匿名，走平台换票 |
+| 403 | `匿名登录已禁用…` | `backend/routers/auth.py` | 正式实例默认关闭匿名；仅隔离体验实例经显式授权、配置预算和网关限流后开启 |
 | 422 | pydantic 校验详情 | FastAPI | 看 `detail[].loc` |
 | 500 | `智能体执行失败，请稍后重试` | `chat.py:88` | 查容器日志 traceback |
 | 503 | `服务未配置 PLATFORM_API_KEYS…` | `auth.py:127` | 服务端配置缺失 |
