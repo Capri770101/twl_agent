@@ -34,7 +34,7 @@
 
 - 目标：统一客户服务入口首版，覆盖可信身份、店铺咨询、订单及售后进度只读查询。
 - 已在 `58cf23c` 实现专用客户身份、只读订单/售后/店铺工具与监控；真实业务/数据库/手机验收未完成，不提升 VERSION。
-- 实施计划：`docs/CUSTOMER-SERVICE-V1.4-PLAN.md`。
+- 实施计划：`docs/archive/CUSTOMER-SERVICE-V1.4-PLAN.md`。
 - 版本日志与更新文件说明：`releases/v1.4.0/RELEASE_NOTES.md`、`releases/v1.4.0/UPGRADE.md`。
 - 配套 H5 目标 1.1.0；办理类写操作归后续版本。
 

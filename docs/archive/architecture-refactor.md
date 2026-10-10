@@ -1,3 +1,6 @@
+> ⚠️ **本文档已归档**，仅作历史参考，不代表当前实现。
+> 现行文档见 [docs/README.md](../README.md)；当前状态以根 README、DELIVERY.md 和源码为准。
+
 # Agent 架构演进决策（第一阶段）
 
 ## 当前实现

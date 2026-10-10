@@ -2,11 +2,10 @@
 
 当前工作入口：[智能体独立稳定性基线](AGENT-STABILITY-BASELINE.md)、[1.3.1候选日志](../releases/v1.3.1/RELEASE_NOTES.md)。客户服务/H5联调暂停。
 
-更新：2026-09-29。交付版本以根 [DELIVERY](../DELIVERY.md) 为准，密钥/外部依赖看 [CONFIGURATION](CONFIGURATION.md)。
+更新：2026-10-11。交付版本以根 [DELIVERY](../DELIVERY.md) 为准，密钥/外部依赖看 [CONFIGURATION](CONFIGURATION.md)。
 
-客户服务联调交接：[清单](../releases/v1.4.0/HANDOFF-CHECKLIST.md)；店铺资料：[准备规范](SHOP-KNOWLEDGE-IMPORT.md)、[JSON模板](../releases/v1.4.0/shop-knowledge-template.json)。
+客户服务联调交接：[清单](../releases/v1.4.0/HANDOFF-CHECKLIST.md)；店铺资料：[准备规范](SHOP-KNOWLEDGE-IMPORT.md)、[JSON模板](../releases/v1.4.0/shop-knowledge-template.json)。v1.4 实施计划已归档：[archive/CUSTOMER-SERVICE-V1.4-PLAN](archive/CUSTOMER-SERVICE-V1.4-PLAN.md)。
 
-下一版本实施计划：[统一客户服务入口 v1.4.0](CUSTOMER-SERVICE-V1.4-PLAN.md)。
 版本范围：[RELEASE_NOTES](../releases/v1.4.0/RELEASE_NOTES.md)；更新文件与升级：[UPGRADE](../releases/v1.4.0/UPGRADE.md)。已有本地实现，未正式发布。
 
 新增开发接口：[个性化贺卡 API](GREETING_API.md)、[语音 API（TTS/ASR）](SPEECH_API.md)。贺卡订单摘要由接入方提供；语音前端录音需 HTTPS（见 SPEECH_API.md）。
@@ -38,24 +37,24 @@
 | `GREETING_API.md` | 贺卡文案草稿与渲染接口 |
 | `SPEECH_API.md` | 语音输入（ASR）与语音播报（TTS）接口 |
 | `dev-and-release-workflow.md` | 开发、版本和发布流程 |
+| `dependency-lock-linux.md` | Linux 依赖锁流程 |
+| `retention-policy.md` | 数据保留策略 |
 
 ## 接入与业务专题
 
-- `接入方调用示例.md`
-- `小程序AI页-前端改造交接单.md`
-- `小程序出图对接说明.md`
-- `小程序接入待办清单.md`
-- `DIY成交通道方案.md`：讨论稿，当前不代表已接真实 DIY 订单。
-- `知识库概览.md`、`知识库资料汇编.md`
+- [小程序接入待办清单.md](小程序接入待办清单.md) —— 宿主接入契约与验收项；与 `05-前端对接契约` 冲突时**以该清单为准**
+- [INTEGRATION-v1.4.0.md](INTEGRATION-v1.4.0.md) —— 1.4.x 各组件接入总说明
+- `DIY成交通道方案.md`（讨论稿）已归档至 [archive/](archive/)，当前不代表已接真实 DIY 订单
 
 ## 发布与历史记录
 
-一次性发布记录（`release-*.md`、`session-memory-release.md`、`platform-access-release.md`）、审查报告（`REVIEW-20260924.md`、`code-review-修复报告.md`）和历史规划（`OPTIMIZATION_PLAN.md`、`优化路线图.md`）已全部移入 [docs/archive/](archive/)，通过 Git 历史可追溯，不是当前部署手册。当前状态以根目录 `DELIVERY.md`、`CHANGELOG.md` 和源码为准。
+一次性发布记录（`release-*.md`、`session-memory-release.md`、`platform-access-release.md`）、审查报告（`REVIEW-20260924.md`、`code-review-修复报告.md`）、历史规划（`OPTIMIZATION_PLAN.md`、`优化路线图.md`）以及 2026-10-11 本批归档（PRD、架构方案稿、客服交接快照、小程序交接单等 14 份）均在 [docs/archive/](archive/)，通过 Git 历史可追溯，不是当前部署手册。当前状态以根目录 `DELIVERY.md`、`CHANGELOG.md` 和源码为准。
 
-已被替代的旧部署/接入说明和早期贺卡记录的清理说明见 `archive/README.md`。当前待验收范围看 DELIVERY、RELIABILITY-PLAN 和客户服务计划。
+已被替代的旧部署/接入说明和早期贺卡记录的清理说明见 `archive/README.md`。当前待验收范围看 DELIVERY、RELIABILITY-PLAN 和源码。
 
 ## 维护规则
 
 - API、环境变量、版本、测试数和开关变化时同步根 README、DELIVERY 和 CHANGELOG。
 - 一次性发布记录不复制到多个长期文档；最终结论只保留在当前规范中。
+- 每个主题只保留一份"当前有效"文档；被替代或带日期快照的文档移入 `archive/`，不物理删除。
 - 文档示例不得包含真实密钥、令牌、密码、用户 ID 或证书内容。

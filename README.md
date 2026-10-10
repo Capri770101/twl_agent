@@ -15,7 +15,7 @@
 | 提醒 | 可查改停复本人规则，北京时间解释、UTC 持久化；到点写站内收件箱，**尚无主动外部推送** |
 | 线上状态 | 本次交付不代表生产部署；H5 接口和商家通道需接入方独立验收 |
 
-最新变更见 [CHANGELOG.md](CHANGELOG.md)；本地源码修复与尚未验证的 Linux/部署前提见 [审阅修复状态](docs/review-repair-status.md)、[Linux 依赖锁流程](docs/dependency-lock-linux.md)。
+最新变更见 [CHANGELOG.md](CHANGELOG.md)；本地源码修复与尚未验证的 Linux/部署前提见 [审阅修复状态](docs/archive/review-repair-status.md)、[Linux 依赖锁流程](docs/dependency-lock-linux.md)。
 
 ## 交接先看这三份
 

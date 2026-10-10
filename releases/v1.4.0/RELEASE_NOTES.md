@@ -31,4 +31,4 @@ agent/H5 服务端 `CUSTOMER_SERVICE_ENABLED=false`，H5 构建 `VITE_CUSTOMER_S
 
 最终 agent/H5 commit、版本、源码/镜像校验值、配置变更、备份、部署日期、真实验收报告均在正式发布时填写。本目录不是已发布升级包。
 
-[实施计划](../../docs/CUSTOMER-SERVICE-V1.4-PLAN.md) · [升级说明](UPGRADE.md)
+[实施计划](../../docs/archive/CUSTOMER-SERVICE-V1.4-PLAN.md) · [升级说明](UPGRADE.md)
