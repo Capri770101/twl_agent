@@ -19,9 +19,10 @@
 
 ## 交接先看这三份
 
-1. [DELIVERY.md](DELIVERY.md)：交哪一版、交付范围、验证结果和未完成事项。
-2. [配置与独立交接清单](docs/CONFIGURATION.md)：密钥、数据库、域名、证书、数据源、H5 配置。
-3. [部署手册](docs/07-部署手册.md)：按当前 Compose 启动、更新、回滚。
+1. [v1.4.0 各组件接入说明](docs/INTEGRATION-v1.4.0.md)：身份、H5/商家、对话卡片、SSE、提醒、图/语音、监控和未接通边界。
+2. [DELIVERY.md](DELIVERY.md)：交付范围、验证结果和未完成事项。
+3. [配置与独立交接清单](docs/CONFIGURATION.md)：密钥、数据库、域名、证书、数据源、H5 配置。
+4. [部署手册](docs/07-部署手册.md)：按当前 Compose 启动、更新、回滚。
 
 完整专题索引见 [docs/README.md](docs/README.md)。已被替代的旧说明从当前目录移除，可通过 Git 历史追溯。
 
