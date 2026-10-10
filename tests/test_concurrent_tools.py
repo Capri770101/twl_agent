@@ -155,19 +155,22 @@ def test_run_backfills_in_original_order():
     import inspect
 
     from agent.agent import ReActAgent
+    from agent.orchestration.executor import execute_batch
 
     src = inspect.getsource(ReActAgent.run)
+    executor_src = inspect.getsource(execute_batch)
     assert 'for i in sorted(results)' in src, \
         '工具结果回填顺序被改动 —— 必须按模型给出的原始顺序，否则 tool 消息与 tool_calls 错位'
-    assert 'asyncio.gather' in src, '并发执行逻辑缺失'
-    assert 'return_exceptions=True' in src, '单个工具异常会拖垮整批并发结果'
+    assert 'execute_batch(' in src
+    assert 'asyncio.gather' in executor_src, '并发执行逻辑缺失'
+    assert 'return_exceptions=True' in executor_src, '单个工具异常会拖垮整批并发结果'
 
 
 def test_terminal_tools_not_executed_concurrently():
     """终结工具只取参数、不进并发批次（它的参数就是本轮结论）。"""
     import inspect
 
-    from agent.agent import ReActAgent
+    from agent.orchestration.executor import execute_batch
 
-    src = inspect.getsource(ReActAgent.run)
+    src = inspect.getsource(execute_batch)
     assert "'terminal'" in src, '终结工具的特殊处理被移除'
