@@ -2001,7 +2001,7 @@ class ReActAgent:
         entry = normalize_entry(sess_ctx.get('entry'), shop_id, product_id)
         stage = SessionStage(await mem_store.get_stage(sid))
         from agent.revision_draft import handle_confirmation
-        confirmed_response = await handle_confirmation(user_id, sid, message)
+        confirmed_response = await handle_confirmation(user_id, sid, message, store=mem_store)
         if confirmed_response is not None:
             await mem_store.save_messages(sid, [{'role':'user','content':message},
                 {'role':'assistant','content':confirmed_response.reply,'ui':confirmed_response.ui.value,'data':confirmed_response.data}])

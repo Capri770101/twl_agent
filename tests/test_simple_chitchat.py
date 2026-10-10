@@ -25,6 +25,7 @@ def test_fast_path_skips_llm_and_preserves_contract(monkeypatch):
         async def save_messages(self, *args): self.saved = args
         async def update_stage(self, *args): pass
         async def update_conversation_preview(self, *args): pass
+        async def get_session_json(self, uid, sid, key): return None  # 修改确认门每轮先读草稿（2026-10-10）
 
     mem = Memory()
     monkeypatch.setattr(A, 'mem_store', mem)
