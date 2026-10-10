@@ -9,7 +9,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import datetime as _dt
+import threading
+import time
 import sys
 import uuid
 from pathlib import Path
@@ -63,7 +66,9 @@ def _insert_reminder(conn, user_id: str, content: str, **kw) -> int:
         'VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
         (user_id, content, kw.get('cron'), kw.get('first_run'), kw.get('repeat', False),
          kw.get('next_run', _dt.datetime.now() + _dt.timedelta(days=1)), kw.get('status', 'active')))
-    return int(_row(cur.fetchone())['id'])
+    rid = int(_row(cur.fetchone())['id'])
+    conn.commit()
+    return rid
 
 
 def _insert_notification(conn, user_id: str, title: str) -> str:
@@ -71,6 +76,7 @@ def _insert_notification(conn, user_id: str, title: str) -> str:
     conn.execute(
         "INSERT INTO notifications (id, user_id, type, title, body, push_channel) "
         "VALUES (?, ?, 'reminder', ?, ?, 'inbox')", (nid, user_id, title, title + ' 内容'))
+    conn.commit()
     return nid
 
 
@@ -183,6 +189,7 @@ def test_reminder_invalid_edits_and_expired_oneoff_resume(test_db):
     asyncio.run(napi.pause_reminder(rid, user_id='u_owner'))
     conn.execute('UPDATE reminders SET first_run=?, next_run=? WHERE id=?',
                  ('2000-01-01 12:00', _dt.datetime(2000, 1, 1, tzinfo=_dt.timezone.utc), rid))
+    conn.commit()
     assert asyncio.run(napi.resume_reminder(rid, user_id='u_owner'))['code'] == 'INVALID_ARGUMENT'
     assert asyncio.run(napi.modify_reminder(
         rid, Patch(first_run=_future_shanghai()), user_id='u_owner'))['ok']
@@ -217,3 +224,50 @@ def test_notification_pagination_bounds(test_db):
     from backend.routers import notifications as napi
     r = asyncio.run(napi.list_notifications(user_id='nobody_x', limit=500, offset=-5))
     assert r['ok'] is True and r['data']['items'] == []
+
+
+def test_notification_routes_keep_transactions_off_event_loop(test_db, monkeypatch):
+    """A blocked DB transaction must not block the heartbeat or change threads."""
+    from backend.routers import notifications as napi
+
+    nid = _insert_notification(test_db, 'owner', '通知')
+    pause_id = _insert_reminder(test_db, 'owner', '暂停', cron='0 9 * * *', repeat=True)
+    resume_id = _insert_reminder(test_db, 'owner', '恢复', cron='0 9 * * *', repeat=True,
+                                 status='paused')
+    modify_id = _insert_reminder(test_db, 'owner', '修改', first_run=_future_shanghai())
+    delete_id = _insert_reminder(test_db, 'owner', '删除', first_run=_future_shanghai())
+    operations = [
+        lambda: napi.list_notifications(user_id='owner'),
+        lambda: napi.mark_read(nid, user_id='owner'),
+        lambda: napi.list_reminders(user_id='owner'),
+        lambda: napi.pause_reminder(pause_id, user_id='owner'),
+        lambda: napi.resume_reminder(resume_id, user_id='owner'),
+        lambda: napi.modify_reminder(modify_id, napi.ReminderPatch(content='修改后'),
+                                     user_id='owner'),
+        lambda: napi.delete_reminder(delete_id, user_id='owner'),
+    ]
+    real_transaction = napi.transaction
+    threads = []
+
+    @contextmanager
+    def slow_transaction():
+        entered = threading.get_ident()
+        try:
+            with real_transaction() as conn:
+                time.sleep(0.05)  # simulate blocking psycopg I/O inside the transaction
+                yield conn
+        finally:
+            threads.append((entered, threading.get_ident()))
+
+    monkeypatch.setattr(napi, 'transaction', slow_transaction)
+
+    async def check(operation):
+        loop_thread = threading.get_ident()
+        heartbeat = asyncio.create_task(asyncio.sleep(0.01))
+        result = await operation()
+        assert heartbeat.done(), 'synchronous DB call stalled the event loop'
+        assert result['ok'] and isinstance(result['data'], dict)
+        assert threads[-1][0] == threads[-1][1] != loop_thread
+
+    for operation in operations:
+        asyncio.run(check(operation))

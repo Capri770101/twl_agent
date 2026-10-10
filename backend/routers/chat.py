@@ -23,7 +23,7 @@ from backend.rate_limit import check_rate_limit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(tags=['chat'])
 logger = logging.getLogger('api')
@@ -51,12 +51,13 @@ async def _acquire_agent_slot() -> bool:
 
 
 def _client_ip(request: Request | None) -> str:
-    """取真实客户端 IP（nginx 已设 X-Real-IP；回落到连接地址）。"""
+    """Use the TCP peer, not caller-supplied forwarding headers, for app limits.
+
+    Behind a reverse proxy this groups users by proxy address; enforce additional
+    real-client IP limits at the trusted edge rather than trusting an arbitrary header.
+    """
     if request is None:
         return 'unknown'
-    fwd = request.headers.get('x-real-ip') or ''
-    if fwd.strip():
-        return fwd.split(',')[0].strip()
     return request.client.host if request.client else 'unknown'
 
 
@@ -121,7 +122,7 @@ def _fresh_ticket_access(request: Request, user_id: str) -> bool:
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(min_length=1, max_length=8000)
     user_id: str  # 必填，由宿主平台传入
     session_id: str | None = None
     location: dict[str, Any] | None = None

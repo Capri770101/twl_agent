@@ -25,10 +25,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""  # 生产必填 PostgreSQL；禁止 SQLite
     DB_PATH: str = str(BASE_DIR / "data" / "agent.db")
 
+    @property
+    def is_deployed_environment(self) -> bool:
+        """Only explicitly named local/test modes may use relaxed security."""
+        return self.APP_ENV.strip().lower() not in {'dev', 'development', 'local', 'test'}
+
     @model_validator(mode='after')
     def validate_production_database(self) -> 'Settings':
         """生产环境必须使用外部关系型数据库，不允许 SQLite。"""
-        if self.APP_ENV.lower() in {'prod', 'production'}:
+        if self.is_deployed_environment:
             url = (self.DATABASE_URL or '').strip().lower()
             if not url or url.startswith('sqlite'):
                 raise ValueError('生产环境必须配置 PostgreSQL DATABASE_URL，禁止使用 SQLite')
@@ -39,9 +44,11 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def validate_production_auth(self) -> 'Settings':
         """生产环境必须启用鉴权并配置独立签名密钥。"""
-        if self.APP_ENV.lower() in {'prod', 'production'}:
-            if not self.JWT_SECRET or len(self.JWT_SECRET) < 32:
-                raise ValueError('生产环境必须配置至少 32 位 JWT_SECRET')
+        if self.is_deployed_environment:
+            secret = (self.JWT_SECRET or '').strip()
+            weak_markers = ('change-this', 'replace', 'placeholder', 'your-', 'example', 'changeme', 'secret-key')
+            if len(secret) < 32 or any(marker in secret.lower() for marker in weak_markers):
+                raise ValueError('非本地环境必须配置随机生成的 JWT_SECRET，拒绝公开占位符')
             self.AUTH_REQUIRED = True
             # 匿名登录生产默认关闭；仅在 .env 显式声明 ANONYMOUS_LOGIN_ENABLED=true 时保留
             if 'ANONYMOUS_LOGIN_ENABLED' not in self.model_fields_set:
@@ -51,8 +58,10 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def validate_production_origins(self) -> 'Settings':
         """生产环境禁止通配 CORS，避免带凭证接口暴露给任意站点。"""
-        if self.APP_ENV.lower() in {'prod', 'production'} and '*' in self.ALLOWED_ORIGINS:
-            raise ValueError('生产环境必须配置明确的 ALLOWED_ORIGINS，不能使用 *')
+        if self.is_deployed_environment:
+            origins = [origin.strip() for origin in self.ALLOWED_ORIGINS.split(',') if origin.strip()]
+            if not origins or '*' in origins:
+                raise ValueError('非本地环境必须配置明确的 ALLOWED_ORIGINS，不能留空或使用 *')
         return self
 
     @model_validator(mode='after')
@@ -65,6 +74,18 @@ class Settings(BaseSettings):
         """
         if self.APP_ENV.lower() not in {'dev', 'development', 'local', 'test'}:
             self.CUSTOMER_SERVICE_ALLOW_INSECURE = False
+        return self
+
+    @model_validator(mode='after')
+    def validate_anonymous_budget(self) -> 'Settings':
+        """Public anonymous users can mint new identities; require shared cost ceilings."""
+        if self.is_deployed_environment and self.ANONYMOUS_LOGIN_ENABLED:
+            if (not self.RATE_LIMIT_ENABLED or not self.LLM_COST_ENABLED or self.LLM_GLOBAL_DAILY_TOKEN_BUDGET <= 0
+                    or self.LLM_USER_DAILY_TOKEN_BUDGET <= 0 or not self.REDIS_URL.strip()
+                    or self.RATE_LIMIT_IP_PER_MINUTE <= 0
+                    or self.AUTH_RATE_LIMIT_PER_MINUTE <= 0
+                    or self.ANONYMOUS_AUTH_RATE_LIMIT_PER_MINUTE <= 0):
+                raise ValueError('外网匿名体验必须配置 Redis、正数全局/用户 token 日预算和 IP 限流')
         return self
 
     LLM_API_KEY: str = ""
@@ -204,6 +225,8 @@ class Settings(BaseSettings):
     # ── 请求限流（进程内固定窗口，防刷 / 防跑量；backend/rate_limit.py 消费）──
     # 默认开启：单用户每分钟最多 RATE_LIMIT_PER_MINUTE 次 /chat 调用。
     # 多实例部署时各实例独立计数（如需全局精确限流需换 Redis 后端）。
+    AUTH_RATE_LIMIT_PER_MINUTE: int = 120  # 按 TCP 对端；代理后为所有访客的聚合上限
+    ANONYMOUS_AUTH_RATE_LIMIT_PER_MINUTE: int = 6  # 直接接入默认；代理后由网关做逐 IP 限流
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 30
     # 额外按**来源 IP** 限流（0 = 关闭）。

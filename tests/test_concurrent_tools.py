@@ -80,13 +80,14 @@ def test_sync_tool_result_semantics_unchanged():
 def test_sync_tool_exception_still_caught():
     """线程池里的异常仍被 execute_tool 兜住，不冒泡到调用方。"""
     def _boom():
-        raise ValueError('boom')
+        raise ValueError('private-db-password=/secret/internal-path')
 
     name = _register_tmp('__t_boom', _boom)
     try:
         out, status = asyncio.run(toolkit.execute_tool(name, {}))
         assert status == 'error'
-        assert 'boom' in out
+        assert 'TOOL_EXECUTION_FAILED' in out
+        assert 'private-db-password' not in out and '/secret/internal-path' not in out
     finally:
         _drop(name)
 

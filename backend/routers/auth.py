@@ -3,13 +3,14 @@
 三类接入方式：
 1. 微信小程序：POST /auth/wx-login（code 换 token）
 2. 其他平台（H5/App/自有后端）：POST /auth/token（X-API-Key + external_user_id 换 token）
-3. 匿名（仅开发联调）：POST /auth/anonymous（生产默认关闭）
+3. 匿名（本地联调或独立的限流/预算体验实例）：POST /auth/anonymous（正式实例默认关闭）
 """
 from __future__ import annotations
 
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from backend.rate_limit import FixedWindowLimiter
 from pydantic import BaseModel, Field
 
 from backend.auth import (
@@ -22,6 +23,27 @@ from backend.auth import (
 from backend.config import settings
 
 router = APIRouter(prefix='/auth', tags=['auth'])
+
+# The auth limiter is independent of chat's optional, per-process rate switch.
+# Reverse proxies should additionally enforce real-client IP limits at the edge.
+_auth_limiter = FixedWindowLimiter(settings.AUTH_RATE_LIMIT_PER_MINUTE)
+_anonymous_limiter = FixedWindowLimiter(settings.ANONYMOUS_AUTH_RATE_LIMIT_PER_MINUTE)
+
+
+def _limit_auth_request(request: Request, *, anonymous: bool = False) -> None:
+    ip = request.client.host if request.client else 'unknown'
+    limiter = _anonymous_limiter if anonymous else _auth_limiter
+    allowed, retry = limiter.allow(f'auth:{ip}')
+    if not allowed:
+        raise HTTPException(status_code=429, detail='登录请求过于频繁', headers={'Retry-After': str(retry)})
+
+
+def _auth_rate(request: Request) -> None:
+    _limit_auth_request(request)
+
+
+def _anonymous_rate(request: Request) -> None:
+    _limit_auth_request(request, anonymous=True)
 
 
 class WechatLoginRequest(BaseModel):
@@ -38,14 +60,15 @@ class CustomerLoginRequest(BaseModel):
 
 
 @router.post('/customer-token')
-async def customer_login(req: CustomerLoginRequest) -> dict[str, str]:
+async def customer_login(req: CustomerLoginRequest, _: None = Depends(_auth_rate)) -> dict[str, str]:
     from backend.customer_identity import customer_subject
     uid = customer_subject(req.credential)
     return {'access_token': create_access_token(uid, platform='customer_h5'), 'user_id': uid, 'token_type': 'bearer'}
 
 
 @router.post('/token')
-async def exchange_token(req: TokenExchangeRequest, platform_id: str = Depends(require_platform_key)) -> dict[str, str]:
+async def exchange_token(req: TokenExchangeRequest, _: None = Depends(_auth_rate),
+                         platform_id: str = Depends(require_platform_key)) -> dict[str, str]:
     """通用 token 交换接口（多平台接入）。
 
     请求头：X-API-Key: <平台密钥>；请求体：接入方体系内的用户标识。
@@ -61,7 +84,7 @@ async def exchange_token(req: TokenExchangeRequest, platform_id: str = Depends(r
 
 
 @router.post('/anonymous')
-async def anonymous_login() -> dict[str, str]:
+async def anonymous_login(_: None = Depends(_anonymous_rate)) -> dict[str, str]:
     if not settings.ANONYMOUS_LOGIN_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -72,7 +95,7 @@ async def anonymous_login() -> dict[str, str]:
 
 
 @router.post('/wx-login')
-async def wechat_login(req: WechatLoginRequest) -> dict[str, str]:
+async def wechat_login(req: WechatLoginRequest, _: None = Depends(_auth_rate)) -> dict[str, str]:
     identity = await login_wechat(req.code)
     return {
         'access_token': create_access_token(identity['user_id'], platform='wechat'),

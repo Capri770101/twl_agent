@@ -1,6 +1,7 @@
 """提醒/通知站内 API：本人收件箱、提醒规则管理。"""
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 
 from fastapi import APIRouter, Depends
@@ -20,6 +21,10 @@ def _row(r) -> dict:
 @router.get('/notifications')
 async def list_notifications(user_id: str = Depends(current_user),
                              limit: int = 50, offset: int = 0) -> dict:
+    return await asyncio.to_thread(_list_notifications_sync, user_id, limit, offset)
+
+
+def _list_notifications_sync(user_id: str, limit: int, offset: int) -> dict:
     """收件箱：到点提醒（type=reminder）等通知，按时间倒序。
 
     接入方轮询或长轮询该端点即可把提醒透出给用户；is_read=0 为未读。
@@ -48,9 +53,13 @@ async def list_notifications(user_id: str = Depends(current_user),
 
 @router.post('/notifications/{nid}/read')
 async def mark_read(nid: str, user_id: str = Depends(current_user)) -> dict:
-    """标记已读（属主 WHERE 内建：别人的通知改不动）。"""
     if not nid or len(nid) > 80:
         return {'ok': False, 'code': 'INVALID_ARGUMENT'}
+    return await asyncio.to_thread(_mark_read_sync, nid, user_id)
+
+
+def _mark_read_sync(nid: str, user_id: str) -> dict:
+    """标记已读（属主 WHERE 内建：别人的通知改不动）。"""
     with transaction() as conn:
         cur = conn.execute('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?',
                            (nid, user_id))
@@ -60,6 +69,10 @@ async def mark_read(nid: str, user_id: str = Depends(current_user)) -> dict:
 
 @router.get('/reminders')
 async def list_reminders(user_id: str = Depends(current_user)) -> dict:
+    return await asyncio.to_thread(_list_reminders_sync, user_id)
+
+
+def _list_reminders_sync(user_id: str) -> dict:
     """本人提醒规则（含停用项；status=active 的才会触发）。"""
     with transaction() as conn:
         rows = conn.execute(
@@ -117,6 +130,10 @@ def _schedule(cron: str | None, first_run: str | None, now: _dt.datetime):
 
 @router.post('/reminders/{rid}/pause')
 async def pause_reminder(rid: int, user_id: str = Depends(current_user)) -> dict:
+    return await asyncio.to_thread(_pause_reminder_sync, rid, user_id)
+
+
+def _pause_reminder_sync(rid: int, user_id: str) -> dict:
     """Pause only an active owned rule; scheduler and this UPDATE lock the same row."""
     with transaction() as conn:
         row = conn.execute(
@@ -128,6 +145,10 @@ async def pause_reminder(rid: int, user_id: str = Depends(current_user)) -> dict
 
 @router.post('/reminders/{rid}/resume')
 async def resume_reminder(rid: int, user_id: str = Depends(current_user)) -> dict:
+    return await asyncio.to_thread(_resume_reminder_sync, rid, user_id)
+
+
+def _resume_reminder_sync(rid: int, user_id: str) -> dict:
     """Never replay missed occurrences: calculate a fresh future run on resume."""
     with transaction() as conn:
         row = conn.execute('SELECT ' + _REMINDER_COLUMNS +
@@ -151,6 +172,10 @@ async def resume_reminder(rid: int, user_id: str = Depends(current_user)) -> dic
 @router.patch('/reminders/{rid}')
 async def modify_reminder(rid: int, payload: ReminderPatch,
                           user_id: str = Depends(current_user)) -> dict:
+    return await asyncio.to_thread(_modify_reminder_sync, rid, payload, user_id)
+
+
+def _modify_reminder_sync(rid: int, payload: ReminderPatch, user_id: str) -> dict:
     """Edit content and/or schedule of an active or paused owned reminder.
 
     Supply cron for a recurring schedule, or first_run for a one-off Shanghai
@@ -191,6 +216,10 @@ async def modify_reminder(rid: int, payload: ReminderPatch,
 
 @router.delete('/reminders/{rid}')
 async def delete_reminder(rid: int, user_id: str = Depends(current_user)) -> dict:
+    return await asyncio.to_thread(_delete_reminder_sync, rid, user_id)
+
+
+def _delete_reminder_sync(rid: int, user_id: str) -> dict:
     """删除本人提醒规则（软删：status→cancelled，调度器不再扫它）。"""
     with transaction() as conn:
         cur = conn.execute(

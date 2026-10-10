@@ -77,7 +77,7 @@ def test_merge_injects_embedding_recall(mock_embedding, monkeypatch):
     entries = store._load("care")
     fake = [0.0] * len(entries)
     fake[0] = 0.9
-    monkeypatch.setattr(semantic, "domain_similarities", lambda d, q: list(fake))
+    monkeypatch.setattr(semantic, "domain_similarities", lambda d, q, entries: list(fake))
     out = store._retrieve_domain("care", ["zzznotokenzzz"], True)
     ids = [e.get("id") for e, _s in out]
     assert entries[0].get("id") in ids

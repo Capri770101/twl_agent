@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from agent.engine.tool_scope import CARE_TOOLS, is_standalone_care
+
 
 @dataclass(frozen=True)
 class IntentRoute:
@@ -12,7 +14,7 @@ class IntentRoute:
     tools: frozenset[str] | None = None
 
 
-_CARE = frozenset({'retrieve_knowledge', 'respond_to_user', 'search_history', 'get_user_profile'})
+_CARE = CARE_TOOLS
 _GREETING = frozenset({'suggest_greetings', 'render_greeting_card', 'respond_to_user', 'show_options'})
 _IMAGE = frozenset({'generate_effect_image', 'respond_to_user'})
 _DIY = frozenset({'retrieve_knowledge', 'generate_diy_plan', 'revise_diy_plan', 'prepare_revision', 'generate_effect_image', 'respond_to_user', 'show_plan_card', 'show_options', 'get_user_profile'})
@@ -65,9 +67,7 @@ def classify(message: str) -> IntentRoute | None:
     constrained_single = ('不要配花' in text or '纯' in text) and bool(re.search(r'\d+\s*(?:朵|枝|支)', text))
     if (explicit_diy and not declines_diy) or (constrained_single and not any(w in text for w in ('现成', '现货'))):
         return IntentRoute('design', 4, _DIY)
-    stripped = re.sub(r'(?:不要|不用|无需)(?:方案和图片|方案和效果图|方案|图片|效果图)', '', text)
-    care_words = ('怎么养', '如何养', '养护', '换水', '多久换', '换一次水', '剪根', '保鲜', '醒花')
-    if len(stripped) <= 120 and any(w in stripped for w in care_words) and not any(w in stripped for w in ('推荐', '买', '送', '预算', '方案', '店', '价格')):
+    if is_standalone_care(text):
         return IntentRoute('qa', 2, _CARE)
     if any(w in text for w in ('想买现成', '买现成', '推荐一束', '推荐花束', '有什么花', '在售')) or ('预算' in text and any(w in text for w in ('送', '推荐', '买'))):
         return IntentRoute('buying', 3, _BUYING)

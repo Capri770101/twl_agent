@@ -246,6 +246,7 @@ async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dic
         except (json.JSONDecodeError, TypeError):
             pass
         return (result, 'ok')
-    except Exception as exc:
+    except Exception:
         logger.exception('[tools] 执行 %s 失败', name)
-        return (f'工具执行失败: {exc}', 'error')
+        return (json.dumps({'ok': False, 'code': 'TOOL_EXECUTION_FAILED',
+                            'error': '工具暂时不可用，请稍后重试'}, ensure_ascii=False), 'error')

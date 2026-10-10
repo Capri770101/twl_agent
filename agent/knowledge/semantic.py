@@ -15,6 +15,7 @@ import logging
 import math
 import threading
 from pathlib import Path
+from typing import Any
 
 from backend.config import settings
 
@@ -65,10 +66,12 @@ def _save_cache(cache: dict) -> None:
         logger.warning('[semantic] 缓存写入失败', exc_info=True)
 
 
-def _domain_texts(domain: str) -> list[str]:
-    """取该域每条条目的可检索文本（复用 store 的递归拼装，保证与 TF-IDF 同一语料）。"""
+def _domain_texts(domain: str, entries: list[dict[str, Any]] | None = None) -> list[str]:
+    """Use the retrieval snapshot when provided; standalone callers load the domain."""
     from agent.knowledge.store import _entry_text, _load
-    return [_entry_text(e) for e in _load(domain)]
+    if entries is None:
+        entries = _load(domain)
+    return [_entry_text(e) for e in entries]
 
 
 def _content_key(domain: str, texts: list[str]) -> str:
@@ -81,14 +84,16 @@ def _content_key(domain: str, texts: list[str]) -> str:
     return f"{settings.EMBEDDING_PROVIDER}:{settings.EMBEDDING_MODEL}:{domain}:{h}"
 
 
-def domain_similarities(domain: str, query: str) -> list[float] | None:
-    """返回该域每条条目与 query 的余弦相似度（顺序与 `_load(domain)` 一致）；不可用返回 None。"""
+def domain_similarities(
+    domain: str, query: str, entries: list[dict[str, Any]] | None = None,
+) -> list[float] | None:
+    """Return scores in the supplied entries' order; standalone calls load the domain."""
     if not settings.embedding_enabled or not query:
         return None
     try:
         from backend.embedding import embed_texts
 
-        texts = _domain_texts(domain)
+        texts = _domain_texts(domain, entries)
         if not texts:
             return None
         key = _content_key(domain, texts)

@@ -1,30 +1,113 @@
-"""离线校验智能体场景评测集，避免评测样本自身失真。"""
+"""Validate the offline scenario suite without importing the application or its tools."""
 from __future__ import annotations
 
+import argparse
+import ast
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-path = ROOT / 'evals' / 'flower_scenarios.jsonl'
-required = {'id', 'message', 'intent', 'expected_ui', 'allowed_tools', 'forbidden_tools', 'max_iterations', 'checks'}
-seen: set[str] = set()
-rows = []
-for line_no, raw in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
-    if not raw.strip():
-        continue
-    item = json.loads(raw)
-    missing = required - set(item)
-    if missing:
-        raise SystemExit(f'line {line_no}: missing {sorted(missing)}')
-    if item['id'] in seen:
-        raise SystemExit(f'line {line_no}: duplicate id {item["id"]}')
-    if item['intent'] not in {'qa', 'buying', 'design', 'image', 'greeting'}:
-        raise SystemExit(f'line {line_no}: invalid intent')
-    if not isinstance(item['max_iterations'], int) or not 1 <= item['max_iterations'] <= 8:
-        raise SystemExit(f'line {line_no}: invalid max_iterations')
-    overlap = set(item['allowed_tools']) & set(item['forbidden_tools'])
-    if overlap:
-        raise SystemExit(f'line {line_no}: tool in both allow/forbid: {sorted(overlap)}')
-    seen.add(item['id'])
-    rows.append(item)
-print(f'valid evaluation scenarios: {len(rows)}')
+DEFAULT_CASES = ROOT / 'evals' / 'flower_scenarios.jsonl'
+REQUIRED = {'id', 'message', 'intent', 'expected_ui', 'allowed_tools',
+            'forbidden_tools', 'max_iterations', 'checks'}
+
+
+def _registered_tools() -> set[str]:
+    """Read literal @register_tool names, avoiding agent import side effects."""
+    names: set[str] = set()
+    for source in (ROOT / 'agent').rglob('*.py'):
+        tree = ast.parse(source.read_text(encoding='utf-8'), filename=str(source))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Name) or decorator.func.id != 'register_tool':
+                    continue
+                for keyword in decorator.keywords:
+                    if keyword.arg == 'name' and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                        names.add(keyword.value.value)
+    return names
+
+
+def _ui_types() -> set[str]:
+    source = ROOT / 'agent' / 'engine' / 'ui_protocol.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'), filename=str(source))
+    return {node.value.value for cls in tree.body if isinstance(cls, ast.ClassDef) and cls.name == 'UIType'
+            for node in cls.body if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)}
+
+
+def _intents() -> set[str]:
+    source = ROOT / 'agent' / 'engine' / 'intent.py'
+    tree = ast.parse(source.read_text(encoding='utf-8'), filename=str(source))
+    return {node.args[0].value for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'IntentRoute'
+            and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)}
+
+
+def validate(path: Path = DEFAULT_CASES) -> int:
+    tools, uis, intents = _registered_tools(), _ui_types(), _intents()
+    seen: set[str] = set()
+    count = 0
+    for line_no, raw in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+        if not raw.strip():
+            continue
+        prefix = f'line {line_no}'
+
+        def fail(reason: str) -> None:
+            raise ValueError(f'{prefix}: {reason}')
+
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            fail(f'invalid JSON: {exc.msg}')
+        if not isinstance(item, dict):
+            fail('scenario must be an object')
+        missing = REQUIRED - item.keys()
+        if missing:
+            fail(f'missing {sorted(missing)}')
+        if not isinstance(item['id'], str) or not item['id'].strip():
+            fail('invalid id')
+        if item['id'] in seen:
+            fail(f'duplicate id {item["id"]}')
+        if not isinstance(item['message'], str) or not item['message'].strip():
+            fail('invalid message')
+        if not isinstance(item['intent'], str) or item['intent'] not in intents:
+            fail(f'invalid intent {item["intent"]!r}')
+        if not isinstance(item['expected_ui'], str) or item['expected_ui'] not in uis:
+            fail(f'invalid expected_ui {item["expected_ui"]!r}')
+        if type(item['max_iterations']) is not int or not 1 <= item['max_iterations'] <= 8:
+            fail('invalid max_iterations')
+        for field in ('allowed_tools', 'forbidden_tools'):
+            values = item[field]
+            if not isinstance(values, list) or any(not isinstance(v, str) or not v or v not in tools for v in values):
+                fail(f'invalid {field}: expected registered tool names')
+            if len(values) != len(set(values)):
+                fail(f'duplicate {field}')
+        overlap = set(item['allowed_tools']) & set(item['forbidden_tools'])
+        if overlap:
+            fail(f'tool in both allow/forbid: {sorted(overlap)}')
+        if not isinstance(item['checks'], list) or not item['checks'] or any(
+                not isinstance(check, str) or not check.strip() for check in item['checks']):
+            fail('invalid checks: expected non-empty list of non-blank strings')
+        seen.add(item['id'])
+        count += 1
+    if not count:
+        raise ValueError('empty evaluation suite')
+    return count
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--cases', type=Path, default=DEFAULT_CASES)
+    args = parser.parse_args()
+    try:
+        count = validate(args.cases)
+    except (ValueError, OSError) as exc:
+        parser.exit(1, f'{exc}\n')
+    print(f'valid evaluation scenarios: {count}')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

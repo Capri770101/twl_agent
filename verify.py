@@ -1,52 +1,42 @@
-"""Quick verification script."""
-import sys
-sys.path.insert(0, '.')
+"""Quick application import verification with a failing exit status on errors."""
+from importlib import import_module
 
-print("Checking dependencies...")
 
-try:
-    from backend.config import settings, setup_logging
-    print("[OK] backend.config")
-except Exception as e:
-    print(f"[FAIL] backend.config: {e}")
+CHECKS = (
+    ('backend.config', (('backend.config', 'settings'), ('backend.config', 'setup_logging'))),
+    ('backend.storage.db', (('backend.storage.db', 'init_db'),)),
+    ('backend.storage.memory', (('backend.storage.memory', 'get_or_create_session'),)),
+    ('backend.data_gateway (platform_db)', (
+        ('backend.data_gateway.external', 'discover_external'),
+        ('backend.data_gateway.external', 'query_external_entity'),
+        ('backend.data_gateway.mapping_store', 'get_active_mapping'),
+        ('backend.data_gateway.mapper', 'generate_mapping_draft'),
+    )),
+    ('backend.routers.chat', (('backend.routers.chat', 'router'),)),
+    ('backend.routers.auth (multi-platform)', (
+        ('backend.routers.auth', 'router'),
+        ('backend.auth', 'require_platform_key'),
+        ('backend.auth', 'derive_platform_user_id'),
+    )),
+    ('agent.agent', (('agent.agent', 'ReActAgent'),)),
+)
 
-try:
-    from backend.storage.db import init_db
-    print("[OK] backend.storage.db")
-except Exception as e:
-    print(f"[FAIL] backend.storage.db: {e}")
 
-try:
-    from backend.storage.memory import get_or_create_session
-    print("[OK] backend.storage.memory")
-except Exception as e:
-    print(f"[FAIL] backend.storage.memory: {e}")
+def main() -> int:
+    print('Checking dependencies...')
+    failed = False
+    for label, imports in CHECKS:
+        try:
+            for module_name, attribute in imports:
+                getattr(import_module(module_name), attribute)
+        except Exception as exc:
+            print(f'[FAIL] {label}: {exc}')
+            failed = True
+        else:
+            print(f'[OK] {label}')
+    print('\nVerification complete!')
+    return 1 if failed else 0
 
-try:
-    from backend.data_gateway.external import discover_external, query_external_entity
-    from backend.data_gateway.mapping_store import get_active_mapping
-    from backend.data_gateway.mapper import generate_mapping_draft
-    print("[OK] backend.data_gateway (platform_db)")
-except Exception as e:
-    print(f"[FAIL] backend.data_gateway: {e}")
 
-try:
-    from backend.routers.chat import router
-    print("[OK] backend.routers.chat")
-except Exception as e:
-    print(f"[FAIL] backend.routers.chat: {e}")
-
-try:
-    from backend.routers.auth import router
-    from backend.auth import require_platform_key, derive_platform_user_id
-    print("[OK] backend.routers.auth (multi-platform)")
-except Exception as e:
-    print(f"[FAIL] backend.routers.auth: {e}")
-
-try:
-    from agent.agent import ReActAgent
-    print("[OK] agent.agent")
-except Exception as e:
-    print(f"[FAIL] agent.agent: {e}")
-
-print("\nVerification complete!")
+if __name__ == '__main__':
+    raise SystemExit(main())

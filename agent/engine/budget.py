@@ -46,13 +46,17 @@ def _ttl_seconds() -> int:
     delta = tomorrow - datetime.datetime.now()
     return max(1, int(delta.total_seconds()))
 
+def _anonymous_fail_closed(user_id: str | None) -> bool:
+    return bool(user_id and user_id.startswith('anon_') and settings.is_deployed_environment)
+
+
 def check(user_id: str | None) -> tuple[bool, str | None]:
-    """返回 (是否允许, 超限原因)。未启用预算或无 Redis 时一律放行。"""
+    """Return budget decision; deployed anonymous traffic fails closed on Redis loss."""
     if not settings.llm_cost_enabled:
-        return (True, None)
+        return (False, 'unavailable') if _anonymous_fail_closed(user_id) else (True, None)
     client = _client()
     if client is None:
-        return (True, None)
+        return (False, 'unavailable') if _anonymous_fail_closed(user_id) else (True, None)
     try:
         if settings.llm_global_daily_token_budget:
             used = int(client.get(_day_key('global')) or 0)
@@ -63,8 +67,8 @@ def check(user_id: str | None) -> tuple[bool, str | None]:
             if used >= settings.llm_user_daily_token_budget:
                 return (False, 'user')
     except Exception:
-        logger.warning('[budget] 读取用量失败，降级放行')
-        return (True, None)
+        logger.warning('[budget] 读取用量失败，匿名请求拒绝，其余请求降级放行')
+        return (False, 'unavailable') if _anonymous_fail_closed(user_id) else (True, None)
     return (True, None)
 
 def record(user_id: str | None, prompt_tokens: int, completion_tokens: int) -> None:

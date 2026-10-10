@@ -1,9 +1,8 @@
 """knowledge/store.py —— 花卉 DIY 知识库加载与向量混合检索。
 
 域说明：
-- 花材/风格/搭配/预算/包装/场景：JSON 文件域（flowers/styles/pairings/budget/packaging/scenes.json）。
-- 商家智库（shop）：特殊域，数据来自 DB 的 shop_profiles 档案（含风格/场景名称），
-  与 JSON 域共用同一套混合检索，AI 可用自然语言召回「韩式花店 / 能做婚礼布置的店」等商家实体。
+- 花材/风格/搭配/预算/包装/场景/养护/色卡：本地 JSON 文件域。
+- 实战方案（proven）：动态加载的用户验证方案；平台店铺通过授权的平台工具查询，不属于知识域。
 
 升级说明（相对旧版纯关键词检索）：
 - 检索升级为「向量空间模型（TF-IDF + 字符 n-gram 切词）+ 余弦相似度」的语义检索（RAG 思路），
@@ -28,10 +27,12 @@ from typing import Any
 from backend.config import settings
 
 logger = logging.getLogger('knowledge')
-_DOMAINS: dict[str, str] = {'flower': 'flowers.json', 'style': 'styles.json', 'pairing': 'pairings.json', 'budget': 'budget.json', 'packaging': 'packaging.json', 'scene': 'scenes.json', 'care': 'care.json', 'shop': '', 'proven': ''}
+_DOMAINS: dict[str, str] = {'flower': 'flowers.json', 'style': 'styles.json', 'pairing': 'pairings.json', 'budget': 'budget.json', 'packaging': 'packaging.json', 'scene': 'scenes.json', 'care': 'care.json', 'colors': 'colors.json', 'proven': ''}
 _BASE_DIR = Path(__file__).resolve().parent
 _cache: dict[str, list[dict[str, Any]]] = {}
 _index_cache: dict[str, _VectorSpace] = {}
+# proven changes between queries; keep its signature and index together as one snapshot.
+_dynamic_index_cache: tuple[str, _VectorSpace] | None = None
 _manifest_cache: dict[str, Any] | None = None
 _SYNONYMS: dict[str, list[str]] = {}
 _CJK = re.compile('[\\u4e00-\\u9fff]+')
@@ -115,23 +116,6 @@ class _VectorSpace:
             scores.append(dot)
         return scores
 
-def _load_shops() -> list[dict[str, Any]]:
-    """惰性加载商家智库档案（来自 DB 的 shop_profiles，含风格/场景名称）。
-
-    惰性 import backend.storage as storage.catalog：catalog 仅在函数内引用 knowledge，
-    双向依赖均为运行时导入，无循环依赖问题。
-    """
-    if 'shop' in _cache:
-        return _cache['shop']
-    data: list[dict[str, Any]] = []
-    try:
-        # 独立封装版暂不内置商家智库，保持空结果，避免依赖原项目完整 catalog 层。
-        data = []
-    except Exception:
-        logger.warning('[knowledge] 商家智库加载失败（DB 未就绪？）', exc_info=True)
-    _cache['shop'] = data
-    return data
-
 def _run_async(coro):
     """在「当前是否已有事件循环」都安全的情况下运行协程。
 
@@ -169,8 +153,6 @@ def _load(domain: str) -> list[dict[str, Any]]:
         return _load_proven()
     if domain in _cache:
         return _cache[domain]
-    if domain == 'shop':
-        return _load_shops()
     path = _BASE_DIR / _DOMAINS[domain]
     if not path.exists():
         logger.warning('[knowledge] 数据文件缺失: %s', path)
@@ -212,10 +194,25 @@ def _entry_text(entry: dict[str, Any]) -> str:
         _collect_strings(v, parts)
     return ' '.join(parts)
 
-def _get_index(domain: str) -> _VectorSpace:
-    """懒构建并按域缓存向量空间（首次非关键词查询时构建）。"""
+def _get_index(domain: str, entries: list[dict[str, Any]] | None = None) -> _VectorSpace:
+    """Return the vector index for the same records used by retrieval.
+
+    Static domains keep their lazy index; proven is reloaded on each query, so its
+    ordered full-record signature must be checked even when the length is unchanged.
+    """
+    global _dynamic_index_cache
+    if entries is None:
+        entries = _load(domain)
+    if domain == 'proven':
+        signature = json.dumps(entries, ensure_ascii=False, sort_keys=True, default=str)
+        snapshot = _dynamic_index_cache
+        if snapshot is None or snapshot[0] != signature:
+            index = _VectorSpace().fit([_entry_text(e) for e in entries])
+            _dynamic_index_cache = (signature, index)
+            return index
+        return snapshot[1]
     if domain not in _index_cache:
-        _index_cache[domain] = _VectorSpace().fit([_entry_text(e) for e in _load(domain)])
+        _index_cache[domain] = _VectorSpace().fit([_entry_text(e) for e in entries])
     return _index_cache[domain]
 
 def _match(entry: dict[str, Any], tokens: list[str]) -> bool:
@@ -242,14 +239,14 @@ def _retrieve_domain(domain: str, tokens: list[str], allow_vector: bool) -> list
     kw_hits = [_match(e, tokens) for e in entries]
     if not allow_vector:
         return [(e, 1.0) for e, hit in zip(entries, kw_hits, strict=True) if hit]
-    sims = _get_index(domain).similarity(' '.join(tokens))
+    sims = _get_index(domain, entries).similarity(' '.join(tokens))
     # 真实 embedding 语义通道（Tier 1）：默认关；开启且可用时与 TF-IDF 取并集召回、分数取较大者，
     # 任一环节失败 emb=None → 行为与纯 TF-IDF 完全一致（零回归）。
     emb: list[float] | None = None
     if settings.embedding_enabled:
         try:
             from agent.knowledge.semantic import domain_similarities
-            emb = domain_similarities(domain, ' '.join(tokens))
+            emb = domain_similarities(domain, ' '.join(tokens), entries)
         except Exception:  # noqa: BLE001
             logger.warning('[knowledge] embedding 通道失败，回退 TF-IDF', exc_info=True)
             emb = None
@@ -321,7 +318,7 @@ def query_knowledge(domain: str='all', query: str='') -> dict[str, Any]:
     """知识库检索（向量混合检索，接口向后兼容）。
 
     Args:
-        domain: "all" 或 flower/style/pairing/budget/packaging/scene/shop 之一。
+        domain: "all" 或 flower/style/pairing/budget/packaging/scene/care/colors/proven 之一。
         query: 自然语言或关键词。
             - 空串：返回该域全部（上层枚举场景/风格/预算档依赖此行为）。
             - 短单 token：精确关键词匹配（向后兼容内部查找与旧测试）。
