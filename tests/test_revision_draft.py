@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 from unittest.mock import AsyncMock
 from agent import revision_draft as draft
@@ -133,3 +133,22 @@ def test_yes_without_draft_is_normal_chat(monkeypatch):
     result = asyncio.run(draft.handle_confirmation('u','s','是的'))
     assert result is None
     revise.assert_not_awaited()
+
+
+def test_questions_and_new_constraints_do_not_execute_stale_draft(monkeypatch):
+    revise, reset = _confirm_env(monkeypatch)
+    for message in ('可以把预算改成500吗', '对比一下两版差别', '可以先说说价格吗',
+                    '是的，预算改为500', '这个可以吗', '不要取消，按这个改',
+                    '等等，预算改成500行不行'):
+        reset()
+        result = asyncio.run(draft.handle_confirmation('u', 's', message))
+        assert result is None, message
+    revise.assert_not_awaited()
+
+
+def test_short_yes_executes_but_other_topic_is_not_confirmation(monkeypatch):
+    revise, reset = _confirm_env(monkeypatch)
+    assert asyncio.run(draft.handle_confirmation('u', 's', '好。')) is not None
+    revise.assert_awaited_once()
+    reset()
+    assert asyncio.run(draft.handle_confirmation('u', 's', '不要方案和图片')) is None

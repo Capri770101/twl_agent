@@ -71,6 +71,7 @@ def test_claims_ignored_when_honestly_reporting_failure():
     """如实说明失败不能被当成「声称已出图」，否则会把正确行为拦掉。"""
     assert not _claims_image_done('抱歉，这次效果图没有生成成功，我还没找到可生图的方案。')
     assert not _claims_image_done('效果图暂时无法生成，需要你先定一个方案。')
+    assert _claims_image_done('之前没有生成，但现在效果图已经提交了。')
 
 
 def test_claims_ignored_without_image_topic():

@@ -100,7 +100,8 @@ async def contact_merchant(order_id: str = '', shop_id: str = '', shop_name: str
         shop_id = ''
     result = await _tracked('contact_merchant', _contact_merchant(
         user_id, order_id=order_id, shop_id=shop_id, shop_name=shop_name,
-        category=category, summary=summary, detail=detail, contact_phone=contact_phone))
+        category=category, summary=summary, detail=detail, contact_phone=contact_phone,
+        credential=(_context or {}).get('customer_credential', '')))
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
@@ -177,7 +178,7 @@ async def update_order_address(order_id: str, address: dict | None = None, _cont
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
-@register_tool(name='set_reminder', description='为用户设置周期提醒（如「每月8号提醒我给妈订花」「后天下午提醒我取花」）。提醒会写进系统通知，到点由通知通道推送。用户明确要求记住某个日期/周期性事项时调用；模糊请求先澄清日期。',
+@register_tool(name='set_reminder', description='为用户设置周期提醒（如「每月8号提醒我给妈订花」「后天下午提醒我取花」）。提醒到点写入站内通知收件箱；外部小程序推送尚需接入方接通。用户明确要求记住某个日期/周期性事项时调用；模糊请求先澄清日期。',
                parameters={'type': 'object', 'properties': {
                    'content': {'type': 'string', 'description': '提醒内容（用户原话概括）'},
                    'cron': {'type': 'string', 'description': '5字段 cron（分 时 日 月 周），如 "0 9 8 * *" 表示每月8号9点'},

@@ -1,5 +1,6 @@
 """修改意向草稿与现有方案分开保存；确认只执行用户见过的摘要。"""
 import json
+import re
 import time
 from backend.storage import memory
 from agent.toolkit import register_tool
@@ -15,42 +16,27 @@ KEY = 'pending_revision_draft'
 CONFIRM = '确认修改并生成新版'
 CANCEL = '取消本次修改'
 
-# 口语肯定确认（2026-10-10 端到端踩坑）：确认门此前只认 UI 按钮文案
-# CONFIRM/CANCEL 两个字面短语，用户说「是的」永远不匹配 → 回落普通 LLM 轮 →
-# 模型又调 prepare_revision 再问一遍 → 「承诺出新版但永远不出」死循环。
-# 这里扩成「显式短语 ∪ 口语肯定」，否定词一票否决（与 agent.is_affirmative
-# 同一策略；不 import agent 是防循环依赖，词表单独维护，两边同步改）。
-_REVISE_YES_WORDS = (
+# 对改版这种会改变现有方案的操作，只接受独立、明确的确认/取消短句。
+# 含新条件、提问或对比的消息一律交回正常对话处理，不能靠「对」「可以」子串猜。
+_REVISE_YES_WORDS = frozenset((
     CONFIRM, '确认修改', '确认生成', '生成新版', '生成新版本', '出新版', '出新方案',
     '按这个改', '按这样改', '就这样改', '改吧', '生成吧', '出吧', '可以', '好的',
-    '好嘞', '没问题', '是的', '对', '对滴', '嗯', '嗯嗯', '行', 'OK', 'ok', 'Okay',
-    '可以吧', '确认', '同意', '就这么办', '开始吧', '执行吧', '做吧', '安排',
-)
-_REVISE_NO_WORDS = (
-    CANCEL, '取消', '取消修改', '先不改', '不用改', '不要改', '算了', '再等等',
-    '等一下', '等等', '再想想', '先不', '不要', '不用', '不行', '不可以', '否',
-    '再看看', '换一个', '换个', '再改改', '还有问题', '不对', '不是这个',
-    '错了', '重说', '我没说', '没让',
-)
+    '好', '好嘞', '没问题', '是的', '对', '对滴', '嗯', '嗯嗯', '行', 'ok',
+    '确认', '同意', '就这么办', '就这样改吧', '开始吧', '执行吧', '做吧', '安排',
+    '对出吧', '好的出吧', '是的出吧', '可以生成',
+))
+_REVISE_NO_WORDS = frozenset((
+    CANCEL, '取消修改', '先不改', '不用改', '不要改', '算了', '再等等',
+    '等一下', '等等', '再想想', '先不', '不行', '不可以', '再看看',
+))
 
 
 def _resolve_confirm_intent(message: str) -> str | None:
-    """把用户口语解析成 confirm / cancel / None（None=与修改确认无关）。
-
-    规则：否定词**一票否决**（「不是/不要/再等等」优先于一切肯定词）；
-    命中肯定词且当前存在草稿 → confirm。中性消息（改需求、问问题）返回
-    None 交给正常 LLM 轮——确认门绝不能把「预算改成 500」吞成确认。
-
-    注：cancel 判定也走这里返回；但「先读草稿」在 handle_confirmation 里
-    先行（无草稿 → 无条件 None），避免 QA 等普通消息（恰含「不要」字样）
-    触发确认门发 DB 查询或误回「已取消修改」。
-    """
-    t = (message or '').strip().rstrip('。！!？?，,')
-    if not t or len(t) > 30:
-        return None  # 超过 30 字的都不是简单确认/取消
-    if any(w in t for w in _REVISE_NO_WORDS):
+    """只对完整确认/取消短句执行草稿；复杂表达交给正常对话澄清。"""
+    t = re.sub(r'[\s。！!？?，,、]+', '', str(message or '').strip()).lower()
+    if t in _REVISE_NO_WORDS:
         return 'cancel'
-    if any(w == t or w in t for w in _REVISE_YES_WORDS):
+    if t in _REVISE_YES_WORDS:
         return 'confirm'
     return None
 

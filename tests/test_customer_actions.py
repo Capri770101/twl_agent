@@ -42,16 +42,16 @@ def test_cron_dom_dow_or_semantics():
     parsed = parse_cron('30 9 * * 1')
     base = _dt.datetime(2026, 10, 8, 8, 0)  # 周四
     nxt = _next_after(parsed, base)
-    assert nxt is not None and nxt.weekday() == 0 and (nxt.hour, nxt.minute) == (9, 30)
-    # 2026-10-12 是周一（从周四 10-08 起的第一个周一）
-    assert nxt.strftime('%Y-%m-%d %H:%M') == '2026-10-12 09:30'
+    assert nxt is not None and nxt.weekday() == 0 and (nxt.hour, nxt.minute) == (1, 30)
+    # 用户看到 2026-10-12 周一北京时间 09:30；数据库存 UTC 01:30。
+    assert nxt == _dt.datetime(2026, 10, 12, 1, 30, tzinfo=_dt.timezone.utc)
 
 
 def test_cron_monthly_8th():
     parsed = parse_cron('0 9 8 * *')
     base = _dt.datetime(2026, 10, 9, 10, 0)
     nxt = _next_after(parsed, base)
-    assert nxt == _dt.datetime(2026, 11, 8, 9, 0)
+    assert nxt == _dt.datetime(2026, 11, 8, 1, 0, tzinfo=_dt.timezone.utc)
 
 
 # ── 评价查询（公开端点；空数据如实） ────────────────────────────

@@ -16,12 +16,13 @@ from agent.agent import (
 
 
 class _TC:
-    """最小 ToolCallRecord 替身（函数只读 name / arguments / status）。"""
+    """最小 ToolCallRecord 替身（平台卡还需真实非空 result）。"""
 
-    def __init__(self, name: str, status: str = 'ok', **arguments) -> None:
+    def __init__(self, name: str, status: str = 'ok', result=None, **arguments) -> None:
         self.name = name
         self.status = status
         self.arguments = arguments
+        self.result = result if result is not None else {'ok': True, 'data': [{'id': 'p1'}]}
 
 
 # ── _expresses_flower_need ─────────────────────────────────────────────
@@ -53,6 +54,7 @@ def test_card_produced_by_plan_tools():
 def test_card_produced_by_platform_query():
     assert _card_produced([_TC('platform_db_query_entity', entity='plan')])
     assert _card_produced([_TC('platform_db_query_entity', entity='shop')])
+    assert not _card_produced([_TC('platform_db_query_entity', entity='plan', result={'ok': True, 'data': []})])
     # 订单查询不算「方案卡」证据
     assert not _card_produced([_TC('platform_db_query_entity', entity='order')])
 

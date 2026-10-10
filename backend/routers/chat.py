@@ -191,7 +191,7 @@ async def chat(
     _enforce_rate_limit(req.user_id, request)
     from backend.customer_identity import bound_customer_credential
     customer_credential = bound_customer_credential(request.headers.get('X-Customer-Credential', ''), authenticated_user)
-    logger.info('chat user=%s msg=%s', req.user_id, req.message[:80])
+    logger.info('chat user=%s message_length=%d', req.user_id, len(req.message))
 
     # ── 监控埋点：入口 ──
     _platform = getattr(user_info, 'platform', None) if user_info else None
@@ -256,7 +256,7 @@ async def chat_stream(
     _enforce_rate_limit(req.user_id, request)
     from backend.customer_identity import bound_customer_credential
     customer_credential = bound_customer_credential(request.headers.get('X-Customer-Credential', ''), authenticated_user)
-    logger.info('chat/stream user=%s msg=%s', req.user_id, req.message[:80])
+    logger.info('chat/stream user=%s message_length=%d', req.user_id, len(req.message))
 
     # ── 监控埋点：入口 ──
     _platform = getattr(user_info, 'platform', None) if user_info else None

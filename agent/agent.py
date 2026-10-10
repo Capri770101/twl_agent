@@ -967,6 +967,22 @@ def _platform_queried(tool_log: list[Any], entity: str) -> bool:
     return False
 
 
+def _platform_rows_found(tool_log: list[Any], entity: str) -> bool:
+    """是否查到非空、成功且属于目标实体的平台记录。"""
+    for tc in tool_log or []:
+        if (getattr(tc, 'name', '') != 'platform_db_query_entity'
+                or getattr(tc, 'status', '') != 'ok'
+                or (getattr(tc, 'arguments', None) or {}).get('entity') != entity):
+            continue
+        try:
+            result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result
+        except (ValueError, TypeError):
+            continue
+        if isinstance(result, dict) and result.get('ok') is True and isinstance(result.get('data'), list) and result['data']:
+            return True
+    return False
+
+
 def _platform_nudge_text(entity: str) -> str:
     """「未查证即作答」时注入的一次性纠正指令（只进本轮上下文，不落库）。"""
     sources = '、'.join(_platform_source_ids()) or '已配置数据源'
@@ -1005,7 +1021,12 @@ def _card_produced(tool_log: list[Any]) -> bool:
         if name == 'platform_db_query_entity':
             ent = str((getattr(tc, 'arguments', None) or {}).get('entity') or '')
             if ent in ('plan', 'shop'):
-                return True
+                try:
+                    result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result
+                except (ValueError, TypeError):
+                    result = None
+                if isinstance(result, dict) and result.get('ok') is True and isinstance(result.get('data'), list) and result['data']:
+                    return True
     return False
 
 
@@ -1084,7 +1105,14 @@ def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, repl
     """
     if _card_produced(tool_log):
         return False
+    # 客服/订单查询不是花束设计；订单金额等数字不应触发 DIY 补卡。
+    if any(getattr(tc, 'name', '').startswith(('query_my_', 'contact_merchant',
+                                               'cancel_my_order', 'apply_refund',
+                                               'update_order_address')) for tc in tool_log):
+        return False
     text = message or ''
+    if any(w in text for w in ('我的订单', '查订单', '退款', '售后', '改地址', '取消订单')):
+        return False
     if any(w in text for w in _PLAN_QUESTION_WORDS):
         return False
     from agent.engine.discussion import is_plan_discussion
@@ -1220,9 +1248,11 @@ def _claims_image_done(reply: str) -> bool:
     text = reply or ''
     if not text:
         return False
-    if any(w in text for w in _IMAGE_FAIL_WORDS):
-        return False  # 如实说明失败 → 放行
-    return any(p.search(text) for p in _IMAGE_CLAIM_PATTERNS)
+    for clause in re.split(r'[。！？!?；;，,\n]+', text):
+        if any(p.search(clause) for p in _IMAGE_CLAIM_PATTERNS):
+            if not any(w in clause for w in _IMAGE_FAIL_WORDS):
+                return True
+    return False
 
 
 def _needs_image_nudge(tool_log: list[Any], reply: str) -> bool:
@@ -2134,7 +2164,6 @@ class ReActAgent:
         tool_log: list[ToolCallRecord] = []
         respond_args: dict[str, Any] | None = None
         final_reply = ''
-        _any_pushed = False     # 本轮是否已通过真流式逐字推过文字（决定末尾要不要整段兜底）
         new_msgs: list[dict[str, Any]] = [{'role': 'user', 'content': message}]
         max_iterations = route.max_iterations if route else settings.max_iterations
         for turn in range(1, max_iterations + 1):
@@ -2146,11 +2175,14 @@ class ReActAgent:
             logger.info('[agent] ReAct 第 %d/%d 轮 阶段=%s', turn, settings.max_iterations, stage.value)
             try:
                 # 按本轮剩余预算收紧单次 LLM 超时，避免「8 轮 × 3 重试 × 120s」把整轮拖长。
-                # 有 on_event（SSE 场景）时走**流式**：最终回复逐字推给用户，不再干等
-                # （2026-09-18 外部安全审计 P0-1）；无 on_event（非流式 /chat）保持同步调用。
+                # SSE 仍以流式读取模型以缩短工具轮等待，但文字只能在所有
+                # 工具执行、护栏与最终清理后公开。模型 JSON reply 的增量可能
+                # 先谎称已下单/已出图，再被护栏否决；回滚也无法消除已看到的内容。
                 if on_event is not None:
-                    msg = self._stream_llm(messages, on_event, _remaining)
-                    _any_pushed = _any_pushed or bool(getattr(msg, '_pushed', False))
+                    def _validated_events(event):
+                        if event.get('event') not in ('text_delta', 'text_rollback'):
+                            on_event(event)
+                    msg = self._stream_llm(messages, _validated_events, _remaining)
                 else:
                     resp = call_llm(messages, tools=to_openai_tools(compact=True), timeout=min(settings.llm_timeout, _remaining), user_id=user_id)
                     msg = resp.choices[0].message
@@ -2291,6 +2323,9 @@ class ReActAgent:
                     'stage': SessionStage.VIEW_PLAN.value,
                     'intent': 'design',
                 }
+                tool_log.append(ToolCallRecord(name='generate_diy_plan', arguments={},
+                                               result=json.dumps(_fb, ensure_ascii=False),
+                                               status='ok', source='system'))
                 logger.warning('[agent] 模型未出卡，已用规则引擎兜底生成方案卡 plan_id=%s', _fb.get('plan_id'))
             except Exception:
                 logger.exception('[agent] 兜底出卡失败（不影响主流程）')
@@ -2312,6 +2347,14 @@ class ReActAgent:
         # （原先这 8 步是硬编码散在这里的，顺序语义只能靠读代码推断 —— review 第 2 条）。
         # ⚠️ 改清理逻辑请改那张表，不要在这里加调用。
         final_reply = _run_cleanup_pipeline(final_reply, ui=ui, data=data, tool_log=tool_log)
+        # 护栏只重试一次；重试后仍无平台查询证据时必须失败关闭。
+        # 不能因纠正额度用完便把模型虚构的店铺、售价或配送承诺交给用户。
+        if platform_facts and platform_sources and not _platform_rows_found(tool_log, platform_facts):
+            logger.warning('[agent] 平台实体无可用行，最终出口拒绝无来源回复 entity=%s', platform_facts)
+            what = '店铺及配送信息' if platform_facts == 'shop' else '在售商品与价格'
+            final_reply = ('本次查询暂未找到可核实的' + what + '，不能给出可靠的名单或承诺。' if _platform_queried(tool_log, platform_facts)
+                           else '暂时未能核实平台的' + what + '，现在不能给出可靠的名单或承诺。请稍后重试。')
+            ui, data = UIType.TEXT, {}
         # QA 意图 + 空回复兜底：不依赖 AGENT_INTENT_ROUTING_ENABLED（该开关只管是否
         # 限制模型工具范围）。classify() 是纯正则、零成本；生产默认路由关闭时
         # （route=None），知识问答的空壳回复此前没有任何兜底（2026-09-22 评测
@@ -2330,12 +2373,9 @@ class ReActAgent:
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info('[agent] 完成 阶段=%s ui=%s 耗时=%.0fms', new_stage.value, ui.value, elapsed)
         if on_event:
-            # 真流式（`_stream_llm` 逐字推 `text_delta`）已经推过，就不再重复推；
-            # 只有**一次都没推过**时才退回整段推一次 `text`（兼容非流式路径 / 全部被拦的情况）。
-            # ⚠️ 原实现是「把整段按句切碎 + sleep(0.03) 假装在流式」—— 那正是审计说的
-            # 「90 秒只推 2 个整段」的伪流式，现已由真 token 流取代（2026-09-18 P0-1）。
-            if not _any_pushed:
-                on_event({'event': 'text', 'content': final_reply or ''})
+            # 最终文本经过所有工具证据校验与安全清理后一次性发布。
+            # 模型 token 仍在后端流式读取，但不将未经验证的承诺推给用户。
+            on_event({'event': 'text', 'content': final_reply or ''})
             if ui and ui.value != 'text':
                 on_event({'event': 'card', 'ui': ui.value, 'data': data})
         # UI → 前端动作 / 能力标签 的映射集中在 agent/tools_meta.py（review 第 11 条）：
@@ -2446,6 +2486,15 @@ class ReActAgent:
             if self._validate_respond_data(ui, data) is None:
                 data = {}
             inferred_ui, inferred_data = self._derive_ui(tool_log, new_stage, final_reply)
+            # 模型只提供回复措辞，不提供交易/方案卡片实体。所有行动卡必须
+            # 由成功的可信工具产出；缺少工具证据时，即使字段齐全也不得出卡。
+            _trusted_cards = {UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD,
+                              UIType.PAY_JUMP, UIType.GREETING_CARD, UIType.IMAGE_TASK}
+            if ui in _trusted_cards:
+                if inferred_ui in _trusted_cards and inferred_data:
+                    ui, data = inferred_ui, inferred_data
+                else:
+                    ui, data = UIType.TEXT, {}
             _card_types = {UIType.DIALOG_OPTIONS, UIType.PLAN_CARD, UIType.SHOP_CARD, UIType.ORDER_CARD, UIType.PAY_JUMP}
             _data_effective = bool(data) and (not (ui == UIType.IMAGE_TASK and (not (data.get('task_id') or data.get('result_url')))))
             if not _data_effective:

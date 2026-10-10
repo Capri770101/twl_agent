@@ -1,10 +1,10 @@
 """商家联系单：登记用户诉求并返回店铺联系方式。
 
 设计边界（2026-10-09，与老板确认的职责划分）：
-- 智能体职责是**信息桥**——把用户诉求结构化登记（工单落 agent 自己的 PG）、
-  查出店铺电话给用户，让双方能立刻建立联系。
+- 智能体职责是**本地留痕与信息桥**——把用户诉求结构化登记（工单落 agent 自己的 PG）、
+  查出店铺电话给用户，让用户可以自行联系店铺；本地登记并不等于通知商家。
 - 真正的商家通知通道（企业微信、商家后台 IM）属于 H5/商家系统，本模块
-  **不实现**。他们接入时可以消费 merchant_tickets 表或提供工单 API。
+  **不实现也不发送**。他们未来可以消费 merchant_tickets 表或提供工单 API。
 - agent 只创建与查询工单，不改状态（open→forwarded/closed 由运维侧推进）。
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ def _clean(text: str, limit: int) -> str:
 
 async def contact_merchant(user_id: str, *, order_id: str = '', shop_id: str = '', shop_name: str = '',
                            category: str = 'general', summary: str = '', detail: str = '',
-                           contact_phone: str = '') -> dict:
+                           contact_phone: str = '', credential: str = '') -> dict:
     """登记一条商家联系单并返回店铺联系电话。
 
     Args:
@@ -44,6 +44,8 @@ async def contact_merchant(user_id: str, *, order_id: str = '', shop_id: str = '
     Returns:
         ok=True 时 data 里带 ticket_id、店铺 service_phone（若解析到）与
         status='open'；解析不到店铺时 service_phone 为 None，不阻断工单创建。
+        delivery_scope='local_only'、merchant_channel='channel_unavailable' 表示
+        本地留痕成功但未通知商家；订单号只有凭本人票据校验后才关联。
     """
     if not settings.CUSTOMER_SERVICE_ENABLED:
         return failure('UNSUPPORTED')
@@ -57,6 +59,12 @@ async def contact_merchant(user_id: str, *, order_id: str = '', shop_id: str = '
     order_id = _clean(order_id, 80)
     if order_id and not _ORDER_ID_RE.fullmatch(order_id):
         return failure('INVALID_ARGUMENT')
+    if order_id:
+        # 只能用请求上下文中的只读票据核实本人订单；失败时不落关联工单。
+        from backend.customer_service import query_orders
+        owned = await query_orders(credential, order_id=order_id)
+        if owned.get('ok') is not True:
+            return failure(owned.get('code', 'UPSTREAM_UNAVAILABLE'))
     shop_id = _clean(shop_id, 80)
     if shop_id and not _SHOP_ID_RE.fullmatch(shop_id):
         # 模型常把店名直接传进 shop_id——按名称关键词降级解析（与 query_shop_service 同思路）。
@@ -119,5 +127,11 @@ async def contact_merchant(user_id: str, *, order_id: str = '', shop_id: str = '
             'order_id': order_id or None, 'shop_id': resolved_shop_id or None,
             'shop_name': resolved_shop_name or None,
             'service_phone': service_phone,
-            'note': f'工单已登记，等待商家侧跟进。{phone_note}'}
+            'delivery_scope': 'local_only', 'merchant_channel': 'channel_unavailable',
+            'merchant_notified': False,
+            'order_ownership_verified': True if order_id else None,
+            'note': ('诉求仅在本地登记留痕，尚未发送给商家；商家通知通道未打通，'
+                     '不能保证商家看到或跟进。'
+                     + ('如需联系商家，请自行拨打下方店铺电话。' if service_phone else '')
+                     + phone_note)}
     return {'ok': True, 'data': data}

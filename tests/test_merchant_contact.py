@@ -68,11 +68,30 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_order_ticket_requires_verified_owner(pg, monkeypatch):
+    from backend import customer_service
+    async def not_owned(credential, *, order_id):
+        return failure('NOT_FOUND') if credential else failure('AUTH_REQUIRED')
+    monkeypatch.setattr(customer_service, 'query_orders', not_owned)
+    for credential, code in (('', 'AUTH_REQUIRED'), ('cs1.other', 'NOT_FOUND')):
+        result = _run(mc.contact_merchant('u1', order_id='OTHER_ORDER', summary='催单', credential=credential))
+        assert result['ok'] is False and result['code'] == code
+    from backend.storage import db
+    with db.transaction() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM merchant_tickets WHERE order_id='OTHER_ORDER'").fetchone()['n'] == 0
+
+
 def test_normal_ticket_with_phone(pg, monkeypatch):
     async def fake_shops(shop_id, city, **kw):
         return _shop() if shop_id == 's001' else failure('NOT_FOUND')
     monkeypatch.setattr(mc, 'query_shops', fake_shops)
+    from backend import customer_service
+    async def owned_order(credential, *, order_id):
+        assert credential == 'cs1.owner' and order_id == 'TLOCAL2026100807'
+        return {'ok': True, 'data': {'id': order_id}}
+    monkeypatch.setattr(customer_service, 'query_orders', owned_order)
     r = _run(mc.contact_merchant('u1', shop_id='s001', order_id='TLOCAL2026100807',
+                                credential='cs1.owner',
                                 category='after_sales', summary='花蔫了要求退款',
                                 detail='收到的花不新鲜', contact_phone='13900001001'))
     assert r['ok'] is True
@@ -80,6 +99,20 @@ def test_normal_ticket_with_phone(pg, monkeypatch):
     assert d['status'] == 'open' and d['service_phone'] == '13567675068'
     assert d['shop_name'] == '千百度花坊' and d['ticket_id'] > 0
     assert d['order_id'] == 'TLOCAL2026100807'
+    assert d['delivery_scope'] == 'local_only'
+    assert d['merchant_channel'] == 'channel_unavailable'
+    assert d['merchant_notified'] is False
+    assert d['order_ownership_verified'] is True
+    assert '仅在本地登记' in d['note'] and '尚未发送给商家' in d['note']
+    assert '请自行拨打' in d['note']
+    assert '等待商家侧跟进' not in d['note']
+    assert '未经本人订单所有权核验' not in d['note']
+    from backend.storage import db
+    with db.transaction() as conn:
+        row = conn.execute('SELECT user_id, order_id, shop_id, summary FROM merchant_tickets '
+                           'WHERE id = ?', (d['ticket_id'],)).fetchone()
+    assert row['user_id'] == 'u1' and row['order_id'] == 'TLOCAL2026100807'
+    assert row['shop_id'] == 's001' and row['summary'] == '花蔫了要求退款'
 
 
 def test_shop_name_fallback_when_id_is_chinese(pg, monkeypatch):
@@ -146,6 +179,14 @@ def test_shop_name_no_match_keeps_user_text(pg, monkeypatch):
     assert r['ok'] is True
     assert r['data']['service_phone'] is None
     assert r['data']['shop_name'] == '不存在花店'
+    assert r['data']['delivery_scope'] == 'local_only'
+    assert r['data']['merchant_channel'] == 'channel_unavailable'
+    assert r['data']['merchant_notified'] is False
+    assert r['data']['order_ownership_verified'] is None
+    assert '尚未发送给商家' in r['data']['note']
+    assert '未能解析到店铺电话' in r['data']['note']
+    assert '请自行拨打' not in r['data']['note']
+    assert '等待商家侧跟进' not in r['data']['note']
 
 
 def test_summary_required(pg):

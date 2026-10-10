@@ -198,6 +198,50 @@ def test_plain_text_reply(monkeypatch):
     assert '花艺小助手' in (resp.reply or '')
 
 
+def test_terminal_only_forged_plan_card_is_rejected(monkeypatch):
+    """模型伪造 plans 字段而未调任何产卡工具，绝不能显示方案卡。"""
+    turns = [_terminal('show_plan_card',
+                       '{"plans":[{"plan_id":"FAKE","name":"不存在的商品","price":199}],'
+                       '"reply":"这是你的方案","stage":"analyze"}')]
+    _install(monkeypatch, turns)
+    resp, _ = _run('看看')
+    assert getattr(resp.ui, 'value', resp.ui) != 'plan_card'
+    assert not (resp.data or {}).get('plans')
+
+
+def test_terminal_only_forged_payment_jump_is_rejected(monkeypatch):
+    """模型凭空填写订单号与付款入口不构成下单证据。"""
+    turns = [_terminal('respond_to_user',
+                       '{"ui":"pay_jump","data":{"order_id":"FAKE",'
+                       '"page_path":"/pay/FAKE"},"reply":"去付款吧",'
+                       '"stage":"analyze","intent":"chitchat"}')]
+    _install(monkeypatch, turns)
+    resp, _ = _run('随便看看')
+    assert getattr(resp.ui, 'value', resp.ui) != 'pay_jump'
+    assert not (resp.data or {}).get('order_id')
+
+
+def test_stream_only_publishes_validated_final_reply(monkeypatch):
+    """模型即使在终结 JSON 写假付款承诺，SSE 也不能先推未校验 token。"""
+    turns = [_terminal('respond_to_user',
+                       '{"ui":"pay_jump","data":{"order_id":"FAKE",'
+                       '"page_path":"/pay/FAKE"},"reply":"订单已创建，请去付款",'
+                       '"stage":"analyze","intent":"chitchat"}')]
+    _install(monkeypatch, turns)
+    resp, events = _run('随便看看')
+    assert not [e for e in events if e.get('event') == 'text_delta']
+    assert [e['content'] for e in events if e.get('event') == 'text'][-1] == resp.reply
+    assert getattr(resp.ui, 'value', resp.ui) == 'text'
+
+
+def test_empty_platform_rows_are_not_card_evidence():
+    from agent.engine.ui_protocol import ToolCallRecord
+    empty = ToolCallRecord(name='platform_db_query_entity', arguments={'entity': 'plan'},
+                           result='{"ok":true,"data":[]}', status='ok', source='model')
+    assert A._card_produced([empty]) is False
+    assert A._platform_rows_found([empty], 'plan') is False
+
+
 # ── 场景 2：DIY 方案卡（多轮 + 工具执行）──
 
 def test_diy_plan_card_flow(monkeypatch):
@@ -239,7 +283,8 @@ def test_platform_guard_triggers_retry(monkeypatch):
     fake = _install(monkeypatch, turns, facts='shop')
     resp, events = _run('平台上有哪些店铺？')
     assert fake.llm_calls['n'] >= 2, '护栏应注入纠正并要求重答（LLM 被调 ≥ 2 次）'
-    assert resp.reply, '重答后必须有回复'
+    assert '未能核实' in resp.reply and '我查了一下' not in resp.reply
+    assert getattr(resp.ui, 'value', resp.ui) == 'text'
 
 
 # ── 场景 4：清理链端到端生效 ──

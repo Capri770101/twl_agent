@@ -16,12 +16,22 @@ import asyncio
 import datetime as _dt
 import re
 import threading
+from zoneinfo import ZoneInfo
 
 from backend.config import settings
 from backend.storage.db import transaction
 
 _CRON_RE = re.compile(r'^[0-9*/,-]{1,60}$')  # 整串参考（含空格校验在 parse_cron 字段级做）
 _FIRST_RUN_RE = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
+_SHANGHAI = ZoneInfo('Asia/Shanghai')
+_UTC = _dt.timezone.utc
+
+
+def _shanghai_time(value: _dt.datetime) -> _dt.datetime:
+    """Naive API timestamps represent Shanghai wall time; aware timestamps are instants."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=_SHANGHAI)
+    return value.astimezone(_SHANGHAI)
 
 _FLD_RANGE = {
     'minute': (0, 59), 'hour': (0, 23), 'day': (1, 31),
@@ -87,16 +97,18 @@ def parse_cron(cron: str) -> dict[str, list[int]] | None:
 
 
 def _next_after(parsed: dict[str, list[int]], after: _dt.datetime) -> _dt.datetime | None:
-    """从 after 之后找下一个满足 cron 的时刻（最多向前搜 2 年）。
+    """Find the next Shanghai-local cron minute after ``after``, returning UTC.
 
-    标准 cron 语义：day-of-month 与 day-of-week 同时受限（均非 *）时取
-    **OR**（任一命中即可）；其中一个是 * 时用另一个。与 POSIX crontab 一致。
+    Naive ``after`` values are interpreted as Shanghai wall time for existing callers;
+    aware values represent instants. POSIX day-of-month/day-of-week restrictions
+    combine with OR when both are restricted.
     """
     day_restricted = len(parsed['day']) != 31
     py_weekday = _cron_weekday_to_python(parsed['weekday'])
     weekday_restricted = len(py_weekday) != 7
-    t = after.replace(second=0, microsecond=0) + _dt.timedelta(minutes=1)
-    limit = after + _dt.timedelta(days=730)
+    local_after = _shanghai_time(after)
+    t = local_after.replace(second=0, microsecond=0) + _dt.timedelta(minutes=1)
+    limit = local_after + _dt.timedelta(days=730)
     while t <= limit:
         if (t.minute in parsed['minute'] and t.hour in parsed['hour']
                 and t.month in parsed['month']):
@@ -107,7 +119,7 @@ def _next_after(parsed: dict[str, list[int]], after: _dt.datetime) -> _dt.dateti
             else:
                 matches = day_hit and weekday_hit
             if matches:
-                return t
+                return t.astimezone(_UTC)
         t += _dt.timedelta(minutes=1)
     return None
 
@@ -125,7 +137,7 @@ async def create_reminder(user_id: str, content: str, *, cron: str = '', first_r
         parsed = parse_cron(cron)
         if parsed is None:
             return {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': 'cron 格式不合法'}
-        next_run = _next_after(parsed, _dt.datetime.now())
+        next_run = _next_after(parsed, _dt.datetime.now(_UTC))
         if next_run is None:
             return {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': '两年内无可触发时间'}
         cron_val = cron
@@ -134,10 +146,11 @@ async def create_reminder(user_id: str, content: str, *, cron: str = '', first_r
         if not _FIRST_RUN_RE.fullmatch(first_run or ''):
             return {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': 'first_run 需为 YYYY-MM-DD HH:MM'}
         try:
-            next_run = _dt.datetime.strptime(first_run, '%Y-%m-%d %H:%M')
+            next_run = _dt.datetime.strptime(first_run, '%Y-%m-%d %H:%M').replace(
+                tzinfo=_SHANGHAI).astimezone(_UTC)
         except ValueError:
             return {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': 'first_run 日期不合法'}
-        if next_run <= _dt.datetime.now():
+        if next_run <= _dt.datetime.now(_UTC):
             return {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': '提醒时间须晚于当前时间'}
         cron_val = ''
         first_val = first_run
@@ -154,17 +167,24 @@ async def create_reminder(user_id: str, content: str, *, cron: str = '', first_r
     return {'ok': True, 'data': {'reminder_id': int(rid), 'content': content,
                                  'repeat': repeat, 'cron': cron_val or None,
                                  'first_run': first_val, 'next_run': next_run.isoformat(),
-                                 'note': '提醒已登记，到点会通过系统通知提醒你'}}
+                                  'next_run_local': next_run.astimezone(_SHANGHAI).strftime('%Y-%m-%d %H:%M'),
+                                  'timezone': 'Asia/Shanghai',
+                                 'note': '提醒已登记，到点将在站内通知收件箱显示；外部推送须由接入方另行接通'}}
 
 
 def _fire_due() -> int:
-    """扫 due 项 → 写 notifications + 推进/关闭。返回触发条数（调度器用）。"""
-    now = _dt.datetime.now()
+    """Atomically claim due rows and create notifications in one PostgreSQL transaction.
+
+    SKIP LOCKED lets other scheduler processes claim different rows immediately;
+    their inserts and schedule advances commit together (or roll back together).
+    """
+    now = _dt.datetime.now(_UTC)
     fired = 0
     with transaction() as conn:
         rows = conn.execute(
             'SELECT id, user_id, content, cron, repeat FROM reminders '
-            "WHERE status='active' AND next_run <= ? LIMIT 50", (now,)).fetchall()
+            "WHERE status='active' AND next_run <= ? "
+            'ORDER BY next_run, id LIMIT 50 FOR UPDATE SKIP LOCKED', (now,)).fetchall()
         for r in rows:
             conn.execute(
                 "INSERT INTO notifications (id, user_id, type, title, body) VALUES (?, ?, 'reminder', ?, ?)",
@@ -195,14 +215,19 @@ _sched_stop = threading.Event()
 
 
 def start_scheduler() -> None:
-    global _sched_thread
+    global _sched_thread, _sched_stop
     with _sched_lock:
         if _sched_thread and _sched_thread.is_alive():
             return
-        _sched_stop.clear()
+        # An event belongs to exactly one generation. Clearing the previous
+        # worker's event could resurrect it after a stop/start race.
+        stop_event = threading.Event()
+        _sched_stop = stop_event
 
         def _loop() -> None:
-            while not _sched_stop.wait(_SCHED_INTERVAL):
+            while not stop_event.wait(_SCHED_INTERVAL):
+                if stop_event.is_set():
+                    break
                 try:
                     _fire_due()
                 except Exception:  # noqa: BLE001 - 调度永不冒泡
@@ -214,4 +239,12 @@ def start_scheduler() -> None:
 
 
 def stop_scheduler() -> None:
-    _sched_stop.set()
+    global _sched_thread
+    with _sched_lock:
+        _sched_stop.set()
+        worker = _sched_thread
+        if worker is not None and worker is not threading.current_thread():
+            # Hold the lifecycle lock until termination so a concurrent start
+            # cannot mistake a shutting-down worker for a running scheduler.
+            worker.join()
+            _sched_thread = None
