@@ -125,6 +125,14 @@ def test_long_message_is_not_confirmation(monkeypatch):
     revise.assert_not_awaited()
 
 
+def test_concurrent_confirmation_conflict_is_reported(monkeypatch):
+    revise, _ = _confirm_env(monkeypatch)
+    revise.side_effect = ValueError('方案已被其他请求更新')
+    result = asyncio.run(draft.handle_confirmation('u', 's', '是的'))
+    assert '没有再次生成' in result.reply
+    assert '已按你确认' not in result.reply
+
+
 def test_yes_without_draft_is_normal_chat(monkeypatch):
     """没有草稿时「是的」是普通对话（如在回答别的问题），确认门不得吞掉。"""
     monkeypatch.setattr(draft.memory, 'get_session_json', AsyncMock(side_effect=[None]))

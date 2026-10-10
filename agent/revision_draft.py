@@ -60,7 +60,13 @@ async def handle_confirmation(uid, sid, message, store=None):
     if time.time() - draft.get('created_at', 0) > 1800 or not current or current.get('plan_id') != draft.get('base_plan_id'):
         return ChatResponse(user_id=uid, session_id=sid, stage='diy_design', reply='修改草稿已过期或当前方案已切换，请重新确认修改内容。')
     from agent.diy_tools import revise_diy_plan
-    raw = await revise_diy_plan(json.dumps(current), draft['summary'], {'user_id':uid,'session_id':sid,'revision_confirmed':True})
+    try:
+        raw = await revise_diy_plan(json.dumps(current), draft['summary'], {'user_id':uid,'session_id':sid,'revision_confirmed':True})
+    except ValueError:
+        # 版本入库按 sessions 行锁串行化；第二个同时确认的请求会因父版本
+        # 已切换被拒，不能让用户看到 500 或声称也生成了另一版。
+        return ChatResponse(user_id=uid, session_id=sid, stage='diy_design',
+                            reply='当前方案已被另一个请求更新，本次没有再次生成。请查看最新方案后重新提出修改。')
     plan = json.loads(raw)
     if plan.get('error'):
         return ChatResponse(user_id=uid, session_id=sid, stage='diy_design', reply=plan['error'])

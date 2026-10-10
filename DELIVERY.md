@@ -9,6 +9,7 @@
 - `cancel_my_order`、`apply_refund`、`update_order_address` 均明确返回 `CHANNEL_UNAVAILABLE`；不可对接方展示为已取消/已退款/已改址。
 - `contact_merchant` 仅在智能体本地留痕，`merchant_notified=false`；带订单号的工单须用 cs1 票据查到本人订单，否则拒绝关联。没有商家主动通知承诺。
 - 提醒按北京时间解释、以 UTC 入库存储；到点只写 `/api/notifications` 收件箱。接入方须自己消费并展示/推送，未接入前不能保证消费者收到通知。
+- 流式接口会流式读取模型和执行工具，但只有验证、清理后的最终文字才发给客户端；不再逐字显示未经证实的付款、工单投递和出图承诺。接入方须接受首字延迟可能上升，并以最终 `text`/`done` 事件为准。
 - 真实 H5/小程序联调、图片/语音供应商、生产数据库迁移与负载验收属于独立发布门槛。**未完成上述集成不得称完整交易版已上线。**
 
 ## 2. 交付内容
@@ -33,7 +34,7 @@
 
 ## 4. 本次验证记录
 
-当前候选在隔离测试库运行 `python -X utf8 -m pytest tests/ -q`，另以 `REMINDER_TEST_DATABASE_URL` 指向专用 PostgreSQL 测试库验证跨连接 `SKIP LOCKED`：**960 项收集、959 通过、0 失败、1 跳过**。跳过项是 Node/H5 签发凭据跨语言互通测试 `test_node_issued_credential_accepted_by_python`（须显式授权设置 `RUN_H5_INTEROP=1`，并提供相邻 H5 仓库及 Node）。未执行生产部署或真实手机验收；源码提交和 ZIP SHA-256 见包外交付清单。
+当前候选在隔离测试库运行 `python -X utf8 -m pytest tests/ -q`，另以 `REMINDER_TEST_DATABASE_URL` 指向专用 PostgreSQL 测试库验证跨连接 `SKIP LOCKED`：**964 项收集、963 通过、0 失败、1 跳过**。跳过项是 Node/H5 签发凭据跨语言互通测试 `test_node_issued_credential_accepted_by_python`（须显式授权设置 `RUN_H5_INTEROP=1`，并提供相邻 H5 仓库及 Node）。未执行生产部署或真实手机验收；源码提交和 ZIP SHA-256 见包外交付清单。
 
 历史记录（2026-09-29，基线 `58cf23c`）：
 

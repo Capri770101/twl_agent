@@ -983,6 +983,40 @@ def _platform_rows_found(tool_log: list[Any], entity: str) -> bool:
     return False
 
 
+def _unavailable_write_action(tool_log: list[Any]) -> str:
+    """返回本轮真实工具明确报告未接通的写操作，不信任模型话术。"""
+    actions = {'cancel_my_order': '取消订单', 'apply_refund': '申请退款',
+               'update_order_address': '修改收货地址'}
+    for tc in reversed(tool_log or []):
+        if getattr(tc, 'name', '') not in actions:
+            continue
+        try:
+            raw = getattr(tc, 'result', None)
+            result = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            continue
+        if isinstance(result, dict) and result.get('code') == 'CHANNEL_UNAVAILABLE':
+            return actions[tc.name]
+    return ''
+
+
+def _local_merchant_ticket(tool_log: list[Any]) -> dict:
+    """提取本轮仅本地留痕、未投递商家的可信工单结果。"""
+    for tc in reversed(tool_log or []):
+        if getattr(tc, 'name', '') != 'contact_merchant':
+            continue
+        try:
+            raw = getattr(tc, 'result', None)
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            continue
+        if isinstance(payload, dict) and payload.get('ok') is True:
+            data = payload.get('data') or {}
+            if isinstance(data, dict) and data.get('delivery_scope') == 'local_only':
+                return data
+    return {}
+
+
 def _platform_nudge_text(entity: str) -> str:
     """「未查证即作答」时注入的一次性纠正指令（只进本轮上下文，不落库）。"""
     sources = '、'.join(_platform_source_ids()) or '已配置数据源'
@@ -1017,6 +1051,13 @@ def _card_produced(tool_log: list[Any]) -> bool:
             continue
         name = getattr(tc, 'name', '')
         if name in _CARD_TOOLS:
+            try:
+                raw = getattr(tc, 'result', None)
+                payload = json.loads(raw) if isinstance(raw, str) else raw
+            except (ValueError, TypeError, AttributeError):
+                payload = None
+            if isinstance(payload, dict) and (payload.get('ok') is False or payload.get('error') or payload.get('validation_status') == 'blocked'):
+                continue
             return True
         if name == 'platform_db_query_entity':
             ent = str((getattr(tc, 'arguments', None) or {}).get('entity') or '')
@@ -2347,9 +2388,25 @@ class ReActAgent:
         # （原先这 8 步是硬编码散在这里的，顺序语义只能靠读代码推断 —— review 第 2 条）。
         # ⚠️ 改清理逻辑请改那张表，不要在这里加调用。
         final_reply = _run_cleanup_pipeline(final_reply, ui=ui, data=data, tool_log=tool_log)
+        unavailable_action = _unavailable_write_action(tool_log)
+        if unavailable_action:
+            final_reply = f'{unavailable_action}的服务端渠道暂未打通，这次操作未执行。请在小程序订单页办理，或自行联系商家。'
+            ui, data = UIType.TEXT, {}
+        local_ticket = _local_merchant_ticket(tool_log)
+        if local_ticket:
+            notice = '诉求仅在本服务本地登记，尚未发送给商家；商家联系渠道暂未打通。'
+            if re.search(r'已(?:经)?[^。！？\n]{0,12}(?:联系|通知|转交|发送|提交给)[^。！？\n]{0,12}商家|商家.{0,8}(?:会|将|正在).{0,5}跟进|等待商家.{0,5}跟进|已转人工', final_reply):
+                ticket_id = local_ticket.get('ticket_id')
+                final_reply = (f'本地登记号：{ticket_id}。' if ticket_id else '') + notice
+                phone = local_ticket.get('service_phone')
+                if phone:
+                    final_reply += f'门店电话：{phone}，可自行联系。'
+                ui, data = UIType.TEXT, {}
+            elif not any(w in final_reply for w in ('尚未发送给商家', '未通知商家', '渠道暂未打通')):
+                final_reply = final_reply.rstrip() + '\n' + notice
         # 护栏只重试一次；重试后仍无平台查询证据时必须失败关闭。
         # 不能因纠正额度用完便把模型虚构的店铺、售价或配送承诺交给用户。
-        if platform_facts and platform_sources and not _platform_rows_found(tool_log, platform_facts):
+        if platform_facts and platform_sources and not unavailable_action and not local_ticket and not _platform_rows_found(tool_log, platform_facts):
             logger.warning('[agent] 平台实体无可用行，最终出口拒绝无来源回复 entity=%s', platform_facts)
             what = '店铺及配送信息' if platform_facts == 'shop' else '在售商品与价格'
             final_reply = ('本次查询暂未找到可核实的' + what + '，不能给出可靠的名单或承诺。' if _platform_queried(tool_log, platform_facts)
@@ -3108,8 +3165,8 @@ class ReActAgent:
                     result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result or {}
                 except (json.JSONDecodeError, TypeError):
                     result = {}
-                if isinstance(result, dict) and result.get('error'):
-                    # 工具自身返回 {error}（如下单/渲染失败）：不产卡片，回退 text 如实播报
+                if not isinstance(result, dict) or result.get('error') or result.get('ok') is False or result.get('validation_status') == 'blocked':
+                    # 传输 status=ok 只表示函数执行完，不等于业务成功。
                     continue
                 # platform_db_query_entity 返回 tool_result 封装 {ok, data:[规范行], error}，
                 # 按调用参数的 entity 分流：plan → plan_card、shop → shop_card；失败/空结果不产卡片。

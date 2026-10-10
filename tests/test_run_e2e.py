@@ -242,6 +242,46 @@ def test_empty_platform_rows_are_not_card_evidence():
     assert A._platform_rows_found([empty], 'plan') is False
 
 
+def test_business_failed_tool_is_not_a_plan_card():
+    from agent.engine.ui_protocol import ToolCallRecord
+    record = ToolCallRecord(name='generate_diy_plan', arguments={},
+                            result='{"ok":false,"error":"方案未通过硬约束校验",'
+                                   '"validation_status":"blocked"}', status='ok', source='model')
+    assert A._card_produced([record]) is False
+    ui, data = ReActAgent()._derive_ui([record], A.SessionStage.ANALYZE, '方案已生成')
+    assert ui.value == 'text' and data == {}
+
+
+def test_unavailable_refund_cannot_be_reported_as_success(monkeypatch):
+    turns = [
+        _terminal('apply_refund', '{"order_id":"o1"}', 'c1'),
+        _terminal('respond_to_user', '{"ui":"text","data":{},'
+                  '"reply":"退款已经申请成功。","intent":"after_sales"}', 'c2'),
+    ]
+    _install(monkeypatch, turns, tool_results={
+        'apply_refund': '{"ok":false,"code":"CHANNEL_UNAVAILABLE"}'}, facts='shop')
+    resp, events = _run('帮我申请退款')
+    assert '渠道暂未打通' in resp.reply and '未执行' in resp.reply
+    assert '退款已经申请成功' not in resp.reply
+    assert getattr(resp.ui, 'value', resp.ui) == 'text'
+    assert [e['content'] for e in events if e.get('event') == 'text'][-1] == resp.reply
+
+
+def test_local_ticket_cannot_claim_merchant_notified(monkeypatch):
+    turns = [
+        _terminal('contact_merchant', '{"summary":"催单"}', 'c1'),
+        _terminal('respond_to_user', '{"ui":"text","data":{},'
+                  '"reply":"已经帮你联系了商家，商家会跟进。","intent":"customer_service"}', 'c2'),
+    ]
+    _install(monkeypatch, turns, tool_results={
+        'contact_merchant': '{"ok":true,"data":{"ticket_id":7,'
+                            '"delivery_scope":"local_only","merchant_notified":false,'
+                            '"service_phone":"13567675068"}}'}, facts='shop')
+    resp, _ = _run('联系商家催一下')
+    assert '尚未发送给商家' in resp.reply and '商家会跟进' not in resp.reply
+    assert '13567675068' in resp.reply
+
+
 # ── 场景 2：DIY 方案卡（多轮 + 工具执行）──
 
 def test_diy_plan_card_flow(monkeypatch):
