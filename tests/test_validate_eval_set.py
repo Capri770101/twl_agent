@@ -64,6 +64,22 @@ def test_duplicate_id_and_overlapping_tools_fail(tmp_path, case):
         validate(write_cases(tmp_path, case))
 
 
+def test_routing_policy_source_rejects_duplicate_and_missing_fields(tmp_path, monkeypatch):
+    from scripts import validate_eval_set
+
+    policy = tmp_path / 'agent' / 'orchestration' / 'policies' / 'routing.json'
+    policy.parent.mkdir(parents=True)
+    base = {'name': 'buying', 'route_name': 'buying', 'max_iterations': 3,
+            'tools': ['respond_to_user']}
+    monkeypatch.setattr(validate_eval_set, 'ROOT', tmp_path)
+    policy.write_text(json.dumps([base, base]), encoding='utf-8')
+    with pytest.raises(ValueError, match='duplicate routing policy'):
+        validate_eval_set._intents()
+    policy.write_text(json.dumps([{'name': 'buying', 'route_name': 'buying'}]), encoding='utf-8')
+    with pytest.raises(ValueError, match='invalid fields'):
+        validate_eval_set._intents()
+
+
 def test_non_object_and_malformed_json_fail(tmp_path):
     path = tmp_path / 'bad.jsonl'
     path.write_text('[]\n', encoding='utf-8')

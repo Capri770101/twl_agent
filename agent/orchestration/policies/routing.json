@@ -1,0 +1,46 @@
+[
+  {
+    "name": "reminder", "route_name": "reminder", "max_iterations": 3,
+    "tools": ["set_reminder", "manage_my_reminders", "query_my_orders", "respond_to_user", "show_options"]
+  },
+  {
+    "name": "customer_service_orders", "route_name": "customer_service", "max_iterations": 3,
+    "tools": ["query_my_orders", "query_my_after_sales", "query_my_tickets", "contact_merchant", "cancel_my_order", "apply_refund", "respond_to_user", "show_options"]
+  },
+  {
+    "name": "customer_service_tickets", "route_name": "customer_service", "max_iterations": 3,
+    "tools": ["query_my_tickets", "respond_to_user"]
+  },
+  {
+    "name": "shop_service_reviews", "route_name": "shop_service", "max_iterations": 3,
+    "tools": ["query_shop_service", "query_shop_reviews", "respond_to_user", "show_options"]
+  },
+  {
+    "name": "customer_service_contact", "route_name": "customer_service", "max_iterations": 3,
+    "tools": ["query_my_orders", "query_my_after_sales", "query_shop_service", "query_my_tickets", "contact_merchant", "respond_to_user", "show_options"]
+  },
+  {
+    "name": "shop_service_info", "route_name": "shop_service", "max_iterations": 3,
+    "tools": ["query_shop_service", "respond_to_user", "show_options"]
+  },
+  {
+    "name": "image", "route_name": "image", "max_iterations": 2,
+    "tools": ["generate_effect_image", "respond_to_user"]
+  },
+  {
+    "name": "greeting", "route_name": "greeting", "max_iterations": 3,
+    "tools": ["suggest_greetings", "render_greeting_card", "respond_to_user", "show_options"]
+  },
+  {
+    "name": "design", "route_name": "design", "max_iterations": 4,
+    "tools": ["retrieve_knowledge", "generate_diy_plan", "revise_diy_plan", "prepare_revision", "generate_effect_image", "respond_to_user", "show_plan_card", "show_options", "get_user_profile"]
+  },
+  {
+    "name": "qa", "route_name": "qa", "max_iterations": 2,
+    "tools": ["retrieve_knowledge", "respond_to_user", "search_history", "get_user_profile"]
+  },
+  {
+    "name": "buying", "route_name": "buying", "max_iterations": 3,
+    "tools": ["platform_db_query_entity", "retrieve_knowledge", "respond_to_user", "show_plan_card", "show_options", "search_history", "get_user_profile"]
+  }
+]

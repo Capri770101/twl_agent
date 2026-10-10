@@ -95,10 +95,10 @@ def main() -> int:
     base = args.base_url.rstrip('/')
     api_key = os.getenv('EVAL_PLATFORM_API_KEY', '')
     cases = load_cases(args.cases)
-    cs_token = customer_credential(client, args.customer_mock) if args.customer_mock else ''
     run_id = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
     results: list[dict[str, Any]] = []
     with httpx.Client(timeout=args.timeout, verify=not args.insecure) as client:
+        cs_token = customer_credential(client, args.customer_mock) if args.customer_mock else ''
         for case in cases:
             started = time.perf_counter()
             row: dict[str, Any] = {'id': case['id'], 'message': case['message']}

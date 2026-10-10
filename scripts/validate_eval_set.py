@@ -38,11 +38,30 @@ def _ui_types() -> set[str]:
 
 
 def _intents() -> set[str]:
-    source = ROOT / 'agent' / 'engine' / 'intent.py'
-    tree = ast.parse(source.read_text(encoding='utf-8'), filename=str(source))
-    return {node.args[0].value for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'IntentRoute'
-            and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)}
+    source = ROOT / 'agent' / 'orchestration' / 'policies' / 'routing.json'
+    def reject_constant(value: str) -> None:
+        raise ValueError(f'non-standard routing JSON constant: {value}')
+
+    records = json.loads(source.read_text(encoding='utf-8'), parse_constant=reject_constant)
+    if not isinstance(records, list) or not records:
+        raise ValueError('routing policy must be a non-empty array')
+    names: set[str] = set()
+    policy_keys: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {'name', 'route_name', 'max_iterations', 'tools'}:
+            raise ValueError('routing policy has invalid fields')
+        if any(not isinstance(record[key], str) or not record[key].strip() for key in ('name', 'route_name')):
+            raise ValueError('routing policy has invalid name')
+        if record['name'] in policy_keys:
+            raise ValueError(f'duplicate routing policy: {record["name"]}')
+        policy_keys.add(record['name'])
+        if type(record['max_iterations']) is not int or record['max_iterations'] <= 0:
+            raise ValueError('routing policy has invalid max_iterations')
+        tools = record['tools']
+        if not isinstance(tools, list) or not tools or any(not isinstance(tool, str) or not tool.strip() for tool in tools) or len(tools) != len(set(tools)):
+            raise ValueError('routing policy has invalid tools')
+        names.add(record['route_name'])
+    return names
 
 
 def validate(path: Path = DEFAULT_CASES) -> int:
