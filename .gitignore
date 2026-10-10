@@ -17,3 +17,5 @@ scripts/_tmp_*.py
 dsh_computer_use/
 .dsh_computer_use/
 overview.md
+.venv/
+venv/
