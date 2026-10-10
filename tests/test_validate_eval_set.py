@@ -22,7 +22,8 @@ def write_cases(tmp_path: Path, *cases: dict) -> Path:
 
 
 def test_committed_suite_including_customer_service_cases():
-    assert validate() == 12
+    # 基准集只设下限不设上限：扩充场景不应破坏本测试，缩水则必须被拦下。
+    assert validate() >= 30
 
 
 @pytest.mark.parametrize(('field', 'value', 'error'), [

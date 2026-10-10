@@ -22,16 +22,22 @@ def test_empty_shop_knowledge_domain_is_not_advertised():
     assert 'colors' in text
 
 
-def test_knowledge_overview_counts_match_current_static_json():
+def test_knowledge_static_domains_are_nonempty_and_consistent():
+    """每个静态域 JSON 必须存在、非空，且与清单 core_domains 一致。
+
+    原版本断言 docs/知识库概览.md 中的条目计数（该文档已于 2026-10-11 归档）。
+    数据源真相改为直接校验 JSON 本体与 knowledge_manifest.json 的一致性。
+    """
     root = Path(__file__).resolve().parents[1]
-    overview = (root / 'docs' / '知识库概览.md').read_text(encoding='utf-8')
     knowledge = root / 'agent' / 'knowledge'
+    manifest = json.loads((knowledge / 'knowledge_manifest.json').read_text(encoding='utf-8'))
+    static_domains = {d for d in _DOMAINS if d != 'proven'}
+    assert set(manifest['core_domains']) == static_domains
     total = 0
-    for domain, filename in _DOMAINS.items():
-        if domain == 'proven':
-            continue
-        count = len(json.loads((knowledge / filename).read_text(encoding='utf-8')))
-        assert f'| `{domain}` | `{filename}` | {count} |' in overview
-        total += count
-    assert f'静态域合计 **{total} 条**' in overview
-    assert '`shop` **不是知识检索域**' in overview
+    for domain in sorted(static_domains):
+        filename = _DOMAINS[domain]
+        entries = json.loads((knowledge / filename).read_text(encoding='utf-8'))
+        assert len(entries) > 0, f'domain {domain} ({filename}) must not be empty'
+        total += len(entries)
+    assert total > 0
+    assert 'shop' not in static_domains
