@@ -1,6 +1,7 @@
 """本人商家联系单查询：仅展示智能体本地登记状态，不代表商家已接收。"""
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 
 from backend.auth import current_sensitive_user
@@ -37,13 +38,18 @@ async def list_my_tickets(limit: int = 20, offset: int = 0,
     uid = _identity(user_id)
     limit = max(1, min(limit, 100))
     offset = max(0, min(offset, 10000))
+    rows = await asyncio.to_thread(_list_ticket_rows, uid, limit, offset)
+    return {'ok': True, 'data': {'items': [_ticket(row) for row in rows],
+                                 'limit': limit, 'offset': offset}}
+
+
+def _list_ticket_rows(uid: str, limit: int, offset: int) -> list[dict]:
     with transaction() as conn:
         rows = conn.execute(
             'SELECT id, order_id, shop_id, shop_name, category, summary, status, created_at, updated_at '
             'FROM merchant_tickets WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
             (uid, limit, offset)).fetchall()
-    return {'ok': True, 'data': {'items': [_ticket(row) for row in rows],
-                                 'limit': limit, 'offset': offset}}
+        return [dict(row) for row in rows]
 
 
 @router.get('/{ticket_id}')
@@ -51,12 +57,17 @@ async def get_my_ticket(ticket_id: int, user_id: str | None = Depends(current_se
     uid = _identity(user_id)
     if ticket_id < 1:
         raise HTTPException(status_code=404, detail='事项不存在')
+    row = await asyncio.to_thread(_get_ticket_row, ticket_id, uid)
+    if not row:
+        # 不区分不存在与他人事项，不泄露记录是否存在。
+        raise HTTPException(status_code=404, detail='事项不存在')
+    return {'ok': True, 'data': _ticket(row, include_detail=True)}
+
+
+def _get_ticket_row(ticket_id: int, uid: str) -> dict | None:
     with transaction() as conn:
         row = conn.execute(
             'SELECT id, order_id, shop_id, shop_name, category, summary, detail, contact_phone, '
             'status, created_at, updated_at FROM merchant_tickets WHERE id = ? AND user_id = ?',
             (ticket_id, uid)).fetchone()
-    if not row:
-        # 不区分不存在与他人事项，不泄露记录是否存在。
-        raise HTTPException(status_code=404, detail='事项不存在')
-    return {'ok': True, 'data': _ticket(row, include_detail=True)}
+        return dict(row) if row else None
