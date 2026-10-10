@@ -27,6 +27,11 @@ async def get_or_create_session(user_id: str, conversation_id: str | None = None
                                 entry: str | None = None, product_id: str | None = None,
                                 product_title: str | None = None) -> str:
     """获取或创建会话；首次创建时写入入口上下文（店铺锁定 / 商品上下文）。"""
+    return await asyncio.to_thread(_get_or_create_session, user_id, conversation_id, shop_id, entry, product_id, product_title)
+
+
+def _get_or_create_session(user_id: str, conversation_id: str | None, shop_id: str | None,
+                           entry: str | None, product_id: str | None, product_title: str | None) -> str:
     if conversation_id:
         with transaction() as conn:
             row = conn.execute('SELECT session_id, user_id FROM sessions WHERE session_id = ?', (conversation_id,)).fetchone()
@@ -68,6 +73,10 @@ def _create_conversation(user_id: str, title: str, shop_id: str | None, entry: s
 
 async def save_messages(session_id: str, messages: list[dict[str, Any]]) -> None:
     """批量保存消息（单事务，避免逐条提交）。"""
+    await asyncio.to_thread(_save_messages, session_id, messages)
+
+
+def _save_messages(session_id: str, messages: list[dict[str, Any]]) -> None:
     rows: list[tuple[Any, ...]] = []
     for msg in messages:
         ui = json.dumps(msg['ui'], ensure_ascii=False) if msg.get('ui') else None
@@ -185,6 +194,10 @@ async def set_session_json(user_id: str, session_id: str, key: str, value: Any) 
 
 async def store_plan_version(user_id: str, session_id: str, plan: dict) -> dict:
     """会话行锁保护快照编号和当前方案的同一事务写入。"""
+    return await asyncio.to_thread(_store_plan_version, user_id, session_id, plan)
+
+
+def _store_plan_version(user_id: str, session_id: str, plan: dict) -> dict:
     import copy
     with transaction() as conn:
         row = conn.execute('SELECT user_id FROM sessions WHERE session_id = ? FOR UPDATE', (session_id,)).fetchone()
@@ -304,6 +317,10 @@ async def search_user_history(user_id: str, query: str = '', limit: int = 8, exc
 
 
 async def save_message(conversation_id: str, role: str, content: str, ui: Any = None, data: Any = None) -> None:
+    await asyncio.to_thread(_save_message, conversation_id, role, content, ui, data)
+
+
+def _save_message(conversation_id: str, role: str, content: str, ui: Any, data: Any) -> None:
     with transaction() as conn:
         conn.execute('INSERT INTO messages(session_id, role, content, ui, data, created_at) VALUES (?,?,?,?,?,?)',
                      (conversation_id, role, content,
