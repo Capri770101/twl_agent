@@ -140,38 +140,34 @@ def test_empty_choices_chunk_is_safe(monkeypatch) -> None:
     assert msg.tool_calls is None
 
 
-# ── 防回归：主循环的流式分支／非流式分支不能交叉引用变量 ────────────────────────
-#
-# 真实事故（2026-09-18 部署后第一次实测就炸）：把 `resp = call_llm(...)` 改成
-# `if on_event: msg = _stream_llm(...) else: resp = call_llm(...)` 之后，
-# **紧随其后残留了旧代码 `msg = resp.choices[0].message`** —— 流式分支下 `resp`
-# 未赋值，抛 UnboundLocalError，SSE 直接回 error 事件、用户什么都看不到。
-# 这类"分支变量交叉引用"单元测试很难覆盖（要跑整个 run()），但静态可查。
+# ── 双模型入口：行为回归，避免源码字符串检查随模块拆分失效 ──
 
-def test_run_has_no_stale_resp_assignment() -> None:
-    """`msg = resp...` 只应出现 **1 处**（else 非流式分支里）。
+def test_run_llm_stream_and_nonstream_both_produce_final_reply(monkeypatch) -> None:
+    import asyncio
+    from types import SimpleNamespace
+    from tests.test_run_e2e import _install, _run, _terminal
 
-    事故复盘：改成双分支后，紧随其后残留了一行同名的 `msg = resp.choices[0].message`
-    —— 它在 else 分支之外，缩进与 if 同级，**流式路径下必然 UnboundLocalError**。
-    这里用"出现次数"作判据（残留会变成 2 处），比缩进判断稳健。
-    """
-    import inspect
-    import re
+    turns = [_terminal('respond_to_user',
+                       '{"reply":"你好呀","ui":"text","data":{},"stage":"analyze"}')]
+    _install(monkeypatch, turns)
+    monkeypatch.setattr(A.ReActAgent, '_check_guards', lambda self, **kwargs: None)
+    monkeypatch.setattr(A, '_needs_card_nudge', lambda *args, **kwargs: False)
+    streamed, events = _run('今天心情不太好，可以陪我聊两句吗？')
+    assert streamed.reply.startswith('你好呀')
+    assert any(event['event'] == 'text' for event in events)
 
-    src = inspect.getsource(A.ReActAgent.run)
-    hits = re.findall(r'^\s*msg\s*=\s*resp\b', src, re.M)
-    assert len(hits) <= 1, f'出现 {len(hits)} 处 `msg = resp...`，流式路径下会 UnboundLocalError'
-
-
-def test_run_assigns_msg_in_both_branches() -> None:
-    """两个分支都必须给 msg 赋值，否则后续解析必然出错。"""
-    import inspect
-    import re
-
-    src = inspect.getsource(A.ReActAgent.run)
-    assert re.search(r'msg\s*=\s*self\._stream_llm\(', src), '流式分支没给 msg 赋值'
-    assert re.search(r'resp\s*=\s*call_llm\(', src), '非流式分支没调 call_llm'
-    assert re.search(r'msg\s*=\s*resp\.choices\[0\]\.message', src), '非流式分支没给 msg 赋值'
+    _install(monkeypatch, turns)
+    calls = []
+    def fake_llm(*args, **kwargs):
+        calls.append(kwargs)
+        tool_call = SimpleNamespace(id='c1', function=SimpleNamespace(
+            name='respond_to_user', arguments='{"reply":"你好呀","ui":"text","data":{},"stage":"analyze"}'))
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content='', tool_calls=[tool_call]))])
+    monkeypatch.setattr(A, 'call_llm', fake_llm)
+    response = asyncio.run(A.ReActAgent().run('u_test', '今天心情不太好，可以陪我聊两句吗？', 'sid_test', None))
+    assert response.reply.startswith('你好呀')
+    assert calls and calls[0]['timeout'] > 0
 
 
 # ── 终结工具 reply 参数的流式解析 ─────────────────────────────────────────

@@ -7,10 +7,103 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger('agent')
+
+
+@dataclass
+class LoopResult:
+    response: dict[str, Any] | None
+    reply: str
+    tool_log: list[Any]
+    new_messages: list[dict[str, Any]]
+
+
+async def execute_react_loop(
+    messages: list[dict[str, Any]], *, user_message: str, max_iterations: int,
+    deadline: float, min_iteration_budget: float, stage_label: str,
+    get_message: Callable[[list[dict[str, Any]], float], Any],
+    parse_calls: Callable[[Any], list[dict[str, Any]]],
+    execute: Callable[[str, dict[str, Any], Mapping[str, Any]], Awaitable[tuple[str, str]]],
+    tool_context: Mapping[str, Any], terminal_tools: frozenset[str],
+    deferred_tools: frozenset[str], on_error: Callable[[str, BaseException], str],
+    make_record: Callable[[dict[str, Any], str, str], Any],
+    guard: Callable[[list[Any], str, bool], tuple[str, str] | None],
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> LoopResult:
+    """Run only model/tool/guard orchestration, never publish unvalidated text.
+
+    Business policy and hard authorization stay in the injected guard/execute
+    callbacks. The caller owns post-processing, persistence and final SSE output.
+    """
+    tool_log: list[Any] = []
+    response: dict[str, Any] | None = None
+    reply = ''
+    new_messages: list[dict[str, Any]] = [{'role': 'user', 'content': user_message}]
+    for turn in range(1, max_iterations + 1):
+        remaining = deadline - clock()
+        if remaining <= min_iteration_budget:
+            logger.warning('[agent] 时间预算耗尽（剩余 %.1fs），第 %d 轮主动收尾', remaining, turn)
+            reply = reply or '这个问题有点绕，我先给你一个初步建议；要更细致的可以咱们分步慢慢聊～'
+            break
+        logger.info('[agent] ReAct 第 %d/%d 轮 阶段=%s', turn, max_iterations, stage_label)
+        try:
+            msg = get_message(messages, remaining)
+        except Exception:
+            logger.exception('[agent] LLM 调用失败')
+            reply = '抱歉，我这边服务暂时开小差了，请稍后再试一次～'
+            break
+        calls = parse_calls(msg)
+        if calls:
+            assistant_message = {'role': 'assistant', 'content': getattr(msg, 'content', '') or '',
+                                 'tool_calls': [{'id': tc['id'], 'type': 'function',
+                                                 'function': {'name': tc['name'], 'arguments': json.dumps(tc['arguments'], ensure_ascii=False)}}
+                                                for tc in calls]}
+            messages.append(assistant_message)
+            new_messages.append({**assistant_message, 'content': ''})
+            results, batch_response = await execute_batch(
+                calls, tool_context, execute=execute, terminal_tools=terminal_tools,
+                deferred_tools=deferred_tools, on_error=on_error)
+            if batch_response is not None:
+                response = batch_response
+            for index in sorted(results):
+                call = calls[index]
+                result, status = results[index]
+                if status != 'terminal':
+                    tool_log.append(make_record(call, result, status))
+                    if on_event:
+                        on_event({'event': 'tool_call', 'name': call['name'], 'status': status})
+                tool_message = {'role': 'tool', 'content': result, 'tool_call_id': call.get('id', '')}
+                messages.append(tool_message)
+                new_messages.append(tool_message)
+            if response is not None:
+                hit = guard(tool_log, str((response or {}).get('reply') or reply or ''), False)
+                if hit:
+                    messages.append({'role': 'user', 'content': hit[1]})
+                    response = None
+                    continue
+                break
+            continue
+        reply = getattr(msg, 'content', '') or ''
+        hit = guard(tool_log, reply, True)
+        if hit:
+            messages.append({'role': 'assistant', 'content': reply})
+            messages.append({'role': 'user', 'content': hit[1]})
+            reply = ''
+            continue
+        messages.append({'role': 'assistant', 'content': reply})
+        break
+    else:
+        if any(tc.status == 'ok' for tc in tool_log):
+            reply = reply or '我已经为你整理好相关结果啦，请查看下方卡片～'
+        else:
+            reply = reply or '抱歉，我思考得太久啦，请简化需求或分步骤再问我～'
+    return LoopResult(response, reply, tool_log, new_messages)
 
 
 async def execute_batch(

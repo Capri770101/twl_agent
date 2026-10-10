@@ -37,7 +37,7 @@ from agent.safety.formatter import (
 from agent.knowledge_answer import knowledge_fallback_reply as _knowledge_fallback_reply
 from agent.engine.tool_scope import scoped_tools, active_tools
 from agent.engine.intent import classify
-from agent.orchestration.executor import execute_batch
+from agent.orchestration.executor import execute_react_loop
 from agent.orchestration.context import (
     trim_history_for_llm as _trim_history_for_llm,
     latest_plan_summary as _latest_plan_summary,
@@ -1973,115 +1973,44 @@ class ReActAgent:
         messages: list[dict[str, Any]] = [{'role': 'system', 'content': system}]
         messages += history_for_llm
         messages.append({'role': 'user', 'content': message})
-        tool_log: list[ToolCallRecord] = []
-        respond_args: dict[str, Any] | None = None
-        final_reply = ''
-        new_msgs: list[dict[str, Any]] = [{'role': 'user', 'content': message}]
-        max_iterations = route.max_iterations if route else settings.max_iterations
-        for turn in range(1, max_iterations + 1):
-            _remaining = _deadline - time.perf_counter()
-            if _remaining <= _MIN_ITER_BUDGET:
-                logger.warning('[agent] 时间预算耗尽（剩余 %.1fs），第 %d 轮主动收尾', _remaining, turn)
-                final_reply = final_reply or '这个问题有点绕，我先给你一个初步建议；要更细致的可以咱们分步慢慢聊～'
-                break
-            logger.info('[agent] ReAct 第 %d/%d 轮 阶段=%s', turn, settings.max_iterations, stage.value)
-            try:
-                # 按本轮剩余预算收紧单次 LLM 超时，避免「8 轮 × 3 重试 × 120s」把整轮拖长。
-                # SSE 仍以流式读取模型以缩短工具轮等待，但文字只能在所有
-                # 工具执行、护栏与最终清理后公开。模型 JSON reply 的增量可能
-                # 先谎称已下单/已出图，再被护栏否决；回滚也无法消除已看到的内容。
-                if on_event is not None:
-                    def _validated_events(event):
-                        if event.get('event') not in ('text_delta', 'text_rollback'):
-                            on_event(event)
-                    msg = self._stream_llm(messages, _validated_events, _remaining)
-                else:
-                    resp = call_llm(messages, tools=to_openai_tools(compact=True), timeout=min(settings.llm_timeout, _remaining), user_id=user_id)
-                    msg = resp.choices[0].message
-            except Exception as exc:
-                # 安全：原始异常只落服务端日志（含完整 traceback），绝不回显给用户，避免泄露
-                # endpoint / 模型 ID / 密钥前缀 / 内部堆栈等敏感信息（K-1 修复）。
-                logger.exception('[agent] LLM 调用失败')
-                final_reply = '抱歉，我这边服务暂时开小差了，请稍后再试一次～'
-                break
-            # 注意：`msg` 已在上面两个分支里分别赋值（流式 / 非流式），此处**不能**再写
-            # `msg = resp.choices[0].message` —— 流式分支里没有 `resp`，会 UnboundLocalError。
-            tool_calls = self._parse_tool_calls(msg)
-            if tool_calls:
-                assistant_msg = {'role': 'assistant', 'content': getattr(msg, 'content', '') or '', 'tool_calls': [{'id': tc['id'], 'type': 'function', 'function': {'name': tc['name'], 'arguments': json.dumps(tc['arguments'], ensure_ascii=False)}} for tc in tool_calls]}
-                messages.append(assistant_msg)
-                new_msgs.append({**assistant_msg, 'content': ''})
-                # 会话事实与权限仍由调用方提供；执行器不识别任何花艺/客服业务。
-                tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
-                            'shop_id': shop_id, 'entry': entry, 'product_id': product_id,
-                            'product_title': product_title, 'requirement': req_acc, 'customer_credential': customer_credential,
-                            'user_message': message, 'ticket_access_verified': ticket_access_verified}
-                results, batch_response = await execute_batch(
-                    tool_calls, tool_ctx, execute=execute_tool,
-                    terminal_tools=_TERMINAL_TOOLS, deferred_tools=_DEFERRED_TOOLS,
-                    on_error=_tool_error_result,
-                )
-                if batch_response is not None:
-                    respond_args = batch_response
+        def _model_message(transcript: list[dict[str, Any]], remaining: float) -> Any:
+            # Tool-turn text is never public; SSE emits only final validated text.
+            if on_event is not None:
+                def _validated_events(event: dict) -> None:
+                    if event.get('event') not in ('text_delta', 'text_rollback'):
+                        on_event(event)
+                return self._stream_llm(transcript, _validated_events, remaining)
+            response = call_llm(transcript, tools=to_openai_tools(compact=True),
+                                timeout=min(settings.llm_timeout, remaining), user_id=user_id)
+            return response.choices[0].message
 
-                for i in sorted(results):
-                    tc = tool_calls[i]
-                    result, status = results[i]
-                    if status == 'terminal':
-                        messages.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
-                        new_msgs.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
-                        continue
-                    record = ToolCallRecord(name=tc['name'], arguments=tc['arguments'], result=result, status=status, source='model')
-                    tool_log.append(record)
-                    if on_event:
-                        on_event({'event': 'tool_call', 'name': tc['name'], 'status': status})
-                    messages.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
-                    new_msgs.append({'role': 'tool', 'content': result, 'tool_call_id': tc.get('id', '')})
-                if respond_args is not None:
-                    # 平台事实类提问却整轮没查过平台 → 不让模型凭想象作答。
-                    # 线上实测（2026-09-15）：问「有哪些店铺可以送花？」编造了 3 家不存在的店铺；
-                    # 修店铺分支后，问「推荐送妈妈的花束」又编造了 3 个不存在的商品名与价格。
-                    # 这里做**确定性拦截**：注入一次性纠正（只进本轮 LLM 上下文，不落库、不入历史），
-                    # 要求先查再答；只拦一次，避免与模型拉锯。
-                    # 四项确定性护栏（未查证即答 / 该出卡只写文字 / 谎称已出图 / 内部独白）。
-                    # 判定逻辑统一在 _check_guards()，这里只处理「命中 → 注入纠正 → 重答」。
-                    # 原先这 4 段是内联在这里的（约 40 行），与另一条零工具调用路径重复。
-                    _hit = self._check_guards(
-                        budget=_guards, tool_log=tool_log, message=message,
-                        has_plan_context=_has_plan_context,
-                        reply=str((respond_args or {}).get('reply') or final_reply or ''),
-                        platform_facts=platform_facts, platform_sources=platform_sources,
-                        zero_tool_call=False,
-                    )
-                    if _hit:
-                        messages.append({'role': 'user', 'content': _hit[1]})
-                        respond_args = None
-                        continue
-                    break
-                continue
-            else:
-                final_reply = getattr(msg, 'content', '') or ''
-                # ⚠️ 模型**一个工具都没调**、直接回一段文字时，四项护栏同样必须生效 ——
-                # 线上实测（2026-09-16）护栏漏洞正是出在这条路上：零工具调用、4.5 秒回文字，
-                # 护栏形同虚设、还谎称「明细在卡片里」。
-                _hit = self._check_guards(
-                    budget=_guards, tool_log=tool_log, message=message,
-                    has_plan_context=_has_plan_context, reply=final_reply,
-                    platform_facts=platform_facts, platform_sources=platform_sources,
-                    zero_tool_call=True,
-                )
-                if _hit:
-                    messages.append({'role': 'assistant', 'content': final_reply})
-                    messages.append({'role': 'user', 'content': _hit[1]})
-                    final_reply = ''
-                    continue
-                messages.append({'role': 'assistant', 'content': final_reply})
-                break
-        else:
-            if any(tc.status == 'ok' for tc in tool_log):
-                final_reply = final_reply or '我已经为你整理好相关结果啦，请查看下方卡片～'
-            else:
-                final_reply = final_reply or '抱歉，我思考得太久啦，请简化需求或分步骤再问我～'
+        def _guard(tool_log: list[ToolCallRecord], reply: str, zero_tool_call: bool) -> tuple[str, str] | None:
+            return self._check_guards(
+                budget=_guards, tool_log=tool_log, message=message,
+                has_plan_context=_has_plan_context, reply=reply,
+                platform_facts=platform_facts, platform_sources=platform_sources,
+                zero_tool_call=zero_tool_call,
+            )
+
+        tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
+                    'shop_id': shop_id, 'entry': entry, 'product_id': product_id,
+                    'product_title': product_title, 'requirement': req_acc,
+                    'customer_credential': customer_credential, 'user_message': message,
+                    'ticket_access_verified': ticket_access_verified}
+        loop_result = await execute_react_loop(
+            messages, user_message=message,
+            max_iterations=route.max_iterations if route else settings.max_iterations,
+            deadline=_deadline, min_iteration_budget=_MIN_ITER_BUDGET, stage_label=stage.value,
+            get_message=_model_message, parse_calls=self._parse_tool_calls,
+            execute=execute_tool, tool_context=tool_ctx,
+            terminal_tools=_TERMINAL_TOOLS, deferred_tools=_DEFERRED_TOOLS,
+            on_error=_tool_error_result,
+            make_record=lambda tc, result, status: ToolCallRecord(
+                name=tc['name'], arguments=tc['arguments'], result=result, status=status, source='model'),
+            guard=_guard, on_event=on_event,
+        )
+        respond_args, final_reply = loop_result.response, loop_result.reply
+        tool_log, new_msgs = loop_result.tool_log, loop_result.new_messages
         # ── 兜底出卡：纠正过一次后模型仍不肯出卡 → 用**规则引擎**确定性地补一张 ──
         # 线上实测（2026-09-16）：模型连续两轮都只写文字，还谎称「明细在卡片里」。
         # 与其让客户看到一张不存在的卡，不如给一张朴素但真实的方案卡（零 LLM 成本）。

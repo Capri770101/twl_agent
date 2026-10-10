@@ -151,26 +151,36 @@ def test_deferred_tools_contains_effect_image():
 
 
 def test_run_backfills_in_original_order():
-    """run() 必须按原始索引回填结果（sorted(results)），否则 tool 消息顺序错位。"""
-    import inspect
+    """Check observable transcript order, not implementation source placement."""
+    from types import SimpleNamespace
+    from tests.test_executor_loop import run_loop
 
-    from agent.agent import ReActAgent
-    from agent.orchestration.executor import execute_batch
-
-    src = inspect.getsource(ReActAgent.run)
-    executor_src = inspect.getsource(execute_batch)
-    assert 'for i in sorted(results)' in src, \
-        '工具结果回填顺序被改动 —— 必须按模型给出的原始顺序，否则 tool 消息与 tool_calls 错位'
-    assert 'execute_batch(' in src
-    assert 'asyncio.gather' in executor_src, '并发执行逻辑缺失'
-    assert 'return_exceptions=True' in executor_src, '单个工具异常会拖垮整批并发结果'
+    calls = [{'id': str(index), 'name': name, 'arguments': {'reply': 'done'} if name == 'respond' else {}}
+             for index, name in enumerate(('slow', 'respond', 'deferred', 'fast'))]
+    async def execute(name, args, context):
+        if name == 'slow':
+            await asyncio.sleep(.01)
+        return name, 'ok'
+    transcript = [{'role': 'system', 'content': 'context'}]
+    result = run_loop(transcript, get_message=lambda messages, remaining:
+                      SimpleNamespace(content='', tool_calls=calls), execute=execute)
+    assert [message['tool_call_id'] for message in transcript if message['role'] == 'tool'] == [
+        '0', '1', '2', '3']
+    assert [record.name for record in result.tool_log] == ['slow', 'deferred', 'fast']
 
 
 def test_terminal_tools_not_executed_concurrently():
-    """终结工具只取参数、不进并发批次（它的参数就是本轮结论）。"""
-    import inspect
-
+    """A terminal response is transcript data, not an executable capability."""
     from agent.orchestration.executor import execute_batch
 
-    src = inspect.getsource(execute_batch)
-    assert "'terminal'" in src, '终结工具的特殊处理被移除'
+    executed = []
+    async def execute(name, args, context):
+        executed.append(name)
+        return name, 'ok'
+    results, response = asyncio.run(execute_batch(
+        [{'id': '1', 'name': 'respond', 'arguments': {'reply': 'done'}}], {},
+        execute=execute, terminal_tools=frozenset({'respond'}),
+        deferred_tools=frozenset(), on_error=lambda name, exc: 'error'))
+    assert response == {'reply': 'done'}
+    assert results[0][1] == 'terminal'
+    assert executed == []
