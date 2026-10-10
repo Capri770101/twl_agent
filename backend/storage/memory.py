@@ -91,6 +91,10 @@ def _save_messages(session_id: str, messages: list[dict[str, Any]]) -> None:
 
 
 async def get_stage(session_id: str) -> str:
+    return await asyncio.to_thread(_get_stage, session_id)
+
+
+def _get_stage(session_id: str) -> str:
     with transaction() as conn:
         row = conn.execute('SELECT stage FROM sessions WHERE session_id = ?', (session_id,)).fetchone()
     return row['stage'] if row else 'analyze'
@@ -138,6 +142,10 @@ async def set_requirement(session_id: str, req: FlowerRequirement) -> None:
 
 
 async def get_requirement(session_id: str):
+    return await asyncio.to_thread(_get_requirement, session_id)
+
+
+def _get_requirement(session_id: str):
     with transaction() as conn:
         row = conn.execute('SELECT requirement_json, preview FROM sessions WHERE session_id = ?', (session_id,)).fetchone()
     if not row:
@@ -156,6 +164,10 @@ async def get_requirement(session_id: str):
 
 
 async def get_long_term(user_id: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_get_long_term, user_id)
+
+
+def _get_long_term(user_id: str) -> dict[str, Any]:
     with transaction() as conn:
         rows = conn.execute('SELECT key, value FROM user_preferences WHERE user_id = ?', (user_id,)).fetchall()
     result = {}
@@ -290,6 +302,10 @@ async def search_user_history(user_id: str, query: str = '', limit: int = 8, exc
     query 为空时退化为「最近消息」，仍能回答「上次聊了什么」。
     exclude_session 用于排除当前会话，避免把正在聊的内容当「历史」重复捞回来。
     """
+    return await asyncio.to_thread(_search_user_history, user_id, query, limit, exclude_session)
+
+
+def _search_user_history(user_id: str, query: str, limit: int, exclude_session: str | None) -> list[dict[str, Any]]:
     if not user_id:
         return []
     limit = max(1, min(int(limit or 8), 20))

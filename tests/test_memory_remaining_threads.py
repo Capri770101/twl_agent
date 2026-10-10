@@ -8,7 +8,10 @@ import pytest
 from backend.storage import memory
 
 
-@pytest.mark.parametrize('operation', ['get_or_create_session', 'save_messages', 'save_message', 'store_plan_version'])
+@pytest.mark.parametrize('operation', [
+    'get_or_create_session', 'save_messages', 'save_message', 'store_plan_version',
+    'get_stage', 'get_requirement', 'get_long_term', 'search_user_history',
+])
 def test_remaining_writes_use_one_worker_for_entire_transaction(monkeypatch, operation):
     loop_thread = threading.get_ident()
     entered = threading.Event()
@@ -20,7 +23,8 @@ def test_remaining_writes_use_one_worker_for_entire_transaction(monkeypatch, ope
             self.sql = sql
         def fetchone(self):
             if 'FROM sessions' in self.sql:
-                return {'session_id': 's', 'user_id': 'owner'}
+                return {'session_id': 's', 'user_id': 'owner', 'stage': 'analyze',
+                        'requirement_json': None, 'preview': None}
             return None
         def fetchall(self):
             return []
@@ -51,6 +55,14 @@ def test_remaining_writes_use_one_worker_for_entire_transaction(monkeypatch, ope
             call = memory.save_messages('s', [{'role': 'user', 'content': 'hi'}])
         elif operation == 'save_message':
             call = memory.save_message('s', 'user', 'hi')
+        elif operation == 'get_stage':
+            call = memory.get_stage('s')
+        elif operation == 'get_requirement':
+            call = memory.get_requirement('s')
+        elif operation == 'get_long_term':
+            call = memory.get_long_term('owner')
+        elif operation == 'search_user_history':
+            call = memory.search_user_history('owner', '花', exclude_session='s')
         else:
             call = memory.store_plan_version('owner', 's', {'plan_id': 'p'})
         task = asyncio.create_task(call)
