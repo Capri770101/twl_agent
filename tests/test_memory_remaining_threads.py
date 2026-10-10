@@ -11,6 +11,9 @@ from backend.storage import memory
 @pytest.mark.parametrize('operation', [
     'get_or_create_session', 'save_messages', 'save_message', 'store_plan_version',
     'get_stage', 'get_requirement', 'get_long_term', 'search_user_history',
+    'get_session_shop_id', 'get_session_context', 'update_stage', 'set_requirement',
+    'set_long_term', 'get_session_json', 'get_session_flag', 'clear_session_flags',
+    'get_user_memories', 'upsert_user_memory',
 ])
 def test_remaining_writes_use_one_worker_for_entire_transaction(monkeypatch, operation):
     loop_thread = threading.get_ident()
@@ -24,7 +27,10 @@ def test_remaining_writes_use_one_worker_for_entire_transaction(monkeypatch, ope
         def fetchone(self):
             if 'FROM sessions' in self.sql:
                 return {'session_id': 's', 'user_id': 'owner', 'stage': 'analyze',
-                        'requirement_json': None, 'preview': None}
+                        'requirement_json': None, 'preview': None, 'shop_id': 'shop',
+                        'entry': 'shop', 'product_id': None, 'product_title': None}
+            if 'FROM memories' in self.sql:
+                return {'value': '"saved"'}
             return None
         def fetchall(self):
             return []
@@ -63,6 +69,27 @@ def test_remaining_writes_use_one_worker_for_entire_transaction(monkeypatch, ope
             call = memory.get_long_term('owner')
         elif operation == 'search_user_history':
             call = memory.search_user_history('owner', '花', exclude_session='s')
+        elif operation == 'get_session_shop_id':
+            call = memory.get_session_shop_id('s')
+        elif operation == 'get_session_context':
+            call = memory.get_session_context('s')
+        elif operation == 'update_stage':
+            call = memory.update_stage('s', 'design')
+        elif operation == 'set_requirement':
+            from domain.requirements import FlowerRequirement
+            call = memory.set_requirement('s', FlowerRequirement(budget_num=200))
+        elif operation == 'set_long_term':
+            call = memory.set_long_term('owner', 'favorite', 'rose')
+        elif operation == 'get_session_json':
+            call = memory.get_session_json('owner', 's', 'key')
+        elif operation == 'get_session_flag':
+            call = memory.get_session_flag('owner', 's', 'key')
+        elif operation == 'clear_session_flags':
+            call = memory.clear_session_flags('owner', 's', 'key')
+        elif operation == 'get_user_memories':
+            call = memory.get_user_memories('owner')
+        elif operation == 'upsert_user_memory':
+            call = memory.upsert_user_memory('owner', 's', 'key', 'value')
         else:
             call = memory.store_plan_version('owner', 's', {'plan_id': 'p'})
         task = asyncio.create_task(call)

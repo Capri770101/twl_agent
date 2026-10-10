@@ -17,6 +17,22 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec='seconds')
 
 
+def _read_one(sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
+    with transaction() as conn:
+        row = conn.execute(sql, params).fetchone()
+        return dict(row) if row else None
+
+
+def _read_many(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    with transaction() as conn:
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def _write_one(sql: str, params: tuple[Any, ...]) -> None:
+    with transaction() as conn:
+        conn.execute(sql, params)
+
+
 _INSERT_SESSION = (
     'INSERT INTO sessions(session_id, user_id, stage, title, shop_id, entry, product_id, product_title, created_at, updated_at) '
     'VALUES (?,?,?,?,?,?,?,?,?,?)'
@@ -101,8 +117,7 @@ def _get_stage(session_id: str) -> str:
 
 
 async def get_session_shop_id(session_id: str) -> str | None:
-    with transaction() as conn:
-        row = conn.execute('SELECT shop_id FROM sessions WHERE session_id = ?', (session_id,)).fetchone()
+    row = await asyncio.to_thread(_read_one, 'SELECT shop_id FROM sessions WHERE session_id = ?', (session_id,))
     return row['shop_id'] if row else None
 
 
@@ -113,10 +128,9 @@ async def get_session_context(session_id: str) -> dict[str, Any]:
         {'shop_id': str|None, 'entry': 'product'|'shop'|'home', 'product_id': str|None, 'product_title': str|None}
         会话不存在时返回全空上下文（entry='home'）。
     """
-    with transaction() as conn:
-        row = conn.execute(
-            'SELECT shop_id, entry, product_id, product_title FROM sessions WHERE session_id = ?', (session_id,)
-        ).fetchone()
+    row = await asyncio.to_thread(
+        _read_one, 'SELECT shop_id, entry, product_id, product_title FROM sessions WHERE session_id = ?',
+        (session_id,))
     if not row:
         return {'shop_id': None, 'entry': 'home', 'product_id': None, 'product_title': None}
     return {
@@ -128,17 +142,15 @@ async def get_session_context(session_id: str) -> dict[str, Any]:
 
 
 async def update_stage(session_id: str, stage: str) -> None:
-    with transaction() as conn:
-        conn.execute('UPDATE sessions SET stage = ?, updated_at = ? WHERE session_id = ?', (stage, _now(), session_id))
+    await asyncio.to_thread(_write_one, 'UPDATE sessions SET stage = ?, updated_at = ? WHERE session_id = ?',
+                            (stage, _now(), session_id))
 
 
 async def set_requirement(session_id: str, req: FlowerRequirement) -> None:
     """保存结构化需求。"""
-    with transaction() as conn:
-        conn.execute(
-            'UPDATE sessions SET requirement_json = ?, updated_at = ? WHERE session_id = ?',
-            (json.dumps(req.to_dict(), ensure_ascii=False), _now(), session_id)
-        )
+    await asyncio.to_thread(
+        _write_one, 'UPDATE sessions SET requirement_json = ?, updated_at = ? WHERE session_id = ?',
+        (json.dumps(req.to_dict(), ensure_ascii=False), _now(), session_id))
 
 
 async def get_requirement(session_id: str):
@@ -181,17 +193,17 @@ def _get_long_term(user_id: str) -> dict[str, Any]:
 
 
 async def set_long_term(user_id: str, key: str, value: Any) -> None:
-    with transaction() as conn:
-        conn.execute(
-            'INSERT INTO user_preferences(user_id, key, value, updated_at) VALUES (?,?,?,?) '
-            'ON CONFLICT (user_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at',
-            (user_id, key, json.dumps(value, ensure_ascii=False), _now())
-        )
+    await asyncio.to_thread(
+        _write_one,
+        'INSERT INTO user_preferences(user_id, key, value, updated_at) VALUES (?,?,?,?) '
+        'ON CONFLICT (user_id, key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at',
+        (user_id, key, json.dumps(value, ensure_ascii=False), _now()))
 
 
 async def get_session_json(user_id: str, session_id: str, key: str):
-    with transaction() as conn:
-        row = conn.execute('SELECT value FROM memories WHERE user_id = ? AND category = ? AND key = ? LIMIT 1', (user_id, session_id, key)).fetchone()
+    row = await asyncio.to_thread(
+        _read_one, 'SELECT value FROM memories WHERE user_id = ? AND category = ? AND key = ? LIMIT 1',
+        (user_id, session_id, key))
     if not row:
         return None
     try:
@@ -242,14 +254,15 @@ async def set_session_flag(user_id: str, session_id: str, key: str, value: str) 
 
 
 async def get_session_flag(user_id: str, session_id: str, key: str) -> str | None:
-    with transaction() as conn:
-        row = conn.execute('SELECT value FROM memories WHERE user_id = ? AND category = ? AND key = ? LIMIT 1', (user_id, f'flag:{session_id}', key)).fetchone()
+    row = await asyncio.to_thread(
+        _read_one, 'SELECT value FROM memories WHERE user_id = ? AND category = ? AND key = ? LIMIT 1',
+        (user_id, f'flag:{session_id}', key))
     return row['value'] if row else None
 
 
 async def clear_session_flags(user_id: str, session_id: str, prefix: str = '') -> None:
-    with transaction() as conn:
-        conn.execute('DELETE FROM memories WHERE user_id = ? AND category = ? AND key LIKE ?', (user_id, f'flag:{session_id}', f'{prefix}%'))
+    await asyncio.to_thread(_write_one, 'DELETE FROM memories WHERE user_id = ? AND category = ? AND key LIKE ?',
+                            (user_id, f'flag:{session_id}', f'{prefix}%'))
 
 
 async def load_display_messages(session_id: str) -> list[dict[str, Any]]:
@@ -391,18 +404,18 @@ def _delete_conversation(conversation_id: str, user_id: str | None) -> bool:
 
 async def get_user_memories(user_id: str, category: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     limit = max(1, min(int(limit or 100), 1000))
-    with transaction() as conn:
-        if category:
-            rows = conn.execute('SELECT key, value, confidence FROM memories WHERE user_id = ? AND category = ? LIMIT ?', (user_id, category, limit)).fetchall()
-        else:
-            rows = conn.execute('SELECT key, value, confidence FROM memories WHERE user_id = ? LIMIT ?', (user_id, limit)).fetchall()
-    return [dict(r) for r in rows]
+    if category:
+        return await asyncio.to_thread(
+            _read_many, 'SELECT key, value, confidence FROM memories WHERE user_id = ? AND category = ? LIMIT ?',
+            (user_id, category, limit))
+    return await asyncio.to_thread(
+        _read_many, 'SELECT key, value, confidence FROM memories WHERE user_id = ? LIMIT ?',
+        (user_id, limit))
 
 
 async def upsert_user_memory(user_id: str, category: str, key: str, value: str, confidence: float = 1.0) -> None:
-    with transaction() as conn:
-        conn.execute(
-            'INSERT INTO memories(user_id, category, key, value, confidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?) '
-            'ON CONFLICT (user_id, category, key) DO UPDATE SET value=EXCLUDED.value, confidence=EXCLUDED.confidence, updated_at=EXCLUDED.updated_at',
-            (user_id, category, key, value, confidence, _now(), _now())
-        )
+    await asyncio.to_thread(
+        _write_one,
+        'INSERT INTO memories(user_id, category, key, value, confidence, created_at, updated_at) VALUES (?,?,?,?,?,?,?) '
+        'ON CONFLICT (user_id, category, key) DO UPDATE SET value=EXCLUDED.value, confidence=EXCLUDED.confidence, updated_at=EXCLUDED.updated_at',
+        (user_id, category, key, value, confidence, _now(), _now()))
