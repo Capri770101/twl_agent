@@ -34,4 +34,5 @@ JSON 作为首轮策略格式，避免新增 YAML 依赖；格式不是架构目
 - `trim_history_for_llm` 与 `latest_plan_summary` 已迁到 `agent/orchestration/context.py`；旧入口保留别名，运行调用和原测试继续使用同一实现。两组测试共 18 项通过。
 - 路由候选工具和迭代上限迁到 `agent/orchestration/policies/routing.json`，加载器拒绝重复字段、未知工具和不合法值；关键词快路径与客服细分工具域保持一致。`scripts/validate_eval_set.py` 从声明式策略取合法意图并独立做静态校验。
 - `scripts/run_eval.py` 的客户票据交换现已在 HTTP 客户端进入上下文后执行；用假客户端测整个执行入口，不向网络请求。真实 HTTP/模型评测尚未执行，因此 12 条声明场景的格式校验不能证明业务场景通过。
-- 此步骤仅迁移现有上下文选择，没有实现滚动摘要或事件记忆。核心仍有业务后处理，尚未完成通用 executor 拆分。
+- 内部术语/数据库字段脱敏、危险标签中和及分隔线清理搬至 `agent/safety/formatter.py`；旧函数名与八步清理流水线依然指向同一实现。三项属于确定性输出约束，不改为 prompt-only；清理顺序由原测试继续锁定。
+- 此步骤仅迁移现有上下文选择及安全输出格式化，没有实现滚动摘要或事件记忆。核心仍有业务后处理，尚未完成通用 executor 拆分。
