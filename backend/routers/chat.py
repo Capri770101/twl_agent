@@ -111,6 +111,15 @@ def _spawn_consolidate(user_id: str, session_id: str) -> None:
         logger.warning('[chat] 无运行中的事件循环，跳过记忆提炼')
 
 
+def _fresh_ticket_access(request: Request, user_id: str) -> bool:
+    """A stale chat JWT may chat, but may not read sensitive ticket history."""
+    from backend.auth import decode_sensitive_access_token
+    try:
+        return decode_sensitive_access_token(request.headers.get('Authorization')) == user_id
+    except HTTPException:
+        return False
+
+
 class ChatRequest(BaseModel):
     message: str
     user_id: str  # 必填，由宿主平台传入
@@ -217,7 +226,7 @@ async def chat(
             result = await asyncio.wait_for(
                 get_agent().arun(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
                                  entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform,
-                                 customer_credential=customer_credential),
+                                 customer_credential=customer_credential, ticket_access_verified=_fresh_ticket_access(request, req.user_id)),
                 timeout=settings.REQUEST_TIMEOUT
             )
         except asyncio.TimeoutError:
@@ -283,7 +292,7 @@ async def chat_stream(
         try:
             async for evt in get_agent().arun_stream(req.user_id, req.message, sid, req.location, shop_id=req.shop_id,
                                                      entry=req.entry_kind, product_id=req.product_id, product_title=req.product_title, platform_id=_platform,
-                                                     customer_credential=customer_credential):
+                                                     customer_credential=customer_credential, ticket_access_verified=_fresh_ticket_access(request, req.user_id)):
                 event_type = evt.get('event', 'text')
                 if event_type == 'error':
                     _ok = False

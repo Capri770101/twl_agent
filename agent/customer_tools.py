@@ -105,6 +105,29 @@ async def contact_merchant(order_id: str = '', shop_id: str = '', shop_name: str
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
+@register_tool(name='query_my_tickets', description='查询本人在智能体中登记的商家联系事项；仅是本地工单，不代表商家已收到或会跟进。用户问“我的工单/联系商家记录怎么样了”时调用。指定 ticket_id 看详情，否则列最近事项；绝不查询他人信息。',
+               parameters={'type': 'object', 'properties': {
+                   'ticket_id': {'type': 'integer', 'minimum': 1, 'description': '本地登记号；不提供则查询最近事项'}},
+                   'additionalProperties': False},
+               inject_context=True, tags=['customer_service'])
+async def query_my_tickets(ticket_id: int | None = None, _context: dict | None = None) -> str:
+    uid = (_context or {}).get('user_id') or ''
+    if not uid or (_context or {}).get('ticket_access_verified') is not True:
+        return json.dumps({'ok': False, 'code': 'AUTH_REQUIRED'}, ensure_ascii=False)
+    if ticket_id is not None and (type(ticket_id) is not int or ticket_id < 1):
+        return json.dumps({'ok': False, 'code': 'INVALID_ARGUMENT'}, ensure_ascii=False)
+    from fastapi import HTTPException
+    from backend.routers.merchant_tickets import get_my_ticket, list_my_tickets
+    try:
+        if ticket_id is None:
+            result = await _tracked('tickets', list_my_tickets(user_id=uid))
+        else:
+            result = await _tracked('tickets', get_my_ticket(ticket_id, user_id=uid))
+    except HTTPException as exc:
+        result = {'ok': False, 'code': 'NOT_FOUND' if exc.status_code == 404 else 'AUTH_REQUIRED'}
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
 @register_tool(name='query_shop_reviews', description='查询某门店的用户评价（星级、内容、日期）。用户问「这家店评价怎么样/口碑如何」时调用；total=0 时如实说暂无评价数据，不要编造评价内容。',
                parameters={'type': 'object', 'properties': {
                    'shop_id': {'type': 'string', 'description': '店铺编号（字母数字）'},
@@ -175,6 +198,41 @@ async def apply_refund(order_id: str, reason: str = '', amount_cents: int = 0, _
 async def update_order_address(order_id: str, address: dict | None = None, _context: dict | None = None) -> str:
     result = await _tracked('update_address', _update_order_address(
         (_context or {}).get('customer_credential', ''), order_id, address or {}))
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
+@register_tool(name='manage_my_reminders', description='用户问有哪些提醒时用 action=list；明确要暂停、恢复、删除或修改某条提醒时先查询确认 id，再执行对应 action。删除是软删且不能恢复；修改时只传用户明确指定的新内容/cron/北京时间。所有提醒仅写入本站站内收件箱，不代表手机推送。',
+               parameters={'type': 'object', 'properties': {
+                   'action': {'type': 'string', 'enum': ['list', 'pause', 'resume', 'update', 'delete']},
+                   'reminder_id': {'type': 'integer', 'minimum': 1, 'description': '除 list 外必填，本人提醒编号'},
+                   'content': {'type': 'string', 'description': 'update 时可传新提醒内容'},
+                   'cron': {'type': 'string', 'description': 'update 为周期提醒，五字段 cron'},
+                   'first_run': {'type': 'string', 'description': 'update 为一次性提醒，北京时间 YYYY-MM-DD HH:MM'}},
+                   'required': ['action'], 'additionalProperties': False},
+               inject_context=True, tags=['customer_service'])
+async def manage_my_reminders(action: str, reminder_id: int | None = None,
+                              content: str | None = None, cron: str | None = None,
+                              first_run: str | None = None, _context: dict | None = None) -> str:
+    uid = (_context or {}).get('user_id') or ''
+    if not uid:
+        return json.dumps({'ok': False, 'code': 'AUTH_REQUIRED'}, ensure_ascii=False)
+    from backend.routers.notifications import (ReminderPatch, list_reminders, pause_reminder,
+                                               resume_reminder, modify_reminder, delete_reminder)
+    if action == 'list':
+        result = await list_reminders(user_id=uid)
+    elif not isinstance(reminder_id, int) or reminder_id < 1:
+        result = {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': '先查询并确定本人提醒编号'}
+    elif action == 'pause':
+        result = await pause_reminder(reminder_id, user_id=uid)
+    elif action == 'resume':
+        result = await resume_reminder(reminder_id, user_id=uid)
+    elif action == 'delete':
+        result = await delete_reminder(reminder_id, user_id=uid)
+    elif action == 'update':
+        fields = {k: v for k, v in (('content', content), ('cron', cron), ('first_run', first_run)) if v is not None}
+        result = await modify_reminder(reminder_id, ReminderPatch(**fields), user_id=uid)
+    else:
+        result = {'ok': False, 'code': 'INVALID_ARGUMENT'}
     return json.dumps(result, ensure_ascii=False, default=str)
 
 

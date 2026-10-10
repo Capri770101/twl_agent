@@ -33,6 +33,7 @@ from backend.routers.agent_page import router as agent_page_router
 from backend.routers.greeting import router as greeting_router
 from backend.routers.speech import router as speech_router
 from backend.routers.notifications import router as notifications_router
+from backend.routers.merchant_tickets import router as merchant_tickets_router
 from backend.version import VERSION
 
 logging.basicConfig(
@@ -48,10 +49,10 @@ async def lifespan(app: FastAPI):
     try:
         init_db()
     except Exception as exc:
-        logger.exception('数据库初始化失败：请确认 DATABASE_URL、数据库权限，或先执行 migrations/001_image_tasks.sql')
+        logger.exception('数据库初始化失败：请确认 DATABASE_URL 和完整 schema 建表/变更权限')
         raise RuntimeError(
-            '数据库初始化失败。请确认 DATABASE_URL 可访问且账号有建表权限；'
-            '若由 DBA 管理数据库，请先执行 migrations/001_image_tasks.sql。'
+            '数据库初始化失败。当前启动会执行 backend/storage/db.py 的完整 schema（含事项、提醒和通知表）；'
+            '请核对数据库连通性及建表/变更权限，单独执行 migrations/001_image_tasks.sql 不足以完成部署。'
         ) from exc
     from backend.storage.tasks import check_task_storage, recover_incomplete_tasks
     try:
@@ -111,6 +112,7 @@ app.include_router(auth_router)
 app.include_router(metrics_router)
 app.include_router(learning_router)
 app.include_router(notifications_router)
+app.include_router(merchant_tickets_router)
 # 官网演示页（agent.html）体验窗适配端点；未启用时端点表现为 404
 app.include_router(agent_page_router)
 

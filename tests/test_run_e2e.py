@@ -282,6 +282,19 @@ def test_local_ticket_cannot_claim_merchant_notified(monkeypatch):
     assert '13567675068' in resp.reply
 
 
+def test_read_ticket_cannot_claim_merchant_notified(monkeypatch):
+    turns = [
+        _terminal('query_my_tickets', '{}', 'c1'),
+        _terminal('respond_to_user', '{"ui":"text","data":{},'
+                  '"reply":"已经通知商家，商家会跟进。","intent":"customer_service"}', 'c2'),
+    ]
+    _install(monkeypatch, turns, tool_results={
+        'query_my_tickets': '{"ok":true,"data":{"items":[{"id":"7",'
+                            '"delivery_scope":"local_only","merchant_delivery_verified":false}]}}'})
+    resp, _ = _run('我的工单怎么样了')
+    assert '尚未发送给商家' in resp.reply and '商家会跟进' not in resp.reply
+
+
 # ── 场景 2：DIY 方案卡（多轮 + 工具执行）──
 
 def test_diy_plan_card_flow(monkeypatch):

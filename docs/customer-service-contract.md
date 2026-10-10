@@ -112,13 +112,14 @@ agent 侧行为：`query_my_orders` 工具；多笔订单先列出让用户选�
 
 agent 侧行为：`query_my_after_sales` 工具；**商家审核通过 ≠ 退款已到账**（已写入工具说明）。
 
-## 6. agent 侧 chat 集成（H5 网关职责）
+## 6. agent 侧 chat 集成（H5 网关职责，按当前源码更新）
 
-1. H5 网关以平台身份（X-API-Key）为终端用户换取 agent JWT（`POST /auth/token`）。
-2. 用户登录态下，H5 调 `POST /api/customer-service/credential` 用登录 JWT 换 cs1 票据。
-3. 调 agent `POST /chat` 时以 `X-Customer-Credential: <cs1 票据>` 头透传票据。
-4. agent 校验票据属于当前对话账号（`customer_identity`，不一致 403）后注入工具执行上下文；
-   票据**不进入**提示词 / 历史 / 日志 / localStorage。
+1. H5 网关在用户真实登录态下签发短期 `cs1` 只读票据（仅 `orders:read`），不得把 H5 用户态 JWT 当作 agent 的后台写凭据。
+2. 网关向 agent `POST /auth/customer-token` 发送 `{"credential":"<cs1>"}`，换得与此票据主体绑定的 `customer_h5_` 智能体 JWT 和 `user_id`；**不能以 `/auth/token` 的普通平台 JWT 混用 cs1**，否则身份绑定检查返回 403。
+3. 调 agent `POST /chat` 或 `/chat/stream` 时，以 `Authorization: Bearer <customer_h5_ JWT>`、`X-Customer-Credential: <cs1>`，且请求体 `user_id` 取上一步返回值。cs1 过期时由 H5 在已登录条件下重新签发并换票。
+4. agent 校验票据属于当前对话账号后注入工具执行上下文；票据**不进入**提示词、历史、日志或 URL。用户退出/切换账号后前端需清理 token 和缓存；工单历史（`GET /api/merchant-tickets` 与对话 `query_my_tickets`）额外要求 JWT 签发不超过 15 分钟，过期须重新认证换票。cs1 五分钟过期和 H5 登出仍不会即时吊销已签 JWT；若需即时撤销须另接服务端会话撤销策略。
+
+普通非订单对话仍可独立使用平台 `X-API-Key` + `/auth/token`；该身份链与本人订单客服身份链不能混用。
 
 ## 7. 错误码（agent 侧统一口径）
 

@@ -116,6 +116,103 @@ def test_reminders_crud_owner_only(test_db):
     assert d3['ok'] is False and d3['code'] == 'NOT_FOUND'
 
 
+
+
+def _future_shanghai(days: int = 2) -> str:
+    from zoneinfo import ZoneInfo
+    return (_dt.datetime.now(ZoneInfo('Asia/Shanghai')) +
+            _dt.timedelta(days=days)).strftime('%Y-%m-%d %H:%M')
+
+
+def test_reminder_pause_resume_and_due_processing(test_db):
+    from backend.routers import notifications as napi
+    from backend.reminders import _fire_due
+    conn = test_db
+    rid = _insert_reminder(conn, 'u_owner', '原内容', cron='0 9 * * *', repeat=True,
+                           next_run=_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=1))
+    paused = asyncio.run(napi.pause_reminder(rid, user_id='u_owner'))
+    assert paused['ok'] and paused['data']['status'] == 'paused'
+    assert paused['data']['timezone'] == 'Asia/Shanghai'
+    assert _fire_due() == 0
+    assert asyncio.run(napi.pause_reminder(rid, user_id='u_owner'))['code'] == 'NOT_FOUND'
+    resumed = asyncio.run(napi.resume_reminder(rid, user_id='u_owner'))
+    assert resumed['ok'] and resumed['data']['status'] == 'active'
+    assert _dt.datetime.fromisoformat(resumed['data']['next_run']) > _dt.datetime.now(_dt.timezone.utc)
+    assert _fire_due() == 0  # no catch-up delivery on resume
+    assert conn.execute('SELECT count(*) AS n FROM notifications WHERE user_id=?',
+                        ('u_owner',)).fetchone()['n'] == 0
+
+
+def test_reminder_modify_content_and_schedule_owner_only(test_db):
+    from backend.routers import notifications as napi
+    conn = test_db
+    rid = _insert_reminder(conn, 'u_owner', '原内容', first_run=_future_shanghai())
+    other = _insert_reminder(conn, 'u_other', '他人内容')
+    Patch = napi.ReminderPatch
+    assert asyncio.run(napi.modify_reminder(other, Patch(content='越权'), user_id='u_owner'))['code'] == 'NOT_FOUND'
+    assert asyncio.run(napi.pause_reminder(other, user_id='u_owner'))['code'] == 'NOT_FOUND'
+    assert asyncio.run(napi.resume_reminder(other, user_id='u_owner'))['code'] == 'NOT_FOUND'
+    assert conn.execute('SELECT content FROM reminders WHERE id=?', (other,)).fetchone()['content'] == '他人内容'
+    content = asyncio.run(napi.modify_reminder(rid, Patch(content=' 新内容 '), user_id='u_owner'))
+    assert content['data']['content'] == '新内容' and not content['data']['repeat']
+    asyncio.run(napi.pause_reminder(rid, user_id='u_owner'))
+    changed = asyncio.run(napi.modify_reminder(
+        rid, Patch(cron='0 9 * * *'), user_id='u_owner'))
+    assert changed['ok'] and changed['data']['status'] == 'paused'
+    assert changed['data']['repeat'] and changed['data']['first_run'] is None
+    assert changed['data']['next_run_local'].endswith('09:00')
+    assert asyncio.run(napi.resume_reminder(rid, user_id='u_owner'))['ok']
+    once = asyncio.run(napi.modify_reminder(
+        rid, Patch(first_run=_future_shanghai(3)), user_id='u_owner'))
+    assert once['ok'] and not once['data']['repeat'] and once['data']['cron'] is None
+    assert once['data']['next_run_local'] == once['data']['first_run']
+    listed = asyncio.run(napi.list_reminders(user_id='u_owner'))['data']['items']
+    assert listed[0]['next_run_local'] == once['data']['first_run']
+
+
+def test_reminder_invalid_edits_and_expired_oneoff_resume(test_db):
+    from backend.routers import notifications as napi
+    conn = test_db
+    rid = _insert_reminder(conn, 'u_owner', '原内容', first_run=_future_shanghai())
+    Patch = napi.ReminderPatch
+    for patch in (Patch(), Patch(content='  '), Patch(content='x' * 201),
+                  Patch(first_run='2000-01-01 12:00'), Patch(first_run='2026-02-30 12:00'),
+                  Patch(cron='bad cron'), Patch(cron='0 9 * * *', first_run=_future_shanghai())):
+        assert asyncio.run(napi.modify_reminder(rid, patch, user_id='u_owner'))['code'] == 'INVALID_ARGUMENT'
+    assert conn.execute('SELECT content FROM reminders WHERE id=?', (rid,)).fetchone()['content'] == '原内容'
+    asyncio.run(napi.pause_reminder(rid, user_id='u_owner'))
+    conn.execute('UPDATE reminders SET first_run=?, next_run=? WHERE id=?',
+                 ('2000-01-01 12:00', _dt.datetime(2000, 1, 1, tzinfo=_dt.timezone.utc), rid))
+    assert asyncio.run(napi.resume_reminder(rid, user_id='u_owner'))['code'] == 'INVALID_ARGUMENT'
+    assert asyncio.run(napi.modify_reminder(
+        rid, Patch(first_run=_future_shanghai()), user_id='u_owner'))['ok']
+    assert asyncio.run(napi.resume_reminder(rid, user_id='u_owner'))['ok']
+    asyncio.run(napi.delete_reminder(rid, user_id='u_owner'))
+    assert asyncio.run(napi.modify_reminder(rid, Patch(content='no'), user_id='u_owner'))['code'] == 'NOT_FOUND'
+    assert asyncio.run(napi.resume_reminder(rid, user_id='u_owner'))['code'] == 'NOT_FOUND'
+
+
+def test_conversation_can_manage_only_own_reminders(test_db):
+    import json
+    from agent.customer_tools import manage_my_reminders
+    conn = test_db
+    mine = _insert_reminder(conn, 'owner', '母亲生日', first_run=_future_shanghai())
+    other = _insert_reminder(conn, 'other', '秘密提醒', first_run=_future_shanghai())
+    async def call(action, **kw):
+        return json.loads(await manage_my_reminders(action, _context={'user_id': 'owner'}, **kw))
+    listed = asyncio.run(call('list'))
+    assert [x['id'] for x in listed['data']['items']] == [mine]
+    assert asyncio.run(call('pause', reminder_id=other))['code'] == 'NOT_FOUND'
+    assert asyncio.run(call('pause', reminder_id=mine))['data']['status'] == 'paused'
+    changed = asyncio.run(call('update', reminder_id=mine, first_run=_future_shanghai(3)))
+    assert changed['data']['next_run_local'] == changed['data']['first_run']
+    assert asyncio.run(call('resume', reminder_id=mine))['data']['status'] == 'active'
+    assert asyncio.run(call('delete', reminder_id=mine))['data']['deleted'] == 1
+    assert asyncio.run(call('resume', reminder_id=mine))['code'] == 'NOT_FOUND'
+    assert asyncio.run(call('delete'))['code'] == 'INVALID_ARGUMENT'
+    assert json.loads(asyncio.run(manage_my_reminders('list', _context={})))['code'] == 'AUTH_REQUIRED'
+
+
 def test_notification_pagination_bounds(test_db):
     from backend.routers import notifications as napi
     r = asyncio.run(napi.list_notifications(user_id='nobody_x', limit=500, offset=-5))

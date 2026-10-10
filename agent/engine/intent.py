@@ -23,28 +23,32 @@ def classify(message: str) -> IntentRoute | None:
     text = str(message or '').strip()
     if not text:
         return None
+    # “订单提醒”仍是提醒，不能先被“我的订单”分流为订单售后。
+    if '提醒' in text:
+        return IntentRoute('reminder', 3, frozenset({'set_reminder', 'manage_my_reminders', 'query_my_orders', 'respond_to_user', 'show_options'}))
     if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '售后进度', '查订单',
                                '取消订单', '取消这单', '退了这单', '申请退款', '不想要了', '退货退款')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
             return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales',
-                                                                  'contact_merchant', 'cancel_my_order',
+                                                                  'query_my_tickets', 'contact_merchant', 'cancel_my_order',
                                                                   'apply_refund', 'respond_to_user', 'show_options'}))
+    if any(w in text for w in ('我的工单', '工单进度', '联系商家记录', '商家联系单', '登记的诉求', '客服事项')):
+        from backend.config import settings
+        if settings.CUSTOMER_SERVICE_ENABLED:
+            return IntentRoute('customer_service', 3, frozenset({'query_my_tickets', 'respond_to_user'}))
     # 评价口碑：查评价为主（可带店铺信息查询）
     if any(w in text for w in ('评价', '口碑', '评分怎么样')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
             return IntentRoute('shop_service', 3, frozenset({'query_shop_service', 'query_shop_reviews',
                                                              'respond_to_user', 'show_options'}))
-    # 提醒/记住日期：含「提醒」的明确请求（口语常见形态都覆盖）
-    if '提醒' in text and not any(w in text for w in ('不要提醒', '不用提醒')):
-        return IntentRoute('reminder', 3, frozenset({'set_reminder', 'query_my_orders', 'respond_to_user', 'show_options'}))
     # 联系商家/转人工/投诉：明确诉求直接开通行（含 contact_merchant）；
     # 商家问联系方式本身仍走 shop_service（只查信息不建工单）。
     if any(w in text for w in ('联系商家', '联系店家', '联系店铺', '转人工', '人工客服', '投诉', '催单', '帮我联系')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
-            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'query_shop_service', 'contact_merchant', 'respond_to_user', 'show_options'}))
+            return IntentRoute('customer_service', 3, frozenset({'query_my_orders', 'query_my_after_sales', 'query_shop_service', 'query_my_tickets', 'contact_merchant', 'respond_to_user', 'show_options'}))
     # “定制并出图”需要设计工具；“不要出图”不是生图意图。
     if any(w in text for w in ('营业时间', '几点关门', '几点开门', '几点营业', '店铺地址', '门店地址', '在哪地址', '配送范围', '配送规则', '能不能送', '可以配送吗', '电话多少', '联系方式')):
         from backend.config import settings

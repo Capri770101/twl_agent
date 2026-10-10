@@ -1,6 +1,17 @@
 from agent.engine.intent import classify
 
 
+def test_customer_workbench_tools_are_reachable(monkeypatch):
+    from backend.config import settings
+    monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_ENABLED', True)
+    assert 'query_my_tickets' in classify('我之前联系商家的工单怎么样了？').tools
+    assert 'query_my_tickets' in classify('我的订单工单怎么样了？').tools
+    for msg in ('我有哪些提醒？', '暂停这个提醒', '别再提醒我了', '修改提醒时间',
+                '取消我的订单提醒', '暂停我的订单提醒'):
+        route = classify(msg)
+        assert route.name == 'reminder' and 'manage_my_reminders' in route.tools
+
+
 def test_route_care():
     route = classify('玫瑰怎么养得久？只讲养护，不要方案和图片。')
     assert route and route.name == 'qa' and route.max_iterations == 2

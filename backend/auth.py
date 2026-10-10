@@ -47,6 +47,28 @@ def decode_access_token(token: str) -> str:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='登录凭证无效或已过期') from exc
 
 
+def decode_sensitive_access_token(authorization: str | None) -> str:
+    """Require a signed agent bearer issued no more than 15 minutes ago."""
+    if not authorization or not authorization.lower().startswith('bearer '):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='请先登录后查询本人事项')
+    try:
+        payload = jwt.decode(authorization.split(' ', 1)[1].strip(), _secret(), algorithms=['HS256'])
+        uid, issued = payload.get('sub'), payload.get('iat')
+        now = datetime.now(UTC).timestamp()
+        if (not isinstance(uid, str) or not uid or not isinstance(issued, (int, float))
+                or isinstance(issued, bool) or issued > now + 5
+                or now - issued > 15 * 60):
+            raise ValueError('stale or invalid subject')
+        return uid
+    except (jwt.PyJWTError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='事项访问凭证已过期，请重新登录') from exc
+
+
+async def current_sensitive_user(authorization: str | None = Header(default=None)) -> str:
+    """Require fresh JWT even if generic development authentication is off."""
+    return decode_sensitive_access_token(authorization)
+
+
 @dataclass
 class TokenPayload:
     """解析后的 JWT 载荷（含监控归因用的 platform）。"""

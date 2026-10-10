@@ -1,6 +1,6 @@
-# v1.4.0 接入说明（当前源码口径）
+# v1.4.x 接入说明（1.4.1 源码候选口径）
 
-> **草案，非上线证明。** 本文只根据仓库当前源码描述“已实现”和“待接入/验证”；仓库 [`VERSION`](../VERSION) 是 1.4.0，但不能推断生产正在运行该版本。H5/商家系统源码不在此包内，不能据 agent 侧适配器宣称其已部署。所有标识和密钥使用占位符，不复制真实主机地址、账号或凭据。
+> **接口说明，非本版上线证明。** 当前仓库 [`VERSION`](../VERSION) 为 1.4.1；服务器上一轮部署的 1.4.0 不自动获得本文新增的事项查询和提醒管理。本文只根据仓库源码区分“已实现”和“待接入/验证”。H5/商家系统源码不在此包内，不能据 agent 侧适配器宣称其已部署；所有标识和密钥使用占位符。
 
 ## 1. 部署、环境与平台数据源
 
@@ -19,7 +19,7 @@
 | 平台普通用户 | 可信平台后端 `POST /auth/token`，请求头 `X-API-Key: <platform-secret>`、JSON `{"external_user_id":"<stable-id>"}`，返回隔离派生 `user_id`、`access_token`、`platform_id`；微信小程序可用 `POST /auth/wx-login` 传 code，`/auth/anonymous` 仅开发开关允许时使用。 | 平台先认证终端用户，服务端保管平台 key；浏览器只使用短/受控 JWT 和返回的 `user_id`。 |
 | 本人订单客服 | `POST /auth/customer-token` JSON `{"credential":"<cs1-ticket>"}` 返回 `customer_h5_` 身份 JWT；每次查询本人订单的 chat 再带 `X-Customer-Credential: <same-cs1-ticket>`。 | H5 可信服务端签发 `cs1.<payload>.<HMAC>`：`aud=twl-customer-service`、`scope=orders:read`、有效整数 uid、iat/exp 恰好间隔 300 秒、非空 jti；H5 收到订单 GET 再验票并检查本人归属。 |
 
-JWT HS256 的 `sub` 是 agent `user_id`，`platform` 仅供监控归因；资源请求中 `user_id` 须与 JWT 一致，401 表示未认证/过期、403 表示越权。`customer-token` 只验签票、不自行验证 H5 浏览器登录：签票必须仅由可信 H5 服务端在真实登录后生成。绑定检查防止普通 JWT 加别人的 cs1 冒用；模型不应生成或填写票据。关闭 `AUTH_REQUIRED` 会跳过普通身份比对，绝不用于生产。[`backend/routers/auth.py`](../backend/routers/auth.py)、[`backend/auth.py`](../backend/auth.py)、[`backend/customer_identity.py`](../backend/customer_identity.py)、[`backend/routers/chat.py`](../backend/routers/chat.py)
+JWT HS256 的 `sub` 是 agent `user_id`，`platform` 仅供监控归因；资源请求中 `user_id` 须与 JWT 一致，401 表示未认证/过期、403 表示越权。`customer-token` 只验签票、不自行验证 H5 浏览器登录：签票必须仅由可信 H5 服务端在真实登录后生成。绑定检查防止普通 JWT 加别人的 cs1 冒用；模型不应生成或填写票据。关闭 `AUTH_REQUIRED` 会跳过普通身份比对，绝不用于生产。**敏感事项访问**：通用 agent JWT 当前默认最长 720 小时（见 `JWT_EXPIRE_HOURS`），但本人工单历史 HTTP 与对话查询要求**签发时间不超过 15 分钟**的同人 JWT，超出返回 401 / 工具 `AUTH_REQUIRED`；接入方须在已验证用户登录后重新换发，而不能靠旧 token 继续查询。cs1 的 5 分钟到期及 H5 登出不会自动吊销已经签发且处于这 15 分钟窗口内的 JWT；H5 退出/切换账号必须立即清除 token 与缓存的工单详情、电话和会话数据；若业务要求登出即时失效，还需 H5 与智能体双方实现服务端吊销或按会话绑定。制定投诉及电话的留存/删除政策；不要把客服 JWT 存入不受控终端。[`backend/routers/auth.py`](../backend/routers/auth.py)、[`backend/auth.py`](../backend/auth.py)、[`backend/customer_identity.py`](../backend/customer_identity.py)、[`backend/routers/chat.py`](../backend/routers/chat.py)
 
 ## 3. 对话请求、会话和渲染
 
@@ -35,11 +35,11 @@ JWT HS256 的 `sub` 是 agent `user_id`，`platform` 仅供监控归因；资源
 
 **明确未接通**：`cancel_my_order` 和 `apply_refund` 虽为已注册工具，目前直接返回 `CHANNEL_UNAVAILABLE`；H5 用户态取消/退款接口用浏览器 JWT，而 cs1 只有 `orders:read`，不能冒用。`update_order_address` 也直接返回 `CHANNEL_UNAVAILABLE`，目前无可用写端点。先请求用户确认写意图仍不等于执行成功，前端应引导到平台订单页或明确建议联系商家。未来须由 H5 新增可信写代理、单独 write scope、本人校验、幂等/审计并改 adapter；本草案**不声称任何写 URL 已可用**。[`backend/customer_actions.py`](../backend/customer_actions.py)、[`agent/customer_tools.py`](../agent/customer_tools.py)
 
-**本地工单已实现，但不通知商家**：用户明确要求联系店铺时 `contact_merchant` 在 agent 自有 PG 表登记 `merchant_tickets`；`summary` 必填，有 `order_id` 必用本人票据验证；仅唯一命中店铺才给 `service_phone`，否则不编号码。成功返回 `ticket_id,status=open,delivery_scope=local_only,merchant_channel=channel_unavailable,merchant_notified=false,order_ownership_verified`，落库失败不报成功。商家后台消费、送达、状态推进/回执都属接入方待办，不能把登记说成“商家已收到”。[`backend/merchant_contact.py`](../backend/merchant_contact.py)、[`backend/storage/db.py`](../backend/storage/db.py)
+**本地工单已实现，但不通知商家**：用户明确要求联系店铺时 `contact_merchant` 在 agent 自有 PG 表登记 `merchant_tickets`；`summary` 必填，有 `order_id` 必用本人票据验证；仅唯一命中店铺才给 `service_phone`，否则不编号码。成功返回 `ticket_id,status=open,delivery_scope=local_only,merchant_channel=channel_unavailable,merchant_notified=false,order_ownership_verified`，落库失败不报成功。接入方可用**15 分钟内签发的本人 Bearer JWT** 调 `GET /api/merchant-tickets?limit=20&offset=0` 分页展示摘要、`GET /api/merchant-tickets/{id}` 展示本人详情；用户在对话中追问已登记事项时 `query_my_tickets` 仅在请求入口验证同一新鲜 JWT 后从受信上下文取本人身份，不接受模型填写他人用户 ID。匿名或旧 JWT 返回 401，别人的编号与不存在的编号一律返回 404；列表不返回原始诉求详情和回拨电话。响应始终包含 `delivery_scope=local_only,merchant_delivery_verified=false`，即使数据库里有手工状态也**不是商家签收回执**。商家后台消费、送达、状态推进/回执都属接入方待办，不能把登记说成“商家已收到”。[`backend/merchant_contact.py`](../backend/merchant_contact.py)、[`backend/routers/merchant_tickets.py`](../backend/routers/merchant_tickets.py)、[`backend/storage/db.py`](../backend/storage/db.py)
 
 ## 5. 提醒、通知和时区
 
-`set_reminder` 的一次性 `first_run="YYYY-MM-DD HH:MM"` 解释为 **Asia/Shanghai 本地时间**，返回 UTC ISO `next_run`、本地 `next_run_local` 和 `timezone`；周期规则为五字段 cron（分 时 日 月 周），支持数字、`*`、`*/n`、范围、逗号列表，`0=周日`，日和周均受限时按 OR；非法或两年内不触发返回 `INVALID_ARGUMENT`。进程内线程每约 60 秒扫描 due，PG `FOR UPDATE SKIP LOCKED` 事务写 `notifications`，非秒级实时承诺；一次性置 done，周期推进。接入方 JWT 调 `GET /api/notifications?limit=50&offset=0` 获取 `{ok,data:{items,unread}}`、`POST /api/notifications/{id}/read` 标已读、`GET /api/reminders` 查看、`DELETE /api/reminders/{id}` 软删；读写按 JWT 用户 WHERE 过滤。**仅站内 inbox**，微信/短信/外部推送待接入方接通；生产必须开启鉴权。[`backend/reminders.py`](../backend/reminders.py)、[`backend/routers/notifications.py`](../backend/routers/notifications.py)、[`main.py`](../main.py)
+`set_reminder` 的一次性 `first_run="YYYY-MM-DD HH:MM"` 解释为 **Asia/Shanghai 本地时间**，返回 UTC ISO `next_run`、本地 `next_run_local` 和 `timezone`；周期规则为五字段 cron（分 时 日 月 周），支持数字、`*`、`*/n`、范围、逗号列表，`0=周日`，日和周均受限时按 OR；非法或两年内不触发返回 `INVALID_ARGUMENT`。进程内线程每约 60 秒扫描 due，PG `FOR UPDATE SKIP LOCKED` 事务写 `notifications`，非秒级实时承诺；一次性置 done，周期推进。接入方 JWT 调 `GET /api/notifications?limit=50&offset=0` 获取 `{ok,data:{items,unread}}`、`POST /api/notifications/{id}/read` 标已读；`GET /api/reminders` 查规则及上海时区 `next_run_local`，`POST /api/reminders/{id}/pause|resume` 暂停和恢复，`PATCH /api/reminders/{id}` 传 `{"content":"..."}` 或 `{"cron":"0 9 8 * *"}` 或 `{"first_run":"YYYY-MM-DD HH:MM"}` 修改；`DELETE /api/reminders/{id}` 软删不可恢复。对话中 `manage_my_reminders` 支持 list/pause/resume/update/delete，来自受信上下文的本人身份，操作指定提醒前应先查清编号。恢复周期规则会跳过暂停期间的触发，一次性时间已过必须先改为未来时间；读写按 JWT 用户 WHERE 过滤。**仅站内 inbox**，微信/短信/外部推送待接入方接通；生产必须开启鉴权。[`backend/reminders.py`](../backend/reminders.py)、[`backend/routers/notifications.py`](../backend/routers/notifications.py)、[`main.py`](../main.py)
 
 ## 6. 图、语音、贺卡
 
@@ -58,7 +58,7 @@ JWT HS256 的 `sub` 是 agent `user_id`，`platform` 仅供监控归因；资源
 
 ## 8. 上线、回滚、测试交接
 
-1. **先核基线并备份**：仓库版本不证明现网版本；记录目标环境运行版本、镜像摘要、配置键名（不记录值），备份生产 PG、图片持久数据、现用镜像/前端静态产物和安全保存的环境配置。`init_db` 的增量建表、image task 自检必须预演；若 DBA 不授建表权限，先准备审核过的有序迁移，切勿直接在生产“试一下”。[`main.py`](../main.py)、[`backend/storage/db.py`](../backend/storage/db.py)、[`migrations/001_image_tasks.sql`](../migrations/001_image_tasks.sql)
+1. **先核基线并备份**：仓库版本不证明现网版本；记录目标环境运行版本、镜像摘要、配置键名（不记录值），备份生产 PG、图片持久数据、现用镜像/前端静态产物和安全保存的环境配置。`init_db` 启动会运行 [`db.py`](../backend/storage/db.py) 的**完整 schema DDL**（包括工单和提醒表及索引）；[`001_image_tasks.sql`](../migrations/001_image_tasks.sql) 只处理图片任务，**不能代替完整初始化，也不意味着仅有 DML 权限的账号就能启动**。DBA 限权环境须先评审完整 schema 和启动 DDL 策略，预演权限，再发布；不要直接在生产“试一下”。[`main.py`](../main.py)
 2. **依赖先行，按组件灰度**：H5 可信签票和只读接口、本人生效与越权都验证后再启用 `CUSTOMER_SERVICE_ENABLED`；按当前 Compose 拓扑**只重建生产 agent**，未经变更授权不触动隔离 demo；仅当 nginx/dashboard 自身变更才按变更单更新。启动后验证 HTTPS `/health`、SSE、数据库与上游，不用另一套临时服务冒充现有入口。[`docker-compose.yml`](../docker-compose.yml)、[`deploy/nginx.conf`](../deploy/nginx.conf)、[`releases/v1.4.0/UPGRADE.md`](../releases/v1.4.0/UPGRADE.md)
 3. **自动与人工验收**：测试依赖就绪后执行 `python -m pytest -q` 并记录环境/退出码；联测普通与 cs1 本人/跨人/篡改/过期、商品价单位与源授权、订单/售后读取和失败码、无/多门店工单、不发送商家通知、写通道 `CHANNEL_UNAVAILABLE`、SSE 最终 `done.reply`、图像状态/属主、语音/贺卡、提醒 UTC/上海时间和通知已读、429/503/504、指标密钥。H5 真实接口与商家联动由各接入方签收，模拟数据不能冒充正式验收。[`tests/`](../tests/)、[`backend/routers/chat.py`](../backend/routers/chat.py)、[`backend/customer_actions.py`](../backend/customer_actions.py)
 4. **回滚**：先关客服新功能/灰度入口，再回退生产 agent 镜像及实际变更的静态资源，验证旧路由、会话与 SSE；保留新增表与工单/提醒数据供追踪，绝不未经兼容性评估自动删表或整库恢复覆盖上线后业务数据。交接清单注明构建与配置版本（不含密钥）、用例证据、未接写通道和外部通知、责任人及回滚触发条件。[`releases/v1.4.0/UPGRADE.md`](../releases/v1.4.0/UPGRADE.md)、[`releases/v1.4.0/HANDOFF-CHECKLIST.md`](../releases/v1.4.0/HANDOFF-CHECKLIST.md)

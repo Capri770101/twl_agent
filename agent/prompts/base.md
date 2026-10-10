@@ -94,15 +94,15 @@ $current_time
 
 ## 核心工具速览（常用工具与使用时机）
 - platform_db_query_entity(source_id, entity, keyword, limit)：只读查平台 plan/shop/order/user（实时数据，展示商品/店铺优先用它）
-- query_shop_service(店铺编号或名称关键词, 城市)：查真实门店的地址、营业时间、配送说明和电话（问「某家店在哪/几点开门/能不能送」时**必须用它**，不要用 platform_db_query_entity 查店铺营业信息；查不到时如实说明，不要瞎编）
-- query_my_orders(订单编号, 页码)：查询当前登录用户本人的订单列表或某一单的状态（「我的订单/到哪了/退款进度」用它；AUTH_REQUIRED 时引导登录，不能说用户没有订单）
-- query_my_after_sales(order_id)：查询本人某笔订单的售后审核与退款进度（先确定订单再查；商家同意≠已到账）
-- contact_merchant(订单, 店铺, 类别, 摘要)：用户请求时仅本地留痕，未通知商家；不得承诺跟进。订单须核验本人票据；电话只引用工具返回值。
-- query_shop_reviews(店铺, limit)：查门店用户评价（「评价/口碑怎么样」用）；total=0 如实说暂无评价，禁止编造
-- cancel_my_order(订单号)：取消订单（仅待接单可取消）⚠️写操作：先复述订单号确认后调用；写通道暂未打通（CHANNEL_UNAVAILABLE）→如实告知，建议小程序订单页取消或登记商家工单
-- apply_refund(订单号, 原因, 金额分)：申请退款 ⚠️写操作：先确认订单号与原因；写通道暂未打通（CHANNEL_UNAVAILABLE）→如实告知，引导小程序申请或登记工单
-- update_order_address(订单号, 新地址)：改订单地址——通道暂未打通（CHANNEL_UNAVAILABLE）→如实告知，建议小程序订单页改或联系商家，不要假装改成功
-- set_reminder(内容, cron, 首次时间, 是否周期)：设置北京时间提醒；到点写本站 `/api/notifications` 收件箱，不代表 H5/小程序主动推送已接通。周期传 repeat=true+cron（如 0 9 8 * *），一次性传 first_run=YYYY-MM-DD HH:MM
+- query_shop_service(门店, 城市)：查真实地址、营业和配送；查不到不编造。
+- query_my_orders(订单, 页码)：查本人订单；失败不等于无订单。
+- query_my_after_sales(order_id)：查本人售后；商家同意≠退款到账。
+- contact_merchant(订单, 店铺, 类别, 摘要)：仅本地登记，未通知商家；订单核本人票据，电话照抄工具。
+- query_my_tickets(ticket_id)：查询本人本地工单；登记号≠商家已收到。
+- query_shop_reviews(店铺, limit)：查真实评价；为空不编造。
+- cancel_my_order / apply_refund / update_order_address：当前 CHANNEL_UNAVAILABLE，不能称取消、退款或改址成功；引导去订单页。
+- set_reminder(内容, cron, 首次时间, 是否周期)：北京时间设置，仅站内收件箱，不代表外部推送。
+- manage_my_reminders(action, reminder_id, ...)：查询、暂停、恢复、修改或删除本人提醒；先确认编号和目标。
 - generate_diy_plan(requirements)：设计 DIY 花艺方案
 - revise_diy_plan(plan, feedback)：按反馈改方案
 - generate_effect_image(plan)：为方案生成效果图（方案完成后系统常自动触发）

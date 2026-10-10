@@ -79,7 +79,7 @@ TERMINAL_TOOLS: tuple[str, ...] = ('respond_to_user', 'show_plan_card', 'show_op
 
 #: 延迟工具：**读**同轮其它工具写入的会话状态（生图要取「最近一次 DIY 方案」），
 #: 必须排在并发批次之后单独执行，不能进 `asyncio.gather`。
-DEFERRED_TOOLS: tuple[str, ...] = ('generate_effect_image',)
+DEFERRED_TOOLS: tuple[str, ...] = ('generate_effect_image', 'query_my_tickets', 'manage_my_reminders')
 
 #: 产卡工具：调用后本轮应当产出方案卡。
 #: 用于「该出卡却只写文字」护栏的判据 —— 用户被告知「明细在卡片里」而卡片不存在，

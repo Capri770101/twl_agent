@@ -1003,7 +1003,7 @@ def _unavailable_write_action(tool_log: list[Any]) -> str:
 def _local_merchant_ticket(tool_log: list[Any]) -> dict:
     """提取本轮仅本地留痕、未投递商家的可信工单结果。"""
     for tc in reversed(tool_log or []):
-        if getattr(tc, 'name', '') != 'contact_merchant':
+        if getattr(tc, 'name', '') not in ('contact_merchant', 'query_my_tickets'):
             continue
         try:
             raw = getattr(tc, 'result', None)
@@ -1014,6 +1014,10 @@ def _local_merchant_ticket(tool_log: list[Any]) -> dict:
             data = payload.get('data') or {}
             if isinstance(data, dict) and data.get('delivery_scope') == 'local_only':
                 return data
+            if isinstance(data, dict) and isinstance(data.get('items'), list):
+                items = data['items']
+                if items and all(isinstance(item, dict) and item.get('delivery_scope') == 'local_only' for item in items):
+                    return {'ticket_id': None, 'delivery_scope': 'local_only'}
     return {}
 
 
@@ -1973,12 +1977,12 @@ from backend.execution import run_worker, checkpoint
 class ReActAgent:
     """基于 ReAct + 状态机的导购智能体。"""
 
-    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='') -> ChatResponse:
+    async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False) -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
         loop = asyncio.get_running_loop()
-        return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential), user_id, settings.request_timeout)
+        return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout)
 
-    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str=''):
+    async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False):
         """流式异步入口：yield SSE 事件字典，供 /chat/stream 消费。
 
         事件类型：
@@ -2007,7 +2011,7 @@ class ReActAgent:
                 # 否则消费端 `await queue.get()` 会永久阻塞 —— SSE 挂死、用户转圈不停。
                 try:
                     result = await asyncio.wait_for(
-                        run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential), user_id, settings.request_timeout),
+                        run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
                         timeout=settings.request_timeout,
                     )
                     # done 事件带**经清理链处理过**的完整结果：流式期间推的是模型原始
@@ -2052,7 +2056,7 @@ class ReActAgent:
 
     @scoped_agent_run
     @scoped_tools
-    async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, customer_credential: str='') -> ChatResponse:
+    async def run(self, user_id: str, message: str, session_id: str | None, location: dict[str, float] | None, on_event: Callable[[dict], None] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, customer_credential: str='', ticket_access_verified: bool=False) -> ChatResponse:
         t0 = time.perf_counter()
         # 本轮硬性时间预算（P0 防线程裸跑）：比调用方 wait_for(REQUEST_TIMEOUT) 略早收口，留收尾余量。
         _deadline = t0 + max(10.0, settings.request_timeout - _DEADLINE_MARGIN)
@@ -2263,7 +2267,7 @@ class ReActAgent:
                 tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
                             'shop_id': shop_id, 'entry': entry, 'product_id': product_id,
                             'product_title': product_title, 'requirement': req_acc, 'customer_credential': customer_credential,
-                            'user_message': message}
+                            'user_message': message, 'ticket_access_verified': ticket_access_verified}
                 if len(exec_idx) > 1:
                     gathered = await asyncio.gather(
                         *(execute_tool(tool_calls[i]['name'], tool_calls[i]['arguments'], tool_ctx)

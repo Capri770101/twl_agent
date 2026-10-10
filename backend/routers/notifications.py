@@ -1,22 +1,13 @@
-"""提醒/通知读取 API：到点收件箱 + 提醒规则管理。
-
-为什么补这个（2026-10-10 交付前查漏）：set_reminder 只负责**登记**
-（写 reminders + 到点写 notifications），但接入方没有任何 HTTP 通道能
-**读**到这些通知——提醒生成了用户看不见，等于哑炮。本路由补齐读取侧：
-
-- GET /notifications  —— 收件箱（到点提醒 + 站内信统一出口）
-- GET /reminders      —— 本人提醒规则列表
-- DELETE /reminders/{id} —— 删除本人提醒规则
-
-鉴权与 chat 一致：Bearer JWT（/auth/token 或 /auth/customer-token 换发），
-user_id 从 token 解出，**不信任请求体**——属主校验内建在 WHERE 条件里，
-不可能读到别人的提醒/通知。
-"""
+"""提醒/通知站内 API：本人收件箱、提醒规则管理。"""
 from __future__ import annotations
 
+import datetime as _dt
+
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from backend.auth import current_user
+from backend.reminders import _FIRST_RUN_RE, _SHANGHAI, _UTC, _next_after, parse_cron
 from backend.storage.db import transaction
 
 router = APIRouter(prefix='/api', tags=['notifications'])
@@ -72,19 +63,130 @@ async def list_reminders(user_id: str = Depends(current_user)) -> dict:
     """本人提醒规则（含停用项；status=active 的才会触发）。"""
     with transaction() as conn:
         rows = conn.execute(
-            'SELECT id, content, cron, first_run, repeat, next_run, status, created_at '
-            "FROM reminders WHERE user_id = ? ORDER BY id DESC LIMIT 100",
+            'SELECT ' + _REMINDER_COLUMNS + ' FROM reminders '
+            'WHERE user_id = ? ORDER BY id DESC LIMIT 100',
             (user_id,)).fetchall()
-    items = [{
-        'id': _row(r)['id'],
-        'content': _row(r)['content'],
-        'cron': _row(r)['cron'],
-        'first_run': _row(r)['first_run'],
-        'repeat': bool(_row(r)['repeat']),
-        'next_run': str(_row(r)['next_run']),
-        'status': _row(r)['status'],
-    } for r in rows]
-    return {'ok': True, 'data': {'items': items}}
+    return {'ok': True, 'data': {'items': [_reminder_data(r) for r in rows]}}
+
+
+def _reminder_data(row) -> dict:
+    r = _row(row)
+    next_run = r['next_run']
+    # PostgreSQL TIMESTAMPTZ is an aware instant, regardless of server timezone.
+    return {'id': r['id'], 'content': r['content'], 'cron': r['cron'],
+            'first_run': r['first_run'], 'repeat': bool(r['repeat']),
+            'next_run': next_run.isoformat(),
+            'next_run_local': next_run.astimezone(_SHANGHAI).strftime('%Y-%m-%d %H:%M'),
+            'timezone': 'Asia/Shanghai', 'status': r['status']}
+
+
+_REMINDER_COLUMNS = 'id, content, cron, first_run, repeat, next_run, status'
+
+
+class ReminderPatch(BaseModel):
+    content: str | None = None
+    cron: str | None = None
+    first_run: str | None = None
+
+
+def _invalid(reason: str) -> dict:
+    return {'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': reason}
+
+
+def _not_found() -> dict:
+    return {'ok': False, 'code': 'NOT_FOUND', 'reason': '提醒不存在或不属于你'}
+
+
+def _schedule(cron: str | None, first_run: str | None, now: _dt.datetime):
+    """Compute an instant from the same Shanghai rules used on creation."""
+    if cron is not None:
+        parsed = parse_cron(cron)
+        if parsed is None:
+            return None
+        nxt = _next_after(parsed, now)
+        return (cron, None, True, nxt) if nxt is not None else None
+    if not isinstance(first_run, str) or not _FIRST_RUN_RE.fullmatch(first_run):
+        return None
+    try:
+        nxt = _dt.datetime.strptime(first_run, '%Y-%m-%d %H:%M').replace(
+            tzinfo=_SHANGHAI).astimezone(_UTC)
+    except ValueError:
+        return None
+    return (None, first_run, False, nxt) if nxt > now else None
+
+
+@router.post('/reminders/{rid}/pause')
+async def pause_reminder(rid: int, user_id: str = Depends(current_user)) -> dict:
+    """Pause only an active owned rule; scheduler and this UPDATE lock the same row."""
+    with transaction() as conn:
+        row = conn.execute(
+            "UPDATE reminders SET status='paused', updated_at=NOW() "
+            "WHERE id=? AND user_id=? AND status='active' RETURNING " + _REMINDER_COLUMNS,
+            (rid, user_id)).fetchone()
+    return {'ok': True, 'data': _reminder_data(row)} if row else _not_found()
+
+
+@router.post('/reminders/{rid}/resume')
+async def resume_reminder(rid: int, user_id: str = Depends(current_user)) -> dict:
+    """Never replay missed occurrences: calculate a fresh future run on resume."""
+    with transaction() as conn:
+        row = conn.execute('SELECT ' + _REMINDER_COLUMNS +
+                           ' FROM reminders WHERE id=? AND user_id=? AND status=? FOR UPDATE',
+                           (rid, user_id, 'paused')).fetchone()
+        if row is None:
+            return _not_found()
+        r = _row(row)
+        now = _dt.datetime.now(_UTC)
+        schedule = _schedule(r['cron'] if r['repeat'] else None,
+                             r['first_run'] if not r['repeat'] else None, now)
+        if schedule is None:
+            return _invalid('提醒时间已过或规则无效，请先修改日程')
+        row = conn.execute(
+            "UPDATE reminders SET next_run=?, status='active', updated_at=NOW() "
+            'WHERE id=? AND user_id=? AND status=? RETURNING ' + _REMINDER_COLUMNS,
+            (schedule[3], rid, user_id, 'paused')).fetchone()
+    return {'ok': True, 'data': _reminder_data(row)}
+
+
+@router.patch('/reminders/{rid}')
+async def modify_reminder(rid: int, payload: ReminderPatch,
+                          user_id: str = Depends(current_user)) -> dict:
+    """Edit content and/or schedule of an active or paused owned reminder.
+
+    Supply cron for a recurring schedule, or first_run for a one-off Shanghai
+    wall time. A schedule edit recomputes next_run even while paused; it does
+    not implicitly activate a paused reminder.
+    """
+    fields = payload.model_fields_set
+    if not fields or any(getattr(payload, key) is None for key in fields):
+        return _invalid('请提供非空的 content、cron 或 first_run')
+    if 'cron' in fields and 'first_run' in fields:
+        return _invalid('cron 与 first_run 只能选择一个')
+    content = payload.content.strip() if 'content' in fields else None
+    if 'content' in fields and (not content or len(content) > 200):
+        return _invalid('content 长度须为 1 至 200 字符')
+    with transaction() as conn:
+        row = conn.execute('SELECT ' + _REMINDER_COLUMNS +
+                           " FROM reminders WHERE id=? AND user_id=? AND status IN ('active','paused') FOR UPDATE",
+                           (rid, user_id)).fetchone()
+        if row is None:
+            return _not_found()
+        old = _row(row)
+        schedule = None
+        if 'cron' in fields or 'first_run' in fields:
+            schedule = _schedule(payload.cron if 'cron' in fields else None,
+                                 payload.first_run if 'first_run' in fields else None,
+                                 _dt.datetime.now(_UTC))
+            if schedule is None:
+                return _invalid('cron 格式不合法、两年内无触发时间或 first_run 不在未来')
+        cron, first_run, repeat, next_run = schedule if schedule else (
+            old['cron'], old['first_run'], old['repeat'], old['next_run'])
+        row = conn.execute(
+            'UPDATE reminders SET content=?, cron=?, first_run=?, repeat=?, next_run=?, '
+            'updated_at=NOW() WHERE id=? AND user_id=? RETURNING ' + _REMINDER_COLUMNS,
+            (content if content is not None else old['content'], cron, first_run,
+             repeat, next_run, rid, user_id)).fetchone()
+    return {'ok': True, 'data': _reminder_data(row)}
 
 
 @router.delete('/reminders/{rid}')
