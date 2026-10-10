@@ -28,6 +28,10 @@ JSON 作为首轮策略格式，避免新增 YAML 依赖；格式不是架构目
 
 第一阶段不引入新模型，不改数据库结构，不推送或部署。
 
+## 第二阶段评估结论
+
+详见 `docs/architecture-phase2-options.md`：当前不立即引入 LangGraph；事件记忆先规划影子投影、幂等与删除；不公开未验证的模型增量。已修正 `arun_stream` 过时的逐字输出说明，`tests/test_public_stream_contract.py` 通过真实流入口锁定最终 `text` 与 `done.reply` 一致及无原始 `text_delta`。这些是设计和本地契约，不代表迁移或线上行为评测已完成。
+
 ## 已建立的行为基线
 
 - 上下文：`tests/test_context_budget.py` 验证完整轮次保留和最近超长轮不切断；`tests/test_plan_context.py` 验证 DIY 方案优先、花材/配材/价格摘要及后续方案讨论。

@@ -1754,13 +1754,12 @@ class ReActAgent:
 
         事件类型：
         - {"event": "tool_call", "name": "...", "status": "ok/error"}
-        - {"event": "text_delta", "content": "..."}   — 最终回复**逐字**推送（打字机效果）
-        - {"event": "text_rollback"}                  — 撤回上面已推的文字（那段不是给用户看的）
-        - {"event": "text", "content": "..."}         — 兼容旧契约的整段文字
+        - {"event": "text"}                       — 护栏与清理完成后的整段文字
         - {"event": "card", "ui": "...", "data": {...}}  — 结构化卡片
         - {"event": "done", "session_id", "reply", "ui", "data", "ai_generated", "content_disclosure"}
-          — ⚠️ **以这里的 `reply` 为准**：流式推的是模型原始输出，这里是清理链处理后的最终版
-          （危险标签已转义、独白已替换、卡片要点可能已追加）。
+          — `reply` 为最终权威文字（已经脱敏、清理并做事实/卡片校验）。
+        注意：_stream_llm 内部产生的 text_delta/text_rollback 被 run() 过滤，不对客户
+        公开未验证的模型片段；前端不能依赖逐字输出或回滚事件。
         - {"event": "error", "message": "..."}
         """
         try:
@@ -1781,9 +1780,8 @@ class ReActAgent:
                         run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
                         timeout=settings.request_timeout,
                     )
-                    # done 事件带**经清理链处理过**的完整结果：流式期间推的是模型原始
-                    # content，清理链可能做了危险标签转义 / 独白替换 / 追加卡片要点，
-                    # 接入方应在 done 时用它覆盖已推的文字（2026-09-18 审计 P0-1）。
+                    # done.reply 与前面最终 text 事件采用同一份校验后回复；
+                    # 保留完整回复供 SSE 客户端恢复/去重，不发布原始模型片段。
                     # ⚠️ 全部用 getattr 兜底：result 若是替身对象/异常路径可能缺字段，
                     # 而这里一旦抛异常就会退化成 error 事件，前端连 done 都收不到。
                     _ui = getattr(result, 'ui', None)
