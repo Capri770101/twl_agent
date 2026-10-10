@@ -55,10 +55,17 @@ def _get_or_create_session(user_id: str, conversation_id: str | None, shop_id: s
                 return row['session_id']
             if row:
                 raise PermissionError('conversation does not belong to user')
-            conn.execute(
-                _INSERT_SESSION + ' ON CONFLICT (session_id) DO NOTHING',
+            inserted = conn.execute(
+                _INSERT_SESSION + ' ON CONFLICT (session_id) DO NOTHING RETURNING session_id',
                 (conversation_id, user_id, 'analyze', '新对话', shop_id, entry, product_id, product_title, _now(), _now())
-            )
+            ).fetchone()
+            if inserted:
+                return conversation_id
+            # 并发创建同一个 ID 时，冲突可能属于另一个用户；绝不能
+            # 把 DO NOTHING 当作创建成功，必须重新读取并核对归属。
+            existing = conn.execute('SELECT user_id FROM sessions WHERE session_id = ?', (conversation_id,)).fetchone()
+            if not existing or existing['user_id'] != user_id:
+                raise PermissionError('conversation does not belong to user')
             return conversation_id
     session_id = uuid.uuid4().hex
     with transaction() as conn:

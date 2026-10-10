@@ -30,7 +30,7 @@ def classify(message: str) -> IntentRoute | None:
     # “订单提醒”仍是提醒，不能先被“我的订单”分流为订单售后。
     if '提醒' in text:
         return _route('reminder')
-    if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '售后进度', '查订单',
+    if any(w in text for w in ('我的订单', '订单状态', '订单进度', '退款进度', '退款审核', '售后进度', '查订单',
                                '取消订单', '取消这单', '退了这单', '申请退款', '不想要了', '退货退款')):
         from backend.config import settings
         if settings.CUSTOMER_SERVICE_ENABLED:
