@@ -38,7 +38,7 @@ def tool_names(response: dict[str, Any]) -> list[str]:
 
 
 #: checks 结构化断言的支持类型（judge 自动判定）。
-#: 字符串条目保留为"人工项"——报告里计数为 manual_checks，不参与 pass/fail。
+#: 字符串条目保留为人工项；未经复核的场景不能计入已通过。
 CHECK_ASSERTION_TYPES = frozenset({'must_include', 'must_not_include', 'ui_is', 'tool_used', 'tool_not_used'})
 
 
@@ -70,6 +70,8 @@ def _judge_check_assertions(case: dict[str, Any], response: dict[str, Any]) -> t
         elif kind == 'tool_not_used':
             if str(value) in used:
                 issues.append(f'check tool_not_used: {value!r} was called')
+        else:
+            issues.append(f'unknown check assertion: {kind!r}')
     return issues, manual
 
 
@@ -101,6 +103,18 @@ def judge(case: dict[str, Any], response: dict[str, Any]) -> tuple[bool, list[st
     check_issues, _manual = _judge_check_assertions(case, response)
     issues.extend(check_issues)
     return (not issues, issues)
+
+
+def evaluate_response(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
+    """区分机器检查通过、需要人工复核及失败；人工项不冒充通过。"""
+    machine_passed, issues = judge(case, response)
+    manual_check_items = [check for check in case.get('checks') or [] if isinstance(check, str)]
+    status = 'failed' if not machine_passed else 'needs_review' if manual_check_items else 'passed'
+    return {
+        'passed': status == 'passed', 'machine_passed': machine_passed,
+        'manual_checks': len(manual_check_items), 'manual_check_items': manual_check_items,
+        'status': status, 'issues': issues,
+    }
 
 
 def exchange_token(client: httpx.Client, base: str, external_id: str, api_key: str) -> dict[str, str]:
@@ -151,20 +165,27 @@ def main() -> int:
                 )
                 response.raise_for_status()
                 payload = response.json()
-                passed, issues = judge(case, payload)
+                row.update(evaluate_response(case, payload))
                 row.update({
-                    'passed': passed, 'issues': issues, 'ui': payload.get('ui'),
+                    'ui': payload.get('ui'),
                     'tools': tool_names(payload), 'reply': str(payload.get('reply') or '')[:500],
                     'stage': payload.get('stage'), 'session_id': payload.get('session_id'),
                 })
             except Exception as exc:  # 单条失败不终止整批
-                row.update({'passed': False, 'issues': [f'{type(exc).__name__}: {str(exc)[:300]}']})
+                row.update({'passed': False, 'machine_passed': False, 'status': 'failed',
+                            'manual_checks': 0, 'manual_check_items': [],
+                            'issues': [f'{type(exc).__name__}: {str(exc)[:300]}']})
             row['elapsed_seconds'] = round(time.perf_counter() - started, 3)
             results.append(row)
-            print(('PASS' if row['passed'] else 'FAIL'), row['id'], row['elapsed_seconds'], row.get('issues') or '')
+            print(row['status'].upper(), row['id'], row['elapsed_seconds'], row.get('issues') or '')
     report = {
         'run_id': run_id, 'base_url': base, 'case_file': str(args.cases),
-        'summary': {'total': len(results), 'passed': sum(1 for row in results if row['passed'])},
+        'summary': {
+            'total': len(results),
+            'passed': sum(row['status'] == 'passed' for row in results),
+            'needs_review': sum(row['status'] == 'needs_review' for row in results),
+            'failed': sum(row['status'] == 'failed' for row in results),
+        },
         'results': results,
     }
     output = args.output or (RESULTS / f'{run_id}.json')

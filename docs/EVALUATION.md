@@ -26,7 +26,7 @@ python scripts/run_eval.py --base-url http://129.204.85.139/agent
 EVAL_PLATFORM_API_KEY=... python scripts/run_eval.py --base-url http://127.0.0.1:8000
 ```
 
-默认即使有失败也输出完整报告并返回 0；发布质量门使用 `--strict`。当前判定覆盖 UI 与工具白名单/黑名单，`checks` 中的自然语言质量项仍需人工或后续规则评分。
+默认即使有失败也输出完整报告并返回 0；发布质量门使用 `--strict`。机器判定覆盖 UI、工具范围及结构化 `checks`。字符串形式的自然语言检查仍需人工复核，报告列出 `manual_check_items` 并标记 `needs_review`，**不计入 passed**；`--strict` 遇到失败或待复核均返回非零。`machine_passed` 只表示自动检查通过，不代表回答质量已经验收。需要发布前逐条复核报告中的人工检查项并记录结论；若能转为可验证的结构化断言，可消除待复核状态。
 
 ## 真实评测记录
 
