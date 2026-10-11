@@ -11,7 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.auth import current_user, require_user
 from backend.execution import run_worker
 from backend.rate_limit import check_rate_limit
-from backend.config import settings
+# settings 供 tests/test_greeting_api.py 通过 api.settings 注入配置（AUTH_REQUIRED 等）。
+from backend.config import settings  # noqa: F401
 from agent.engine.llm import call_llm
 from backend.storage.tasks import create_greeting_card_task
 

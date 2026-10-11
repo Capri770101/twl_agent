@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from typing import Any
 
 from backend.storage.db import transaction
 

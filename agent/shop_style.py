@@ -1,7 +1,6 @@
 """从店铺在售商品摘要提取可控的视觉风格画像。"""
 from __future__ import annotations
 
-import json
 import threading
 import time
 from typing import Any

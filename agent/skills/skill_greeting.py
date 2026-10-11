@@ -442,7 +442,6 @@ def _draw_stem_leaf(draw: Any, x: float, y: float, length: float, leaf: tuple[in
 
 def _fit_and_draw_text(draw: Any, text: str, area: tuple[int, int, int, int], ink: tuple[int, int, int], max_size: int, min_size: int, line_ratio: float, anchor_center: bool = True) -> tuple[str, int, list[str]]:
     """在区域内自适应字号居中绘制多行正文；返回(实际文本,字号,行列表)。"""
-    from PIL import ImageDraw
     x0, y0, x1, y1 = area
     max_w = x1 - x0
     max_h = y1 - y0

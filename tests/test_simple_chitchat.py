@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 import agent.agent as A
 from agent.agent import ReActAgent, _is_simple_chitchat

@@ -309,7 +309,7 @@ async def chat_stream(
                     data.setdefault('ai_generated', True)
                     data.setdefault('content_disclosure', AI_CONTENT_DISCLOSURE)
                 yield f'event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
-        except Exception as exc:
+        except Exception:
             _ok = False
             logger.exception('SSE 流异常')
             yield f"event: error\ndata: {json.dumps({'message': '处理过程中出现错误，请稍后重试'}, ensure_ascii=False)}\n\n"

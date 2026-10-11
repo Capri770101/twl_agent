@@ -18,18 +18,14 @@
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import agent.agent as A  # noqa: E402
-from agent.agent import ReActAgent  # noqa: E402
 from backend.config import settings  # noqa: E402
 from tests.test_run_e2e import _install, _run, _chunk, _tc, _terminal  # noqa: E402
 

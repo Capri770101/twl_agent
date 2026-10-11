@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from backend.config import Settings
 from backend.customer_service import query_orders

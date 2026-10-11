@@ -1,0 +1,28 @@
+[project]
+name = "twl-agent"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 160
+target-version = "py312"
+exclude = [".venv", "data", "releases", "demo", "dashboard", "deploy"]
+
+[tool.ruff.lint]
+# 默认规则集（pyflakes + pycodestyle 错误级）。
+# 只拦"能构成真实缺陷"的问题：未用导入/变量、未定义名、语法错误。
+# E402 忽略：本仓库的既定模式是"惰性导入防循环依赖"（见 tests/verify.py 与
+# agent/customer_tools.py 的延迟导入），不属于错误。
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试桩模拟 httpx 客户端签名：json 参数遮蔽 json 模块是拟真必需。
+"tests/test_speech_api.py" = ["F811"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+# 渐进采用：mypy 以顾问模式引入，先挡 domain（已零错误），
+# agent/backend 的存量问题逐步清零后再收紧为硬门禁。
+warn_unused_ignores = false
+check_untyped_defs = true

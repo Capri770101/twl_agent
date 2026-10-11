@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 import copy
 import re
-from typing import Any
 
 from agent.toolkit import register_tool
-from backend.storage import tasks
 
 
 async def _store_diy_plan(plan: dict, _context: dict | None) -> None:

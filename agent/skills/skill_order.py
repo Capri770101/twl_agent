@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from agent.tools import _resolve_session_plan, register_tool
+from agent.tools import _resolve_session_plan
 from backend.config import settings
 
 logger = logging.getLogger('skills.order')

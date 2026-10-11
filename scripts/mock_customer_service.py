@@ -136,7 +136,6 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(404, 'NOT_FOUND')
             return
         if self.fault:
-            import threading
             if self.fault == 'timeout':
                 time.sleep(30)             # 超过 agent 侧 10s 工具超时
             elif self.fault == '500':

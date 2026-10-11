@@ -59,7 +59,6 @@ def _names(plan, group):
 
 
 def _all_flower_names(plan):
-    d = plan.get('design') or {}
     return _names(plan, 'main_flowers') + _names(plan, 'fillers') + _names(plan, 'foliage')
 
 

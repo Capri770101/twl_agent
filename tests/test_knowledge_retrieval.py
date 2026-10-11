@@ -9,7 +9,6 @@
 
 from pathlib import Path
 
-import pytest
 
 KB = Path(__file__).resolve().parent.parent / "agent" / "knowledge"
 

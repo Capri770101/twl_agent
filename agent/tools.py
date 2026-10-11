@@ -969,7 +969,7 @@ def _build_diy_steps(main: list[dict], fillers: list[dict], foliage: list[dict],
     trim_g = '；'.join(f'{n}留长 2/3 做托底勾边' for n in f2) or '尤加利留长做托底'
     # 单一花材（无配材且无叶材）：DIY 步骤不得编造满天星/尤加利等外搭花材。
     if not f1 and not f2:
-        step3 = f'填充层次：本束为单一花材，不额外搭配配材与叶材；各支主花交错分布、花头朝向一致并留出空隙，即可形成饱满层次。'
+        step3 = '填充层次：本束为单一花材，不额外搭配配材与叶材；各支主花交错分布、花头朝向一致并留出空隙，即可形成饱满层次。'
         step4 = f'配色比例：单一花材按色系 {colors} 统一色调，可同色系深浅过渡，避免拼入杂色。'
         outer = '整理外轮廓'
     else:

@@ -10,8 +10,7 @@ from backend.merchant_contact import contact_merchant as _contact_merchant
 from backend.customer_actions import (query_shop_reviews as _query_shop_reviews,
                                       cancel_my_order as _cancel_my_order,
                                       apply_refund as _apply_refund,
-                                      update_order_address as _update_order_address,
-                                      channel_unavailable as _channel_unavailable)
+                                      update_order_address as _update_order_address)
 
 #: H5 契约里的门店编号形态（见 docs/customer-service-contract.md §3）。
 #: 不匹配时说明模型把**店名**当编号传了（线上实测高发：提示词写了
@@ -57,7 +56,8 @@ async def _shops_by_name_keyword(keyword: str, city: str) -> dict:
                inject_context=True, tags=['customer_service'])
 async def query_shop_service(shop_id: str = '', city: str = '', _context: dict | None = None) -> str:
     selected = shop_id or (_context or {}).get('shop_id') or ''
-    if selected == 'default': selected = ''
+    if selected == 'default':
+        selected = ''
     if selected and not _SHOP_ID_RE.match(selected.strip()):
         return json.dumps(await _shops_by_name_keyword(selected, city), ensure_ascii=False, default=str)
     return json.dumps(await _tracked('shops', query_shops(selected, city)), ensure_ascii=False, default=str)

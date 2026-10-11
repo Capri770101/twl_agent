@@ -191,7 +191,6 @@ def test_color_relax_marks_partial_not_exact(configured) -> None:
 
 def test_color_relax_still_respects_shop(configured) -> None:
     """词形放宽不得越过硬约束。"""
-    meta: dict = {}
     assert hs.fetch_entity('aistore', 'plan', keyword='粉色系', shop_id='s999') == []
 
 

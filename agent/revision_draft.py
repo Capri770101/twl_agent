@@ -42,7 +42,7 @@ def _resolve_confirm_intent(message: str) -> str | None:
 
 
 async def handle_confirmation(uid, sid, message, store=None):
-    from agent.engine.ui_protocol import ChatResponse, UIType
+    from agent.engine.ui_protocol import ChatResponse
     st = _store(store)
     draft = await st.get_session_json(uid, sid, KEY)
     if not isinstance(draft, dict) or not draft:

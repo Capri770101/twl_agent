@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from agent.agent import _TERMINAL_TOOLS, _append_clarify
 from agent.tools import show_options

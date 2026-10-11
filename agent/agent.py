@@ -1746,7 +1746,6 @@ class ReActAgent:
 
     async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False) -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
-        loop = asyncio.get_running_loop()
         return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout)
 
     async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False):

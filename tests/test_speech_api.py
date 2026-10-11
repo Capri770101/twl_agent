@@ -1,6 +1,4 @@
 """speech 路由测试：TTS 合成/缓存、ASR 格式校验、鉴权与限流（不发真实网络请求）。"""
-import base64
-import json
 
 import pytest
 from fastapi import FastAPI

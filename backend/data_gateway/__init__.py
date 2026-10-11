@@ -9,3 +9,5 @@
 适配）已删除——本地商品/订单镜像会误导 LLM 读到空表，商品数据一律改为只读平台库。
 """
 from .mapper import generate_mapping_draft, tool_result
+
+__all__ = ['generate_mapping_draft', 'tool_result']

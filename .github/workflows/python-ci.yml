@@ -40,6 +40,12 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
+      - name: Lint (ruff, blocking)
+        run: python -m ruff check agent backend domain scripts tests main.py verify.py
+      - name: Type check domain (mypy, blocking)
+        run: python -m mypy domain
+      - name: Type check agent/backend (mypy, advisory)
+        run: python -m mypy agent backend || true
       - name: Compile Python sources
         run: python -m compileall -q agent backend domain scripts tests main.py verify.py
       - name: Validate offline evaluation scenarios

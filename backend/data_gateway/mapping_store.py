@@ -1,7 +1,6 @@
 """内部 PostgreSQL 中的映射草案存储与审计。"""
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 

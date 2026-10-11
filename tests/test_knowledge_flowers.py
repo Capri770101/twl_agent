@@ -10,7 +10,6 @@
 
 from pathlib import Path
 
-import pytest
 
 FLOWERS_PATH = Path(__file__).resolve().parent.parent / "agent" / "knowledge" / "flowers.json"
 
