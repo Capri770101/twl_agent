@@ -16,6 +16,29 @@ import uuid
 from typing import Any
 
 from agent.engine.llm import call_llm
+from agent.design.quantities import (
+    _BUDGET_ORAL as _BUDGET_ORAL, _MAGNITUDE_UNITS as _MAGNITUDE_UNITS,
+    _AMOUNT_PAT as _AMOUNT_PAT, _CN_DIGIT as _CN_DIGIT,
+    _cn_to_int as _cn_to_int, _extract_budget as _extract_budget,
+    _extract_stem_count as _extract_stem_count, _safe_float as _safe_float,
+    _safe_int as _safe_int,
+)
+from agent.design.instructions import (
+    _DIY_STEPS_MAX as _DIY_STEPS_MAX, _cap_steps as _cap_steps,
+    _build_diy_steps as _build_diy_steps, _build_care_tips as _build_care_tips,
+    _build_card_message as _build_card_message,
+)
+from agent.design.copy_text import (
+    _COPY_TEXT_MAX as _COPY_TEXT_MAX, build_plan_copy_text as build_plan_copy_text,
+)
+from agent.design.stem_allocation import (
+    _TIER_MAIN_STEMS as _TIER_MAIN_STEMS, _MAX_MAIN_STEMS as _MAX_MAIN_STEMS,
+    _price_table as _price_table, _alloc_stems as _alloc_stems,
+)
+from agent.design.price_breakdown import (
+    _get_tier as _get_tier, _build_budget_breakdown as _build_budget_breakdown,
+    _sync_plan_price as _sync_plan_price, _enrich_plan_fees as _enrich_plan_fees,
+)
 from agent.engine.ui_protocol import UIType
 from agent.knowledge import get_by_id, query_knowledge
 from domain.requirements import FlowerRequirement, accumulate
@@ -143,17 +166,6 @@ _OCCASION_KW = {'生日': '生日', '庆祝': '生日', '母亲节': '母亲', '
 _STYLE_KW = {'韩式': 'S_KOREAN', '韩系': 'S_KOREAN', '北欧': 'S_NORDIC', '简约': 'S_NORDIC', '极简': 'S_NORDIC', '复古': 'S_VINTAGE', '古典': 'S_VINTAGE', '港风': 'S_VINTAGE', '中古': 'S_VINTAGE', '自然': 'S_NATURAL', '野趣': 'S_NATURAL', '田园': 'S_NATURAL', 'ins': 'S_INS', 'ins风': 'S_INS', '网红': 'S_INS', '奶油风': 'S_INS', '法式': 'S_INS', '日式': 'S_JAPANESE', '禅': 'S_JAPANESE', '日系': 'S_JAPANESE'}
 _COLOR_KW = {'红': '红', '粉': '粉', '白': '白', '香槟': '香槟', '紫': '紫', '蓝': '蓝', '黄': '黄', '橙': '橙', '绿': '绿', '多彩': '多彩混合', '亮': '亮', '鲜艳': '亮', '缤纷': '多彩混合', '粉嫩': '粉', '浅粉': '粉', '桃红': '粉', '正红': '红', '酒红': '红', '橘': '橙', '鹅黄': '黄', '天蓝': '蓝', '湖蓝': '蓝', '香槟色': '香槟', '五彩': '多彩混合', '撞色': '多彩混合'}
 _MOOD_KW = {'温柔': '温柔', '温馨': '温馨', '浪漫': '浪漫', '清新': '清新', '热烈': '热烈', '活泼': '活泼', '高级': '高级', '素雅': '素雅', '优雅': '优雅', '莫兰迪': '素雅', '马卡龙': '清新', '小清新': '清新', '轻奢': '高级', '低调': '素雅', '治愈': '治愈', '安静': '素雅', '甜美': '甜美', '氛围感': '优雅', '高级感': '高级'}
-_BUDGET_ORAL = {'一两百': 150, '一二百': 150, '小几百': 200, '两三百': 250, '二三百': 250, '三四百': 350, '三五百': 400, '五六百': 550, '七八百': 750, '千把块': 1000, '一千': 1000, '一两千': 1500, '两三千': 2500}
-
-# 金额数量级单位：用户常说「预算5万」「三千左右」。丢掉单位会差 3~4 个数量级
-# （实测「预算5万」曾被解析成 5 元），所以数字模式必须把它一起捕获。
-_MAGNITUDE_UNITS: dict[str, float] = {
-    '万': 1e4, '萬': 1e4, 'w': 1e4, 'W': 1e4,
-    '千': 1e3, 'k': 1e3, 'K': 1e3,
-    '百': 1e2,
-}
-# 「金额数字」模式：阿拉伯数字（可带小数）+ 可选数量级单位。两处 group：数字 / 单位。
-_AMOUNT_PAT = r'(\d{1,6}(?:\.\d{1,2})?)\s*([万千百wWkK])?'
 
 def _build_scene_map() -> dict[str, str]:
     m: dict[str, str] = {}
@@ -239,19 +251,6 @@ def _get_all_flower_names() -> list[str]:
     if _ALL_FLOWER_NAMES is None:
         _ALL_FLOWER_NAMES = [f['name'] for f in query_knowledge('flower', '')['results']]
     return _ALL_FLOWER_NAMES
-
-def _get_tier(budget_num: int | None, scene_anchor: str | None) -> dict:
-    """解析预算档：显式预算优先 → 场景锚点 → 默认「精致/送礼」档。"""
-    all_tiers = query_knowledge('budget', '')['results']
-    if budget_num is not None:
-        t = next((t for t in all_tiers if t['range'][0] <= budget_num <= t['range'][1]), None)
-        if t:
-            return t
-    if scene_anchor:
-        t = next((t for t in all_tiers if t['tier'] == scene_anchor), None)
-        if t:
-            return t
-    return all_tiers[1]
 
 def _infer_substyle(style_id: str, dims: dict[str, str]) -> str | None:
     """未由场景指定子风格时，按情感/氛围从粗风格推导细分。"""
@@ -353,104 +352,6 @@ def _extract_feedback(feedback: str) -> dict[str, Any]:
     return {'dims': dims, 'exclude': exclude}
 _RELATIONSHIP_MAP = {'母亲': '亲子', '恋人': '情侣', '朋友': '朋友', '自己': '自用', '长辈': '长辈/同事', '宝宝': '亲子'}
 
-def _extract_budget(text: str) -> tuple[str | None, float | None, float | None, float | None]:
-    """从文本抽预算：返回 (口语锚点, 精确金额, 区间下界, 区间上界)。
-
-    精确金额与旧 _extract 的 dims['budget'] 保持一致（如「两三百」→ 250），
-    区间按 ±20% 推导，供检索时做软过滤。
-
-    ⚠️ **必须识别数量级单位（万 / 千 / 百 / w / k）**。线上实测（2026-09-18）：
-    「预算5万」被解析成 **5 元**、「1.5万」被解析成 **1 元**（旧正则 `\\d{1,5}` 只抓数字、
-    把「万」直接丢掉），「三万」「五千」这类中文写法**完全抽不到**。
-    金额差 4 个数量级会让方案档位、报价、预算校验全错。
-    """
-    anchor: str | None = None
-    for oral, num in _BUDGET_ORAL.items():
-        if oral in text:
-            text = text.replace(oral, f' {num} ')
-            anchor = oral
-            break
-
-    # 必须有明确的价格信号才算预算：货币单位 / 预算 / 价格 / 「X元左右」。
-    # 仅紧跟 朵/支/束 的数字（如「11 朵」）一律不当预算，避免把数量误判成金额。
-    for pat in (
-        re.compile(_AMOUNT_PAT + r'\s*(?:元|块|块钱|rmb|¥|刀)', re.I),
-        re.compile(r'(?:预算|价格)\s*' + _AMOUNT_PAT),
-        re.compile(_AMOUNT_PAT + r'\s*(?:预算|价格)'),   # 「5w预算」这类后置写法
-        re.compile(_AMOUNT_PAT + r'\s*元左右'),
-    ):
-        m = pat.search(text)
-        if m:
-            num = float(m.group(1)) * _MAGNITUDE_UNITS.get(m.group(2) or '', 1.0)
-            return (anchor, num, round(num * 0.8), round(num * 1.2))
-
-    # 中文数字 + 数量级：「三百元」「预算三万」—— 阿拉伯正则抓不到。
-    # ⚠️ 必须带**价格信号**才认（货币单位或「预算/价格」），否则「两万朵玫瑰」会被当成预算。
-    for pat in (
-        re.compile(r'([一二两三四五六七八九十]{1,3})\s*([万千百])\s*(?:元|块|块钱)'),
-        re.compile(r'(?:预算|价格)\s*([一二两三四五六七八九十]{1,3})\s*([万千百])'),
-    ):
-        cm = pat.search(text)
-        if cm:
-            base = _cn_to_int(cm.group(1))
-            if base:
-                num = float(base) * _MAGNITUDE_UNITS[cm.group(2)]
-                return (anchor, num, round(num * 0.8), round(num * 1.2))
-    return (anchor, None, None, None)
-
-_CN_DIGIT = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
-
-
-def _cn_to_int(raw: str) -> int | None:
-    """中文数字 → 整数（支持 1–99 的常见写法：两 / 九 / 十 / 十一 / 二十 / 二十五）。
-
-    Args:
-        raw: 中文数字串。
-
-    Returns:
-        对应整数；无法解析返回 None。
-    """
-    s = (raw or '').strip()
-    if not s:
-        return None
-    if '十' not in s:
-        return _CN_DIGIT.get(s)
-    left, _, right = s.partition('十')
-    tens = 1 if left == '' else _CN_DIGIT.get(left)
-    ones = 0 if right == '' else _CN_DIGIT.get(right)
-    if tens is None or ones is None:
-        return None
-    return tens * 10 + ones
-
-
-def _extract_stem_count(text: str) -> int | None:
-    """抽取**用户明确说出**的花材支数：『11 朵』『9支』『十一朵』『一打』。
-
-    仅当数量紧跟 朵/支/枝/根/头 才认定（避免把年份、金额误当支数）；
-    中文数字支持个位与十位（两朵 / 九支 / 十朵 / 十一朵 / 二十五支）。
-
-    ⚠️ **「一束」不在此列**（2026-09-18 修正，勿回退）：
-    它是**容器 / 单位量词**，不是支数 —— 用户说「来一束花，预算 300」时并不关心几支。
-    原实现把「一束」硬映射成 11 支，而支数是**强约束**（`_alloc_stems` 里优先级最高、
-    会跳过「按预算反推」），实测把一束 300 元的方案算成 **141 元**（只有 6 支花）；
-    模型察觉方案明显不合预算，又自己调一轮 `revise_diy_plan` 去救 ——
-    **既报错价、又白烧一整轮 LLM**（单轮 DIY 因此从 ~30s 涨到 60~150s）。
-    官网页（`client_payload`）早就有「一束让位预算」的修正，主链路一直缺这条，
-    现在从**源头**统一，两条链路行为一致。
-    「一打 = 12 支」保留：它是明确的计数单位。
-    """
-    m = re.search(r'(\d{1,3})\s*(?:朵|支|枝|根|头)', text)
-    if m:
-        return max(1, min(int(m.group(1)), 999))
-    if re.search(r'一\s*打', text):
-        return 12
-    cm = re.search(r'([一二两三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九])\s*(?:朵|支|枝|根|头)', text)
-    if cm:
-        val = _cn_to_int(cm.group(1))
-        if val:
-            return max(1, min(val, 999))
-    return None
-
 _ALL_FLOWER_TERMS: list[str] | None = None
 
 def _all_flower_terms() -> list[str]:
@@ -543,26 +444,6 @@ def extract_requirement(text: str) -> FlowerRequirement:
 def _extract(text: str) -> dict[str, str]:
     """从自然语言需求中抽取维度（兼容旧形态，供 DIY 设计管线 / _extract_dims 测试）。"""
     return extract_requirement(text).to_legacy_dict()
-
-
-def _safe_float(value: Any) -> float | None:
-    """宽松转 float（bool 视为无效，避免 True→1 这种荒唐值）。"""
-    if isinstance(value, bool):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_int(value: Any) -> int | None:
-    """宽松转 int（接受 '11' / 11.0；bool 视为无效）。"""
-    if isinstance(value, bool):
-        return None
-    try:
-        return int(float(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def merge_requirement(req: FlowerRequirement, llm_req: dict | None) -> FlowerRequirement:
@@ -785,13 +666,6 @@ def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefe
     if not foliage:
         foliage = _fallback_flower(all_flowers, '叶材', '尤加利', exclude_flowers)
     return ([f for f in main if f], [f for f in fillers if f], [f for f in foliage if f])
-# 主花支数的**兜底**基准（按预算档）。
-# ⚠️ 正常路径不用它：真实支数由「（预算 − 基础费）÷ 单品综合成本」算出（见 _alloc_stems）。
-# 它只在「用户没给预算、档位也没有区间」时兜底，避免方案空掉。
-_TIER_MAIN_STEMS = {'T1': 6, 'T2': 8, 'T3': 10, 'T4': 14, 'T5': 18, 'T6': 24}
-# 单束主花支数上限：防极端预算（如「预算 5 万」）算出上千支。99 也贴合「久久」的寓意习惯。
-_MAX_MAIN_STEMS = 99
-
 def _known_flower(name: str) -> dict:
     """按花名查知识库花卉（含别名匹配），查不到返回空 dict。"""
     if not name:
@@ -801,285 +675,6 @@ def _known_flower(name: str) -> dict:
         if f['name'] == name or name in f.get('aliases', []):
             return f
     return {}
-
-def _price_table(shop_id: str = ''):
-    """取该店（或全网）的花材价表 —— 报价的唯一来源。
-
-    定价已从「代码里的三条常数」改为**从平台在售商品反推**（Capri 2026-09-18 拍板）：
-    有确定店铺时按该店商品拟合该店专属价，没锁店时用全网实测基线。
-    详见 :mod:`agent.pricing`。
-    """
-    from agent.pricing import price_table
-
-    return price_table(shop_id)
-
-def _enrich_plan_fees(plan: dict) -> dict:
-    """给最终方案补齐花材支数、单支价与费用结构（**两段式定价**）。
-
-    LLM 语义路径下 design 内层花材会被 LLM 输出覆盖，这里在合并后统一重算：
-    - 每种花材挂 qty / unit_price（单价取自该店价表）；
-    - design.fees 费用结构；
-    - budget_breakdown.items 的「主花/配材/叶材」明细与 fees 对齐。
-
-    价表来源见 :func:`_price_table`（该店实测 → 全网基线）。
-    返回新 dict（深拷贝，不改入参）。
-    """
-    plan = copy.deepcopy(plan)
-    d = plan.get('design') or {}
-    main = [m for m in d.get('main_flowers') or [] if isinstance(m, dict)]
-    fillers = [f for f in d.get('fillers') or [] if isinstance(f, dict)]
-    foliage = [g for g in d.get('foliage') or [] if isinstance(g, dict)]
-    if not main:
-        return plan
-    table = _price_table(str(plan.get('shop_id') or ''))
-    tier = _get_tier(plan.get('budget_num'), None)
-    stems = _alloc_stems(tier, main, fillers, foliage, plan.get('budget_num'),
-                         plan.get('stem_count'), table)
-    for fl in main + fillers + foliage:
-        fl['qty'] = stems.get(fl['name'], 1)
-        fl['unit_price'] = round(table.unit_price(fl['name']), 1)
-    _steps = plan.get('diy_steps') or []
-    if isinstance(_steps, list):
-        _new_steps: list[str] = []
-        for _s in _steps:
-            _t = str(_s)
-            for _name, _q in stems.items():
-                _t = re.sub(f'{re.escape(_name)}\\s*[×xX*]\\s*\\d+', f'{_name}×{_q}', _t)
-            _new_steps.append(_t)
-        plan['diy_steps'] = _new_steps
-    source_label = {'override': '商家设定的标准价', 'merchant': '本店在售商品',
-                    'baseline': '平台在售商品'}.get(table.source, '平台在售商品')
-    d['fees'] = {
-        'base_fee': table.base_fee,
-        'base_standard': f'包装、手工与基础服务 {table.base_fee:.0f} 元/束（按{source_label}推算）',
-        'stem_count': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in main + fillers + foliage),
-        'note': f'单支价按{source_label}推算，含包装与手工；实际以门店确认为准。',
-        'price_source': table.source,
-        'price_samples': table.samples,
-    }
-    pkg_name = d.get('packaging') or '花束'
-    pkg = {'name': pkg_name, 'id': 'PK_BOX' if '礼盒' in pkg_name else 'PK_BOUQUET'}
-    plan['budget_breakdown'] = _build_budget_breakdown(main, fillers, foliage, pkg, tier,
-                                                       plan.get('budget_num'),
-                                                       plan.get('stem_count'), table)
-    # 明细重算 → 顶层价格必须跟着收口。这里是 LLM 合并链路的**最后一道**重算，
-    # 漏了这步就会出现「明细 547 元、卡片与下游只认 258 元」（见 _sync_plan_price）。
-    _sync_plan_price(plan, tier.get('label', ''))
-    return plan
-
-def _alloc_stems(tier: dict, main: list[dict], fillers: list[dict], foliage: list[dict],
-                 budget_num: int | None = None, stem_count: int | None = None,
-                 table=None) -> dict[str, int]:
-    """按预算 + 该店价表为每种花材分配具体支数（两段式定价的反解）。
-
-    定价模型：``总价 = 基础费 + Σ(支数 × 单价)``（见 ``agent/pricing.py``）。
-    有明确预算时反解主花支数：先扣掉基础费，再除以「主花均价 + 配材比例×配材均价」
-    —— 即每支主花连同它按比例带出来的配材一共占用多少预算。
-
-    ⚠️ 单价一律来自**该店实测价表**，不再用代码里的常数（那套高估 1.5~6.4 倍，
-    会把花量算得远少于同价位现成品）。
-
-    Args:
-        tier: 预算档 dict（含 ``tier`` 与 ``range``）。
-        main / fillers / foliage: 花材列表（含 ``name``）。
-        budget_num: 用户预算（元）；为空时用档位区间中值兜底。
-        stem_count: 用户明确指定的主花支数（优先级最高，不被预算覆盖）。
-        table: 价表；为空则现取（未锁店时为全网基线）。
-
-    Returns:
-        ``{花名: 支数}``，供方案明细 / 预算 / 步骤精确引用。
-    """
-    if table is None:
-        table = _price_table()
-    tkey = tier.get('tier', 'T2')
-    # 用户明确支数优先（如「11 朵」）→ 直接作为主花总数，不被预算档覆盖。
-    if stem_count is not None and main:
-        total_main = int(stem_count)
-    else:
-        total_main = _TIER_MAIN_STEMS.get(tkey, 10)
-    # 用户没给预算时，用预算档区间的中值当预算 —— 比"档位直接拍一个支数"更自洽，
-    # 而且会随该店实际单价浮动（同样一档，贵的店自然给得少）。
-    if budget_num is None and stem_count is None and main:
-        rng = list(tier.get('range') or [])
-        if len(rng) == 2 and rng[1] > rng[0]:
-            lo, hi = float(rng[0]), float(rng[1])
-            # 上界明显是「无上限」哨兵时（如 T6 的 99999）改为取下界的 1.6 倍
-            mid = lo * 1.6 if hi > lo * 4 else (lo + hi) / 2
-            budget_num = max(int(mid), 60)
-    # 有明确预算时按预算推算主花数量；但用户已显式给支数（stem_count）时
-    # 预算仅作参考、不覆盖支数，避免「11 朵」被预算约束悄悄改少。
-    if budget_num is not None and main and stem_count is None:
-        main_unit = sum(table.unit_price(m['name']) for m in main) / len(main)
-        side = fillers + foliage
-        side_ratio = 0.4 if fillers else 0.25
-        side_unit = (sum(table.unit_price(f['name']) for f in side) / len(side)) if side else 0.0
-        per_main_cost = main_unit + side_ratio * side_unit
-        main_budget = max(0.0, float(budget_num) - table.base_fee)
-        total_main = (max(1, int(main_budget / per_main_cost))
-                      if per_main_cost > 0 else _TIER_MAIN_STEMS.get(tkey, 10))
-    total_main = max(1, min(int(total_main), _MAX_MAIN_STEMS))
-    per_main = max(1, total_main // max(len(main), 1))
-    stems: dict[str, int] = {}
-    for i, f in enumerate(main):
-        stems[f['name']] = per_main + (1 if i < total_main % max(len(main), 1) else 0)
-    side_total = max(1, round(total_main * (0.4 if fillers else 0.25)))
-    side_pool = [f['name'] for f in fillers] + [f['name'] for f in foliage]
-    if side_pool:
-        per_side = max(1, side_total // len(side_pool))
-        for i, f in enumerate(side_pool):
-            stems[f] = per_side + (1 if i < side_total % len(side_pool) else 0)
-    return stems
-
-# DIY 步骤条数上限。规则引擎固定生成 6 步；模型输出不受控，需要钳制。
-_DIY_STEPS_MAX = 10
-
-
-def _cap_steps(steps: Any) -> list[str]:
-    """清洗并限制 DIY 步骤条数。
-
-    Args:
-        steps: 模型给出的步骤（可能是任意类型）。
-
-    Returns:
-        去掉空项后的字符串列表，最多 ``_DIY_STEPS_MAX`` 条。
-
-    为什么需要：步骤条数完全由 LLM 生成、**不可控** —— 审计报告（2026-09-18）提到
-    「制作步骤 146 步」，对用户毫无意义（没人会照做 146 步）。规则引擎固定 6 步，
-    这里把模型输出对齐到同一量级。原本是直接把模型数组原样塞进方案。
-    """
-    if not isinstance(steps, list):
-        return []
-    out = [str(s).strip() for s in steps if str(s).strip()]
-    if len(out) > _DIY_STEPS_MAX:
-        logger.warning('[tools] DIY 步骤 %d 条超出上限 %d，已截断', len(out), _DIY_STEPS_MAX)
-        out = out[:_DIY_STEPS_MAX]
-    return out
-
-
-def _build_diy_steps(main: list[dict], fillers: list[dict], foliage: list[dict], color_scheme: list[str], packaging: dict | None) -> list[str]:
-    """生成可照做的分步插花指引（基于本方案实际花材/数量/包装）。"""
-    m = [f['name'] for f in main if f]
-    f1 = [f['name'] for f in fillers if f]
-    f2 = [f['name'] for f in foliage if f]
-    pk_name = packaging['name'] if packaging else '花束'
-    pk_desc = packaging.get('description', '') if packaging else ''
-    colors = '/'.join(color_scheme) or '自然色系'
-    trim_m = '；'.join(f'{n}斜剪 45° 并去下半叶' for n in m) or '玫瑰斜剪 45° 并去下半叶'
-    trim_f = '；'.join(f'{n}短剪保留 1/2 长度' for n in f1) or '满天星短剪成簇'
-    trim_g = '；'.join(f'{n}留长 2/3 做托底勾边' for n in f2) or '尤加利留长做托底'
-    # 单一花材（无配材且无叶材）：DIY 步骤不得编造满天星/尤加利等外搭花材。
-    if not f1 and not f2:
-        step3 = '填充层次：本束为单一花材，不额外搭配配材与叶材；各支主花交错分布、花头朝向一致并留出空隙，即可形成饱满层次。'
-        step4 = f'配色比例：单一花材按色系 {colors} 统一色调，可同色系深浅过渡，避免拼入杂色。'
-        outer = '整理外轮廓'
-    else:
-        step3 = f'填充层次：{trim_f} 填补空隙，{trim_g} 勾边制造空气感，形成前低后高、疏密有致。'
-        step4 = f'配色比例：按色系 {colors} 控制主花:配材 ≈ 7:3，避免头重脚轻或色彩打架。'
-        outer = '整理外层叶材外扩'
-    return [f"1. 备材处理（修剪）：{trim_m}。其中{('玫瑰需去刺' if any('玫瑰' in n for n in m) else '无刺花材无需去刺')}，{('百合需摘除雄蕊防染色' if any('百合' in n for n in m) else '无需特殊处理')}。", '2. 定高构图：以主花为视觉重心，整体高度约为花束/花器的 1.5 倍；先插主花确定骨架与朝向，各主花交错分布、花头朝向一致。', step3, step4, f'5. 包装收尾：用「{pk_name}」（{pk_desc}）螺旋扎制并{outer}，丝带/韩素纸收尾，如有贺卡随花附赠。', '6. 醒花养护：完成后深水醒花 2-4 小时再摆放，详见「养护建议」。']
-
-def _build_care_tips(main: list[dict]) -> str:
-    """生成养护建议（通用 + 针对主花的特例提示）。"""
-    names = {f['name'] for f in main if f}
-    tips = ['收到后斜剪根部 45°，深水醒花 2-4 小时再入瓶；', '每日换水并清洗花茎切口，花瓶水位保持 2/3；', '远离空调出风口与阳光直射，可延长花期 3-7 天。']
-    if '百合' in names:
-        tips.append('百合：摘除雄蕊避免花粉染色衣物，花蕊变褐及时剪去。')
-    if '绣球' in names:
-        tips.append('绣球：喜水，可整支浸入水中 1-2 小时急救脱水；花头可轻柔喷水。')
-    if '向日葵' in names:
-        tips.append('向日葵：花头重，建议浅水位并支托花茎，防止垂头。')
-    return ''.join(tips)
-
-def _build_card_message(recipient: str, occasion_phrase: str, style_label: str, tone: str, short_meaning: str) -> str:
-    """生成可复用的贺卡寄语文案（场景基调优先，避免长串花语堆砌）。"""
-    base = f'致{recipient}：{occasion_phrase}之际，送上这束{style_label}花束，'
-    if tone:
-        return base + f'愿它替我传递「{tone}」。'
-    return base + f'愿它替我传递{short_meaning}。'
-
-def _build_budget_breakdown(main: list[dict], fillers: list[dict], foliage: list[dict],
-                            packaging: dict | None, tier: dict, budget_num: int | None,
-                            stem_count: int | None = None, table=None) -> dict:
-    """按**两段式定价**生成预算明细：``总价 = 基础费 + Σ(支数 × 单价)``。
-
-    这是价格的最终产出点（``_sync_plan_price`` 以此为准），所以口径必须干净：
-    - 单价来自该店价表（``agent/pricing``），不是代码里的常数；
-    - 「包装与手工」= 基础费（实测得出），涵盖包装材料、修剪扎制与基础服务 ——
-      **不再单列人工费/装饰费**，否则会把基础费里的同一笔钱算两遍。
-
-    stem_count 为用户明确的支数（如「11 朵」），透传给 _alloc_stems，
-    保证预算明细与方案主花支数一致，不被预算机械重算覆盖。
-    """
-    if table is None:
-        table = _price_table()
-
-    def cost(flowers: list[dict]) -> float:
-        return sum(stems.get(f['name'], 1) * table.unit_price(f['name']) for f in flowers)
-
-    stems = _alloc_stems(tier, main, fillers, foliage, budget_num, stem_count, table)
-    main_cost, filler_cost, foliage_cost = cost(main), cost(fillers), cost(foliage)
-    base_fee = float(table.base_fee)
-    # ⚠️ 逐项取整后再求和 —— 保证「明细加起来 == 合计」（用户和店家会当场对账）。
-    # 曾写成 round(总和) 而明细各自 round，实测差 1 元（792 vs 793）。
-    amounts = [round(main_cost), round(filler_cost), round(foliage_cost), round(base_fee)]
-    total = sum(amounts)
-    source_label = {'override': '商家设定的标准价', 'merchant': '本店在售商品',
-                    'baseline': '平台在售商品'}.get(table.source, '平台在售商品')
-    items = [
-        {'item': '主花', 'detail': '、'.join(f"{m['name']}×{stems.get(m['name'], 1)}" for m in main) or '无', 'amount': amounts[0]},
-        {'item': '配材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in fillers) or '无', 'amount': amounts[1]},
-        {'item': '叶材', 'detail': '、'.join(f"{f['name']}×{stems.get(f['name'], 1)}" for f in foliage) or '无', 'amount': amounts[2]},
-        {'item': '包装与手工', 'detail': '含包装材料与修剪扎制', 'amount': amounts[3]},
-    ]
-    return {
-        'total_estimate': total,
-        'currency': 'CNY',
-        'items': items,
-        'fees': {
-            'base_fee': base_fee,
-            'base_standard': f'包装、手工与基础服务 {base_fee:.0f} 元/束（按{source_label}推算）',
-            'note': f'单支花材价按{source_label}推算，已含包装与手工；下单前请以门店确认为准。',
-            'price_source': table.source,
-        },
-        'note': f'以上按{source_label}推算，实际价格以门店/供应商为准。',
-    }
-
-def _sync_plan_price(plan: dict, tier_label: str = '') -> dict:
-    """把顶层价格字段与最终的 ``budget_breakdown`` 对齐（价格的**单一真相源**）。
-
-    为什么需要（2026-09-18 实测发现）：``price`` / ``price_text`` / ``estimated_price``
-    原本只在 :func:`_build_plan` 里写一次，而 ``budget_breakdown`` 在 LLM 语义路径上
-    会被**重算 4 次**（``_merge_plan`` ×3 + :func:`_enrich_plan_fees` ×1）。
-    模型换过花材后，明细按新花材重算，顶层价格却还停在 baseline ——
-    实测分叉到「明细合计 547 元、顶层只认 258 元」。
-    这是 2026-09-18「DIY 补数值价格」修复留下的缺口：补了字段，但没管重算同步。
-
-    ⚠️ 危害方向：``price`` 是给下游结算用的，**分叉意味着按便宜的价扣款、
-    按真实的单备货**。所以任何重算明细的地方都必须回到这里收口。
-
-    ⚠️ 单位是「元」；平台商品卡返回的 price 单位是「分」，接入方务必按字段区分。
-
-    Args:
-        plan: 方案 dict（会被就地写入 price / price_unit / price_text / estimated_price）。
-        tier_label: 预算档标签；留空则按 ``budget_num`` 现算。
-
-    Returns:
-        同一个 plan 对象。
-    """
-    if not isinstance(plan, dict):
-        return plan
-    total = (plan.get('budget_breakdown') or {}).get('total_estimate')
-    if total is None:
-        return plan
-    total = int(total)
-    label = tier_label or _get_tier(plan.get('budget_num'), None).get('label', '')
-    plan['price'] = total
-    plan['price_unit'] = 'CNY'
-    # 文案与数值**同口径**：不能出现「文案说 300、扣款 205」
-    plan['price_text'] = f'约 {total} 元（{label}档）' if label else f'约 {total} 元'
-    plan['estimated_price'] = plan['price_text']
-    return plan
-
 
 def _suitable_for(recipient: str, occasion: str) -> list[str]:
     """规则兜底：由收礼人/场合推导适宜人群标签（模块二卡片字段）。"""
@@ -1884,122 +1479,6 @@ def annotate_shop_materials(plan: dict, shop_id: str = '') -> dict:
         plan['unavailable_materials'] = list(dict.fromkeys(missing))
         logger.info('[design] 方案用料 %d 项该店(%s)暂无：%s', len(missing), sid, '、'.join(missing))
     return plan
-
-
-# 「复制用料清单」文本长度上限：异常 plan 不应生成撑爆剪贴板/消息的文本。
-_COPY_TEXT_MAX = 2000
-
-
-def build_plan_copy_text(plan: dict) -> str:
-    """把 DIY 方案渲染成一份「可直接发给店家的用料需求清单」纯文本。
-
-    为什么需要（Capri 2026-09-18 拍板：先做 DIY 的轻量成交通口）：
-    平台没有定制 SKU，方案生成完就断了 —— 用户拿不到任何**可执行**的东西，
-    商家也永远看不到这个需求。在「定制需求单」接口落地（待平台方）之前，
-    「复制一份清单去找店家沟通」是让 DIY 从**体验价值**变成**商业价值**的唯一出口。
-
-    设计取舍：
-    - **纯文本而非结构化**：用户要的是能直接粘进微信/客服窗口的内容，
-      JSON 对用户无意义；接入方也只需一个复制按钮，不必理解内部字段。
-    - **复用 ``budget_breakdown``**：明细口径与卡片**完全一致**，
-      避免出现「清单一个价、卡片另一个价」。
-    - **只新增字段**：结果写入 ``plan['copy_text']``，不改动任何既有字段，
-      前端不渲染它也不会有副作用。
-
-    ⚠️ 必须在本方案的缺料标注（:func:`annotate_shop_materials`）**之后**调用，
-    否则 ``unavailable_materials`` 还不是最新值，清单会漏掉「该店暂无」的提醒。
-
-    Args:
-        plan: 已定型的方案 dict。
-
-    Returns:
-        纯文本清单；plan 无效时返回空字符串（调用方据此跳过「复制」入口）。
-    """
-
-    def _s(value: Any, default: str = '') -> str:
-        return str(value).strip() if value not in (None, '') else default
-
-    if not isinstance(plan, dict) or not plan:
-        return ''
-    design = plan.get('design') if isinstance(plan.get('design'), dict) else {}
-    lines = ['【定制花束需求单】', f"方案：{_s(plan.get('name'), '定制花束')}"]
-
-    head: list[str] = []
-    if _s(plan.get('recipient')):
-        head.append(f"对象：{_s(plan['recipient'])}")
-    if _s(plan.get('occasion')):
-        head.append(f"场合：{_s(plan['occasion'])}")
-    style = _s(plan.get('substyle')) or _s(plan.get('style'))
-    # 方案名通常已含风格（「韩式甜美·生日花束」）→ 不重复输出
-    if style and style not in _s(plan.get('name')):
-        head.append(f'风格：{style}')
-    if head:
-        lines.append('｜'.join(head))
-
-    mid: list[str] = []
-    colors = design.get('color_scheme') or []
-    if colors:
-        mid.append('配色：' + '/'.join(_s(c) for c in colors if _s(c)))
-    if _s(design.get('packaging')):
-        mid.append('包装：' + _s(design['packaging']))
-    if mid:
-        lines.append('｜'.join(mid))
-
-    fees = design.get('fees') if isinstance(design.get('fees'), dict) else {}
-    if _s(fees.get('stem_count')):
-        lines.append(f"用料：{_s(fees['stem_count'])}")
-
-    breakdown = plan.get('budget_breakdown') if isinstance(plan.get('budget_breakdown'), dict) else {}
-    items = [it for it in (breakdown.get('items') or []) if isinstance(it, dict)]
-    # 费用项分三类处理：
-    # - 「包装与手工」（基础费）：只报项名 + 金额 —— 拼成「包装与手工：含包装材料…」
-    #   是同义反复，给店家的清单要尽量干净；
-    # - 旧结构的「人工费/装饰费」：合并成一行（兼容历史缓存的方案）；
-    # - 其余（主花/配材/叶材）：报「项目：用料 —— 金额」。
-    _FEE_ITEMS = ('人工费', '装饰费')
-    _BARE_ITEMS = ('包装与手工', '基础费')
-    details: list[str] = []
-    fee_total = 0.0
-    has_fee = False
-    for it in items:
-        item, detail = _s(it.get('item')), _s(it.get('detail'))
-        amount = it.get('amount') if isinstance(it.get('amount'), (int, float)) else None
-        if item in _FEE_ITEMS:
-            has_fee = True
-            fee_total += amount or 0
-            continue
-        if not amount:
-            # 「配材：无 —— 0 元」这类空项不进清单（单一花材方案必然出现）
-            continue
-        seg = item if item in _BARE_ITEMS else (
-            f'{item}：{detail}' if item and detail else (item or detail))
-        if seg:
-            details.append(f'· {seg} —— {int(round(amount))} 元')
-    if details:
-        lines.append('')
-        lines.append('费用参考')
-        lines.extend(details)
-        if has_fee and fee_total:
-            lines.append(f'· 人工与装饰费 —— {int(round(fee_total))} 元')
-    price = plan.get('price')
-    if isinstance(price, (int, float)) and price:
-        lines.append(f'合计约 {int(price)} 元（按平台在售价估算，实际以门店报价为准）')
-    elif _s(breakdown.get('note')):
-        lines.append(_s(breakdown['note']))
-
-    missing = [m for m in (plan.get('unavailable_materials') or []) if _s(m)]
-    if missing:
-        lines.append('')
-        lines.append('注：以下原料这家店当前暂无，可能需另外采购 —— ' + '、'.join(_s(m) for m in missing))
-
-    lines.append('')
-    lines.append('（本清单由 AI 花艺小助手按平台在售价生成，实际报价以门店为准）')
-    text = '\n'.join(lines).strip()
-    if len(text) > _COPY_TEXT_MAX:
-        # 截断必须留痕：标明「还有下文」，避免用户以为清单到此为止。
-        logger.warning('[design] copy_text 超长（%d 字符）已截断', len(text))
-        text = text[:_COPY_TEXT_MAX].rstrip() + '…（清单较长，已截断）'
-    return text
 
 
 def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: FlowerRequirement | None = None) -> dict:

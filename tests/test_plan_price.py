@@ -130,6 +130,25 @@ def test_enrich_fees_syncs_price() -> None:
     assert out['price'] != 1, '重算后价格没有收口，仍停在旧值'
 
 
+def test_enrich_fees_keeps_steps_and_card_price_in_sync_without_mutating_input() -> None:
+    """最终报价重算还必须同步 DIY 步骤用量，且不能改坏底稿。"""
+    from agent.tools import _enrich_plan_fees
+
+    original = _build_plan({'recipient': '恋人', 'occasion': '生日', 'budget': '300'})
+    flower = original['design']['main_flowers'][0]['name']
+    original['diy_steps'] = [f'先放入{flower}×999，按方案扎束。']
+    original['price'] = 1
+
+    result = _enrich_plan_fees(original)
+
+    qty = result['design']['main_flowers'][0]['qty']
+    assert f'{flower}×{qty}' in result['diy_steps'][0]
+    assert '×999' not in result['diy_steps'][0]
+    assert result['price'] == result['budget_breakdown']['total_estimate']
+    assert original['diy_steps'] == [f'先放入{flower}×999，按方案扎束。']
+    assert original['price'] == 1
+
+
 def test_llm_cannot_override_deterministic_price_fields() -> None:
     """价格与档位是**系统算的**，模型不得改写。
 
