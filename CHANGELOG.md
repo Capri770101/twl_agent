@@ -1,5 +1,13 @@
 # 智能体版本记录
 
+## [未发布 — 工程加固批次] — 2026-10-11
+
+- 评测基线扩充至 34 条场景（原 12 条），新增 reminder / 客服写操作边界 / 提示注入诱导等覆盖；`checks` 支持 `must_include` / `must_not_include` / `ui_is` / `tool_used` / `tool_not_used` 结构化断言，`run_eval.py` judge 自动判定（自然语言条目保留为人工项不参与过失败判定）。
+- `update_order_address` 工具接入 customer_service_orders 路由（原注册后无任何路线可达，属死配置）。
+- CI 新增 ruff 硬门禁（默认规则集，忽略 E402 惰性导入）与 mypy：domain 硬门禁、agent/backend 顾问模式；requirements-dev 增加 ruff/mypy。
+- 知识域契约测试改为直接校验静态 JSON 与 knowledge_manifest 一致性（原断言依赖已归档的《知识库概览》文档）。
+- eval 数量测试改为下限断言（≥30），扩场景不再破坏回归。
+
 ## [1.4.1 源码候选] — 2026-10-10，未部署
 
 - 消费者可通过本人新鲜 JWT（签发 15 分钟内）或具同样校验的对话查询本地商家工单；对外始终标记本地留痕，未证明商家收件。登出即时撤销仍须接入方做会话协作。
