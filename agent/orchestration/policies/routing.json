@@ -5,7 +5,7 @@
   },
   {
     "name": "customer_service_orders", "route_name": "customer_service", "max_iterations": 3,
-    "tools": ["query_my_orders", "query_my_after_sales", "query_my_tickets", "contact_merchant", "cancel_my_order", "apply_refund", "respond_to_user", "show_options"]
+    "tools": ["query_my_orders", "query_my_after_sales", "query_my_tickets", "contact_merchant", "cancel_my_order", "apply_refund", "update_order_address", "respond_to_user", "show_options"]
   },
   {
     "name": "customer_service_tickets", "route_name": "customer_service", "max_iterations": 3,
