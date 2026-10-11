@@ -43,7 +43,7 @@ jobs:
       - name: Lint (ruff, blocking)
         run: python -m ruff check agent backend domain scripts tests main.py verify.py
       - name: Type check domain and extracted modules (mypy, blocking)
-        run: python -m mypy domain agent/safety/reasoning.py agent/safety/image_claim.py agent/safety/card_claim.py agent/safety/platform_evidence.py agent/engine/prompt_templates.py agent/engine/card_summary.py agent/design/quantities.py agent/design/instructions.py agent/design/copy_text.py agent/design/stem_allocation.py agent/design/price_breakdown.py --follow-imports=silent
+        run: python -m mypy domain agent/safety/reasoning.py agent/safety/image_claim.py agent/safety/card_claim.py agent/safety/platform_evidence.py agent/engine/prompt_templates.py agent/engine/card_summary.py agent/engine/clarification.py agent/engine/cleanup.py agent/engine/signals.py agent/design/quantities.py agent/design/instructions.py agent/design/copy_text.py agent/design/stem_allocation.py agent/design/price_breakdown.py agent/design/visual_revision.py agent/design/revision_input.py --follow-imports=silent
       - name: Type check agent/backend (mypy, advisory)
         run: python -m mypy agent backend || true
       - name: Compile Python sources
