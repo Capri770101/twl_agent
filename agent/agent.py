@@ -39,6 +39,13 @@ from agent.engine.card_summary import (
 )
 from agent.engine import clarification as _clarification
 from agent.engine.cleanup import build_cleanup_pipeline, run_cleanup_pipeline
+from agent.engine.card_alignment import (
+    _REPLY_PLAN_COUNT_RE as _REPLY_PLAN_COUNT_RE,
+    _reply_declared_count as _reply_declared_count,
+    _collect_plan_rows as _collect_plan_rows,
+    _align_reply_count_with_card as _align_reply_count_with_card,
+    _align_card_data_with_reply as _align_card_data,
+)
 from agent.engine.signals import (
     _AFFIRMATIVE as _AFFIRMATIVE, _NEGATIVE as _NEGATIVE,
     _IMAGE_DECLINE_WORDS as _IMAGE_DECLINE_WORDS,
@@ -145,165 +152,11 @@ _MIN_ITER_BUDGET = 8.0   # 剩余预算低于此值就不再开新一轮 LLM 调
 # 其它请求（默认池还被记忆固化等其它 to_thread 任务共用）。并发上限与 /chat 的并发护栏同源。
 _AGENT_EXECUTOR = ThreadPoolExecutor(max_workers=max(1, settings.AGENT_MAX_CONCURRENCY), thread_name_prefix='flora-agent')
 
-# 回复里「自报商品数量」的说法：只认「款 / 束」这两个花艺语境的量词。
-# 刻意不含「朵 / 支」——那是单束花的花材数量（如「33 朵玫瑰」）；也不含「种」，
-# 那个常指风格或配色数量，容易与商品数混淆。
-_REPLY_PLAN_COUNT_RE = re.compile(r'(\d+)\s*(?:款|束)')
-
-
-def _reply_declared_count(reply: str) -> int:
-    """从回复里抽出自报的商品数量（「给你挑了 4 款」→ 4）；没有则返回 0。
-
-    取**第一处**匹配。模型自报数量通常出现在开头（「给你挑了 N 款…」），且
-    第一处比「全文取最小」更可预测，避免被后文的「这 8 款里我推荐 4 款」干扰。
-
-    用途见 ``ReActAgent._align_products_with_reply``：工具契约要求模型
-    「先写 reply、再定 plans」（为压低首字延迟），所以那个数字是**猜的**。
-    """
-    match = _REPLY_PLAN_COUNT_RE.search(reply or '')
-    if not match:
-        return 0
-    try:
-        return int(match.group(1))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _align_card_data_with_reply(ui: UIType, data: dict, reply: str) -> dict:
-    """最终回复定型后，把**商品卡**与文案对齐（DIY 方案卡原样保留）。
-
-    Args:
-        ui: 本轮 UI 类型。
-        data: 卡片数据。
-        reply: 已定型的最终回复。
-
-    Returns:
-        对齐后的卡片数据；无需调整时原样返回。
-
-    ⚠️ **呈现一致性契约**（Capri 2026-09-20 明确要求「卡片永远和文案对齐、不要出现
-    回答与呈现不一致」）。整条链路由三处共同保证，改任一处都要同时想另外两处：
-
-    1. **取数**（`_derive_ui` → `_collect_plan_rows`）：卡片候选集 = 本轮**所有**
-       商品查询结果的并集 —— 不是只取最后一次查询（否则换个关键词补查一轮，
-       前一轮查到的商品会被整批丢掉）。
-    2. **卡片服从文案的点名**（本函数）：文案点名了哪几款就只展示哪几款；
-       混合卡（DIY + 商品）在文案一个商品名都没点名时**不塞商品** ——
-       卡片已有 DIY 撑场，再倒一串没提过的商品就是反向不一致。
-       纯商品卡保留「宁多勿漏」兜底（避免卡片空掉）。
-    3. **数字服从卡片条数**（`_align_reply_count_with_card`）：文案里自报的
-       「N 款/束」回写成卡片实际条数（那个数字是模型先写文案时猜的）。
-
-    为什么必须放在这里、而不是 ``_derive_ui`` 内部：``_derive_ui`` 在
-    ``respond_to_user`` 的 ``reply`` 覆盖 ``final_reply`` **之前**被调用，那一刻
-    回复里还没有商品名，按文案过滤会**静默失效**。线上实测（2026-09-16）：
-    文案推荐「感恩母亲 / 春风暖阳 / 温柔以待…」5 款，卡片却给了 8 款文案没提过的商品。
-    """
-    if ui != UIType.PLAN_CARD or not isinstance(data, dict):
-        return data
-    plans = data.get('plans')
-    if not isinstance(plans, list) or not plans:
-        return data
-    diy = [p for p in plans if isinstance(p, dict) and (p.get('diy') is True or p.get('design'))]
-    prods = [p for p in plans if isinstance(p, dict) and not (p.get('diy') is True or p.get('design'))]
-    if not prods:
-        return data
-    named = [p for p in prods if ReActAgent._name_mentioned(str(p.get('name') or ''), reply or '')]
-    if diy and not named:
-        # 混合卡（DIY + 商品）且文案**一个商品名都没点名** → 商品全部去掉。
-        # 为什么：纯商品卡「宁多勿漏」是为了避免卡片空掉；而这里卡片已有 DIY 方案撑着，
-        # 再倒一串文案没提过的商品，就制造了**反向不一致**（卡片里有、文案里没提）。
-        logger.info('[agent] 混合卡：文案未点名任何商品 → 只保留 DIY 方案（去掉 %d 款商品）', len(prods))
-        return {**data, 'plans': diy}
-    aligned = ReActAgent._align_products_with_reply(prods, reply)
-    if not aligned or aligned == prods:
-        # 对齐不生效时把上下文打出来：大多数情况是 reply 为空/未点名（那时本就该保留全集）。
-        logger.info(
-            '[agent] 商品卡对齐无变化：%d 款（reply %d 字，点名命中 %d 款）',
-            len(prods), len(reply or ''), len(named),
-        )
-        return data
-    logger.info('[agent] 商品卡已与回复对齐：%d 款 → %d 款（reply %d 字）',
-                len(prods), len(aligned), len(reply or ''))
-    out = dict(data)
-    out['plans'] = diy + aligned
-    return out
-
-
-def _collect_plan_rows(tool_log: list[Any]) -> list[dict[str, Any]]:
-    """收集本轮**所有**成功商品查询（``entity='plan'``）的原始行并集。
-
-    Args:
-        tool_log: 本轮工具调用记录（按发生顺序）。
-
-    Returns:
-        各行按**查询发生顺序**拼接（去重/截断交给 :func:`_align_products_with_reply`，
-        那里按花名去重并保留首次出现的那条）。
-
-    为什么必须是并集（2026-09-20 生产实测）：模型常分多轮换关键词查商品
-    （实测同一轮出现 2~3 次 ``platform_db_query_entity``），文案里把两轮结果都点了名；
-    若卡片只取**最后一次**查询的结果，前几轮查到的商品会被整批丢掉 ——
-    表现为「文案说 4 款、卡片只渲染 2 款」，而且剩下那款文案还没提过。
-    """
-    rows: list[dict[str, Any]] = []
-    for tc in tool_log or []:
-        if getattr(tc, 'name', '') != 'platform_db_query_entity':
-            continue
-        if getattr(tc, 'status', '') != 'ok':
-            continue
-        args = getattr(tc, 'arguments', None) or {}
-        if not isinstance(args, dict) or args.get('entity') != 'plan':
-            continue
-        raw = getattr(tc, 'result', None)
-        try:
-            result = json.loads(raw) if isinstance(raw, str) else (raw or {})
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(result, dict) or result.get('ok') is not True:
-            continue
-        data = result.get('data')
-        if isinstance(data, list):
-            rows.extend(r for r in data if isinstance(r, dict))
-    return rows
-
-
-def _align_reply_count_with_card(reply: str, ui: UIType, data: dict[str, Any]) -> str:
-    """把回复里自报的「N 款/束」回写成卡片实际条数 —— 数量与张数永远一致。
-
-    Args:
-        reply: 已定型的最终回复。
-        ui: 本轮 UI 类型。
-        data: 已对齐完成的卡片数据。
-
-    Returns:
-        数字已回写的回复；无需调整时原样返回。
-
-    为什么需要（2026-09-20 生产实测）：工具契约要求模型**先写 reply、再定卡片**
-    （为压低首字延迟），所以那个数字是**猜的**。卡片侧虽有「服从文案数量」的兜底，
-    但文案点名了商品时卡片是按**点名**裁的，两侧仍可能对不上 —— 实测
-    「我挑了 4 款…（月光漫步 / 热恋代码 / 郁见你 / 网红Kitty）」配 **2 张**卡片。
-
-    这里以**最终卡片**为准回写数字：卡片是按文案点名的商品裁出来的，用户读到的
-    数量必须等于他看到的张数。只改第一处（与 :func:`_reply_declared_count`
-    取第一处的口径一致），改不动就保持原样并留日志。
-    """
-    if ui != UIType.PLAN_CARD or not isinstance(data, dict) or not reply:
-        return reply
-    plans = data.get('plans')
-    if not isinstance(plans, list):
-        return reply
-    prods = [p for p in plans if isinstance(p, dict) and not (p.get('diy') is True or p.get('design'))]
-    if not prods:
-        return reply
-    declared = _reply_declared_count(reply)
-    if declared <= 0 or declared == len(prods):
-        return reply
-    # 只回写第一处「N 款/束」，保留原量词与空格
-    new_reply, n = _REPLY_PLAN_COUNT_RE.subn(
-        lambda m: f'{len(prods)}{m.group(0)[len(m.group(1)):]}', reply, count=1)
-    if n != 1:
-        return reply
-    logger.info('[agent] 文案自报 %d 款 ≠ 卡片 %d 款 → 已回写数字', declared, len(prods))
-    return new_reply
+    """保留兼容入口：对齐决策由 engine.card_alignment 完成。"""
+    return _align_card_data(ui, data, reply,
+                            name_mentioned=ReActAgent._name_mentioned,
+                            align_products=ReActAgent._align_products_with_reply)
 
 
 def _shop_entity_enabled() -> bool:
