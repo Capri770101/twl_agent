@@ -39,6 +39,8 @@ from agent.design.price_breakdown import (
     _get_tier as _get_tier, _build_budget_breakdown as _build_budget_breakdown,
     _sync_plan_price as _sync_plan_price, _enrich_plan_fees as _enrich_plan_fees,
 )
+from agent.design.visual_revision import revise_visual_fields
+from agent.design.revision_input import _parse_plan, _dims_from_plan, _extract_feedback as _parse_feedback
 from agent.engine.ui_protocol import UIType
 from agent.knowledge import get_by_id, query_knowledge
 from domain.requirements import FlowerRequirement, accumulate
@@ -281,75 +283,11 @@ def _infer_substyle(style_id: str, dims: dict[str, str]) -> str | None:
         return 'S_COLOR_GRADIENT' if mood in ('渐变', '梦幻', '多彩') else 'S_COLOR_ENERGY'
     return None
 
-def _parse_plan(plan: str) -> dict:
-    """尽力解析传入的方案（可能是 JSON 字符串或含 JSON 的文本）。"""
-    if isinstance(plan, dict):
-        return plan
-    text = plan.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    start = text.find('{')
-    end = text.rfind('}')
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            pass
-    return {}
-
-def _dims_from_plan(plan: dict) -> dict[str, str]:
-    """从已有方案反推设计维度，供迭代时复用。"""
-    dims: dict[str, str] = {}
-    if plan.get('recipient'):
-        dims['recipient'] = plan['recipient']
-    if plan.get('occasion'):
-        dims['occasion'] = plan['occasion']
-    if plan.get('style_id'):
-        dims['style'] = plan['style_id']
-    if plan.get('substyle_id'):
-        dims['substyle'] = plan['substyle_id']
-    if plan.get('scene_id'):
-        dims['scene'] = plan['scene_id']
-    if plan.get('budget_num') is not None:
-        dims['budget'] = str(plan['budget_num'])
-    elif plan.get('budget_tier'):
-        for t in query_knowledge('budget', '')['results']:
-            if t['label'] == plan['budget_tier']:
-                dims['budget'] = str(t['range'][0])
-                break
-    design = plan.get('design', {})
-    main = [m['name'] for m in design.get('main_flowers', [])]
-    if main:
-        dims['_keep_main'] = ','.join(main)
-    return dims
-
 def _extract_feedback(feedback: str) -> dict[str, Any]:
     """解析自然语言反馈为调整指令：维度覆盖 + 需移除花材集合。"""
-    import re
-    dims: dict[str, str] = {}
-    exclude: set[str] = set()
-    budget_text = re.sub(r'(预算|价格)\s*(?:改为|改成|调整为|调整到|降到|降为|提高到|增加到|设为|调到)', r'\1', feedback)
-    _, amount, _, _ = _extract_budget(budget_text)
-    if amount is not None:
-        dims['budget'] = str(int(amount)) if amount.is_integer() else str(amount)
-    for kw, val in _STYLE_KW.items():
-        if kw in feedback:
-            dims['style'] = val
-            break
-    for kw, val in _COLOR_KW.items():
-        if kw in feedback:
-            dims['color'] = val
-            break
-    for kw, val in _MOOD_KW.items():
-        if kw in feedback:
-            dims['mood'] = val
-            break
-    for name in _get_all_flower_names():
-        if any(seg in feedback for seg in (f'不要{name}', f'去掉{name}', f'别用{name}', f'换掉{name}', f'去掉{name}花')):
-            exclude.add(name)
-    return {'dims': dims, 'exclude': exclude}
+    return _parse_feedback(feedback, style_keywords=_STYLE_KW,
+                           color_keywords=_COLOR_KW, mood_keywords=_MOOD_KW,
+                           flower_names=_get_all_flower_names)
 _RELATIONSHIP_MAP = {'母亲': '亲子', '恋人': '情侣', '朋友': '朋友', '自己': '自用', '长辈': '长辈/同事', '宝宝': '亲子'}
 
 _ALL_FLOWER_TERMS: list[str] | None = None
@@ -1500,66 +1438,9 @@ def design_diy_plan(requirements: str, shop_id: str = '', session_requirement: F
 
 def _revise_visual_fields(original: dict, feedback: str) -> dict | None:
     """局部视觉修订：输出仅应用获准字段，不经过重新选材/支数校正。"""
-    import copy
-    # 按分句识别实际修改对象；「保留预算和花材」不是修改授权。
-    # 保留条件只排除自身，不吞掉同一句中的修改要求。
-    scoped_feedback = re.sub(r'(?:保留|保持)[^，。；,;！!]*?(?=但|只|改|换|调整|[，。；,;！!]|$)', '', feedback)
-    scoped_feedback = re.sub(r'(?:预算|花材|数量|支数)(?:都|全部)?不变', '', scoped_feedback)
-    clauses = re.split(r'[，。；,;！!]|但是|但|同时', scoped_feedback)
-    changes = [c for c in clauses if re.search(r'改|换|调整|变|增加|减少|去掉|不要|便宜|贵', c)
-               and not re.search(r'不要.*(?:图|预览)|不改|保持|保留|不变', c)]
-    packaging = any('包装' in c or '包材' in c for c in changes)
-    colors = any(re.search(r'配色|色系|色调|颜色|色', c) and '包装' not in c and '包材' not in c for c in changes)
-    if not (packaging or colors):
-        return None
-    if packaging and re.search(r'花篮|礼盒|花盒|玻璃|陶瓷|丝绒|改.*材料|换.*材料', scoped_feedback):
-        return {'ok': False, 'error': '更换包装材料或形态需要重新估价，请说明是否允许调整预算；原方案已保留'}
-    if packaging and not any(re.search(r'粉|白|红|蓝|紫|黄|绿|香槟|颜色|色系|色调', c) for c in changes if '包装' in c or '包材' in c):
-        return {'ok': False, 'error': '更换包装材料或形态需要重新估价，请说明要换的材料及是否允许调整预算；原方案已保留'}
-    if any(re.search(r'预算|价格|数量|支数|花材|主花|配花|叶材|风格|玫瑰|康乃馨|洋桔梗|洋橘梗|绣球|向日葵', c) for c in changes):
-        return None
-    allowed = (['color_scheme'] if colors else []) + (['packaging_color'] if packaging else [])
-    try:
-        response = call_llm([
-            {'role': 'system', 'content': '只做局部修订，返回 JSON changes 对象，且只包含这些字段：' + ','.join(allowed) + '。color_scheme 为非空颜色字符串数组；packaging_color 仅为颜色名（例如粉色），禁止包含包装材料、形态和做法。不要输出其他字段。'},
-            {'role': 'user', 'content': json.dumps({'design': original.get('design'), 'feedback': feedback}, ensure_ascii=False)},
-        ], response_format={'type': 'json_object'})
-        decoded = json.loads(response.choices[0].message.content)
-        patch = decoded.get('changes', decoded) if isinstance(decoded, dict) else None
-        if not isinstance(patch, dict) or set(patch) != set(allowed):
-            raise ValueError('invalid revision fields')
-        for key in allowed:
-            value = patch[key]
-            if key == 'color_scheme':
-                if not isinstance(value, list) or not value or len(value) > 8 or any(not isinstance(x, str) or not x.strip() or len(x) > 30 for x in value):
-                    raise ValueError('invalid colors')
-            elif not isinstance(value, str) or not value.strip() or len(value) > 20 or re.search(r'纸|纱|盒|篮|袋|塑料|丝绒|缎|皮|玻璃|陶瓷', value):
-                raise ValueError('invalid packaging')
-        result = copy.deepcopy(original)
-        if colors:
-            result['design']['color_scheme'] = patch['color_scheme']
-        if packaging:
-            old_packaging = str(result['design'].get('packaging') or '原包装')
-            old_packaging = re.sub(r'；包装颜色：[^；]*', '', old_packaging)
-            old_packaging = re.sub(r'(?:香槟|奶白|浅粉|深红|粉|白|红|蓝|紫|黄|绿)色', '', old_packaging)
-            result['design']['packaging'] = old_packaging + '；包装颜色：' + patch['packaging_color'].strip()
-        result['plan_id'] = 'DIY_' + uuid.uuid4().hex[:12]
-        result['version'] = int(original.get('version', 1)) + 1
-        result['parent_id'] = original['plan_id']
-        for key in ('task_id', 'poll', 'result_url', 'effect_image_url', 'image_url', 'image'):
-            result.pop(key, None)
-        design = result['design']
-        result['effect_prompt'] = _effect_prompt_from_design(design, result.get('style', ''), design.get('packaging', '花束'))
-        result['desc'] = '本版仅调整' + '、'.join('配色' if k == 'color_scheme' else '包装' for k in allowed) + '；花材、支数与原参考报价保持不变。'
-        # 原步骤可能带旧配色/包装文案，用中性的引用避免与最终结构冲突。
-        steps = ['按本版用料清单准备花材，保留原方案支数。', '按本版配色搭配花材，完成螺旋扎束。', '按本版包装说明包扎并固定花束。']
-        result['diy_steps'] = steps
-        design['diy_steps'] = steps
-        result['copy_text'] = build_plan_copy_text(result)
-        return result
-    except Exception:
-        logger.exception('[revise] 局部修订失败，原方案保持不变')
-        return {'ok': False, 'error': '本次修改未完成，原方案已保留，请重试'}
+    return revise_visual_fields(original, feedback, call_model=call_llm,
+                                effect_prompt=_effect_prompt_from_design,
+                                copy_text=build_plan_copy_text)
 
 
 def revise_with_llm(plan: str, feedback: str, shop_id: str = '') -> dict:
