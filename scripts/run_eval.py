@@ -37,6 +37,42 @@ def tool_names(response: dict[str, Any]) -> list[str]:
     return names
 
 
+#: checks 结构化断言的支持类型（judge 自动判定）。
+#: 字符串条目保留为"人工项"——报告里计数为 manual_checks，不参与 pass/fail。
+CHECK_ASSERTION_TYPES = frozenset({'must_include', 'must_not_include', 'ui_is', 'tool_used', 'tool_not_used'})
+
+
+def _judge_check_assertions(case: dict[str, Any], response: dict[str, Any]) -> tuple[list[str], int]:
+    """执行 checks 里的结构化断言；返回 (issues, 人工项数量)。"""
+    issues: list[str] = []
+    manual = 0
+    reply = str(response.get('reply') or '')
+    ui = str(response.get('ui') or '')
+    used = set(tool_names(response))
+    for check in case.get('checks') or []:
+        if isinstance(check, str):
+            manual += 1
+            continue
+        kind = str(check.get('type') or '')
+        value = check.get('value')
+        if kind == 'must_include':
+            if str(value) not in reply:
+                issues.append(f'check must_include: {value!r} missing in reply')
+        elif kind == 'must_not_include':
+            if str(value) in reply:
+                issues.append(f'check must_not_include: {value!r} found in reply')
+        elif kind == 'ui_is':
+            if ui != str(value):
+                issues.append(f'check ui_is: {ui!r} != {value!r}')
+        elif kind == 'tool_used':
+            if str(value) not in used:
+                issues.append(f'check tool_used: {value!r} not called')
+        elif kind == 'tool_not_used':
+            if str(value) in used:
+                issues.append(f'check tool_not_used: {value!r} was called')
+    return issues, manual
+
+
 def judge(case: dict[str, Any], response: dict[str, Any]) -> tuple[bool, list[str]]:
     issues: list[str] = []
     reply = str(response.get('reply') or '').strip()
@@ -62,6 +98,8 @@ def judge(case: dict[str, Any], response: dict[str, Any]) -> tuple[bool, list[st
     unexpected = sorted(set(used) - allowed) if allowed else []
     if unexpected:
         issues.append('unexpected tools: ' + ', '.join(unexpected))
+    check_issues, _manual = _judge_check_assertions(case, response)
+    issues.extend(check_issues)
     return (not issues, issues)
 
 

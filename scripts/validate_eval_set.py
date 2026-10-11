@@ -107,8 +107,23 @@ def validate(path: Path = DEFAULT_CASES) -> int:
         if overlap:
             fail(f'tool in both allow/forbid: {sorted(overlap)}')
         if not isinstance(item['checks'], list) or not item['checks'] or any(
-                not isinstance(check, str) or not check.strip() for check in item['checks']):
-            fail('invalid checks: expected non-empty list of non-blank strings')
+                not isinstance(check, (str, dict)) for check in item['checks']):
+            fail('invalid checks: expected non-empty list of strings or assertion objects')
+        for check in item['checks']:
+            if isinstance(check, str):
+                if not check.strip():
+                    fail('invalid checks: blank string entry')
+                continue
+            if set(check) != {'type', 'value'}:
+                fail('invalid checks: assertion must have exactly {type, value}')
+            if check['type'] not in ('must_include', 'must_not_include', 'ui_is', 'tool_used', 'tool_not_used'):
+                fail(f'invalid checks: unknown assertion type {check["type"]!r}')
+            if not isinstance(check['value'], str) or not check['value'].strip():
+                fail('invalid checks: assertion value must be a non-blank string')
+            if check['type'] in ('ui_is',) and check['value'] not in uis:
+                fail(f'invalid checks: ui_is value {check["value"]!r} is not a UI type')
+            if check['type'] in ('tool_used', 'tool_not_used') and check['value'] not in tools:
+                fail(f'invalid checks: {check["type"]} value {check["value"]!r} is not a registered tool')
         seen.add(item['id'])
         count += 1
     if not count:
