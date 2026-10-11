@@ -34,21 +34,38 @@ from agent.engine.prompt_templates import (
 from agent.engine.card_summary import (
     _CARD_SUMMARY_MIN_REPLY as _CARD_SUMMARY_MIN_REPLY,
     _EMPTY_CARD_FALLBACK, _EMPTY_TEXT_FALLBACK,
-    _ensure_card_summary, _ensure_non_empty_reply,
+    _ensure_card_summary as _ensure_card_summary,
+    _ensure_non_empty_reply as _ensure_non_empty_reply,
+)
+from agent.engine import clarification as _clarification
+from agent.engine.cleanup import build_cleanup_pipeline, run_cleanup_pipeline
+from agent.engine.signals import (
+    _AFFIRMATIVE as _AFFIRMATIVE, _NEGATIVE as _NEGATIVE,
+    _IMAGE_DECLINE_WORDS as _IMAGE_DECLINE_WORDS,
+    _IMAGE_TOPIC_WORDS as _IMAGE_TOPIC_WORDS,
+    _CONFIRM_SIGNALS as _CONFIRM_SIGNALS,
+    _IMAGE_SIGNALS as _IMAGE_SIGNALS,
+    _ALTERNATIVE_WORDS as _ALTERNATIVE_WORDS,
+    _decline_image as _decline_image, is_affirmative as is_affirmative,
+    _signal_arg as _signal_arg, _resolve_affirmative as _resolve_affirmative,
+    _img_mentioned as _img_mentioned, _resolve_image as _resolve_image,
+    _wants_alternative as _wants_alternative,
 )
 from agent.safety.formatter import (
-    _strip_separator_lines,
-    _strip_internal_leak,
-    _neutralize_dangerous_tags,
+    _strip_separator_lines as _strip_separator_lines,
+    _strip_internal_leak as _strip_internal_leak,
+    _neutralize_dangerous_tags as _neutralize_dangerous_tags,
 )
 from agent.safety.reasoning import (
     _looks_like_reasoning_leak as _looks_like_reasoning_leak, _has_process_narration,
-    _needs_reasoning_nudge, _reasoning_nudge_text, _finalize_reasoning_leak,
+    _needs_reasoning_nudge, _reasoning_nudge_text,
+    _finalize_reasoning_leak as _finalize_reasoning_leak,
 )
 from agent.safety.image_claim import (
     _image_task_created as _image_task_created, _extract_image_task,
     _claims_image_done as _claims_image_done,
-    _needs_image_nudge, _image_nudge_text, _finalize_image_claim,
+    _needs_image_nudge, _image_nudge_text,
+    _finalize_image_claim as _finalize_image_claim,
 )
 from agent.safety.card_claim import (
     _card_produced as _card_produced, _expresses_flower_need as _expresses_flower_need,
@@ -457,18 +474,6 @@ def _missing_diy_image_response(user_id: str, sid: str, stage: SessionStage) -> 
 
 
 logger = logging.getLogger('agent')
-_AFFIRMATIVE = ('好', '可以', '确认', '同意', '生成', '要', '行', '是', '看看')
-# 否定词优先于肯定词判断（is_affirmative 先查 _NEGATIVE）。
-# ⚠️ 第二组是「会命中 _AFFIRMATIVE 子串」的否定式，必须显式拦截——否则
-# 「这个方案不行」(含「行」)、「不是这个」(含「是」)、「不好看 / 不想要」(含「好 / 要」)
-# 会被判成**肯定**，进而误确认方案 / 误触发生图，表现为「答非所问」。
-_NEGATIVE = (
-    '不用', '不要', '不需要', '不必', '算了', '跳过', '无需', '别', '放弃',
-    '不行', '不是', '不好', '不同意', '不确认', '不想要', '不合适', '不喜欢',
-    '不满意', '不考虑', '换一个', '换一批',
-)
-
-
 def _platform_source_ids() -> list[str]:
     """扫描进程环境变量，返回已配置的平台数据源 source_id（小写去重排序）。
 
@@ -680,117 +685,17 @@ class _GuardBudget:
     reasoning: int = 1
 
 
-@dataclass(frozen=True)
-class _CleanupStep:
-    """清理链的一步（**顺序即语义**）。"""
-
-    name: str
-    fn: Callable[..., str]
-    why: str                                   # 为什么必须在这个位置（含依赖关系）
-    needs: tuple[str, ...] = ('reply',)        # 除 reply 外还需哪些上下文
-    enabled: Callable[[], bool] | None = None  # 条件步骤（None = 总是执行）
-
-
-_CLEANUP_PIPELINE: tuple[_CleanupStep, ...] = (
-    _CleanupStep(
-        'strip_separator_lines', _strip_separator_lines,
-        '先删独立分隔线（--- / ***）：放最前，避免它被后续步骤当成正文处理',
-    ),
-    _CleanupStep(
-        'strip_internal_leak', _strip_internal_leak,
-        '隐私兜底：清掉工具名 / 内部字段 / 原始数据行。'
-        '**必须早于 XSS 转义** —— 否则转义后的实体会让这里的模式匹配失效',
-    ),
-    _CleanupStep(
-        'neutralize_dangerous_tags', _neutralize_dangerous_tags,
-        'XSS 兜底：reply 虽是纯文本，但不能假设接入端会转义（审计 P0）。'
-        '放在 _strip_internal_leak 之后，避免转义产物被再删一遍',
-    ),
-    _CleanupStep(
-        'ensure_card_summary', _ensure_card_summary,
-        '要点兜底：把卡片数据补成一句可读要点。依赖**已清理过的**正文与卡片数据，'
-        '放这里才能读到干净文本',
-        needs=('reply', 'ui', 'data'),
-    ),
-    _CleanupStep(
-        'ensure_non_empty_reply', _ensure_non_empty_reply,
-        '⚠️ 非空兜底：脱敏可能把正文整段清空 → 用户看到空气泡。必须紧跟清理类步骤',
-        needs=('reply', 'ui'),
-    ),
-    _CleanupStep(
-        'demo_trade_note', _demo_trade_note,
-        '体验版（不承接下单）边界说明：仅在非交易部署下追加',
-        enabled=lambda: not _shop_entity_enabled(),
-    ),
-    _CleanupStep(
-        'finalize_image_claim', _finalize_image_claim,
-        '生图声明兜底：护栏纠正后仍谎称已出图 → 整段换成如实说明'
-        '（不能让用户去找一张不存在的图）',
-        needs=('reply', 'tool_log'),
-    ),
-    _CleanupStep(
-        'finalize_reasoning_leak', _finalize_reasoning_leak,
-        '独白兜底：纠正后仍是「我该怎么回答」→ 整段换成面向用户的话。'
-        '⚠️ 必须放最后：它是**整段替换**，放前面会把后面步骤的产出一起覆盖掉',
-        needs=('reply', 'ui'),
-    ),
-)
+_CLEANUP_PIPELINE = build_cleanup_pipeline(_demo_trade_note, _shop_entity_enabled)
 
 
 def _run_cleanup_pipeline(reply: str, *, ui: UIType, data: dict[str, Any],
                           tool_log: list[Any]) -> str:
-    """按 :data:`_CLEANUP_PIPELINE` 顺序执行回复清理（顺序即语义，见各步 ``why``）。
-
-    Args:
-        reply: ``_post_process`` 产出的原始回复。
-        ui: 本轮产出类型（卡片类步骤需要）。
-        data: 卡片数据（要点兜底需要）。
-        tool_log: 本轮工具调用记录（生图声明兜底需要）。
-
-    Returns:
-        清理后的最终回复。
-    """
-    for step in _CLEANUP_PIPELINE:
-        if step.enabled is not None and not step.enabled():
-            continue
-        # ⚠️ 正文用**位置参数**传：这 8 个函数的历史参数名不统一
-        # （前 3 个叫 `text`、后 5 个叫 `reply`），统一按关键字会 TypeError
-        # —— 集成测试第一次跑就抓到了这点。
-        kwargs: dict[str, Any] = {}
-        if 'ui' in step.needs:
-            kwargs['ui'] = ui
-        if 'data' in step.needs:
-            kwargs['data'] = data
-        if 'tool_log' in step.needs:
-            kwargs['tool_log'] = tool_log
-        reply = step.fn(reply, **kwargs)
-    return reply
+    """保留既有入口，具体执行在 engine.cleanup。"""
+    return run_cleanup_pipeline(reply, pipeline=_CLEANUP_PIPELINE,
+                                ui=ui, data=data, tool_log=tool_log)
 
 
-_IMAGE_DECLINE_WORDS = (
-    '不要生成', '不用生成', '别生成', '不生成', '不要出图', '不用出图', '别出图',
-    '取消生图', '不要效果图', '不用效果图', '别效果图', '不要预览图', '不用预览图',
-)
-_IMAGE_TOPIC_WORDS = ('效果图', '生图', '出图', '预览图', '生成图')
 _IMAGE_DECLINE_HINT = ('不要', '不用', '别', '取消', '不需要', '免了', '算了')
-
-
-def _decline_image(message: str) -> bool:
-    """用户是否明确表示不想生成效果图。
-
-    用于「生图补调」的意图豁免：用户已经说不要了，就绝不能再强行生成——
-    否则会出现用户说什么都回同一句「正在为您生成效果图预览」的死循环。
-    """
-    text = (message or '').strip()
-    if not text:
-        return False
-    if any(w in text for w in _IMAGE_DECLINE_WORDS):
-        return True
-    # 「不用了」「别了」这类省略语，需同时出现图相关词才算拒绝生图
-    # 否定必须直接修饰图片，不能把“不要配花…并生成效果图”跨句拼成拒绝。
-    return bool(re.search(r'(?:不要|不用|无需|不需要|别|取消)\s*(?:再|自动|继续)?\s*(?:生成|制作|看|展示)?\s*(?:效果图|预览图|图片|图像|生图|出图|图)', text)
-                or re.search(r'(?:效果图|预览图|图片|生图|出图)[，,：:\s]*(?:就|也|先)?(?:不要|不用|不需要|免了|算了|取消)', text))
-
 
 async def _find_pending_image_task(user_id: str, sid: str) -> dict | None:
     """查找本会话已存在但仍在生成的任务，用于去重（绝不重复烧生图 API）。
@@ -835,25 +740,11 @@ def is_allowed(role: str, action: str) -> bool:
     """角色权限检查（兼容接口）。"""
     return True
 
-def is_affirmative(text: str) -> bool:
-    """判断用户消息是否为明确肯定意图（关键词兜底版；主判据见 _resolve_affirmative）。"""
-    t = (text or '').strip()
-    if not t:
-        return False
-    if any(k in t for k in _NEGATIVE):
-        return False
-    return any(k in t for k in _AFFIRMATIVE)
-
-
 # ── L1「对话理解」：结构化信号消费 ──────────────────────────────────────────
 # 背景：此前「用户是否确认 / 要不要生图 / 是否换一批」全靠单字关键词猜，已两次踩坑——
 # 「这个方案不行」含「行」被判成肯定 → 误确认方案；用户拒绝生图后被新方案冲掉重新生图。
 # 现在改由 respond_to_user 携带的结构化信号（confirmation / image / wants_alternative）
 # 主导判断，关键词只在信号缺失或非法时兜底。原则：**理解归 LLM，护栏归规则**。
-_CONFIRM_SIGNALS = ('confirm', 'reject', 'none')
-_IMAGE_SIGNALS = ('want', 'decline', 'none')
-# 「换一批」关键词兜底（模型漏填 wants_alternative 时仍能识别）
-_ALTERNATIVE_WORDS = ('再', '换', '别的', '预算', '有没有', '其他', '看看')
 # 方案确认的显式短语。注：历史版本用过裸「这个方案」做子串匹配，导致
 # 「这个方案不行」也被判成确认 → 故此处不再收录裸短语，并配合否定词护栏。
 _PLAN_CONFIRM_PHRASES = (
@@ -862,126 +753,16 @@ _PLAN_CONFIRM_PHRASES = (
 )
 
 
-def _signal_arg(respond_args: dict | None, key: str, allowed: tuple[str, ...]) -> str | None:
-    """读取 respond_to_user 的结构化信号；缺失 / 非法 / 显式 'none' 一律返回 None。
-
-    返回 None 的语义是「本轮没有可靠信号」→ 调用方回退关键词判定。
-    绝不抛异常：模型偶发幻觉或旧客户端不带该字段时，行为必须与改造前一致。
-
-    Args:
-        respond_args: respond_to_user / show_plan_card 的入参（可能为 None 或非 dict）。
-        key: 字段名，如 'confirmation' / 'image'。
-        allowed: 合法枚举值（含 'none'）。
-
-    Returns:
-        归一化后的小写枚举值；不合法或为 'none' 时返回 None。
-    """
-    if not isinstance(respond_args, dict):
-        return None
-    raw = respond_args.get(key)
-    if not isinstance(raw, str):
-        return None
-    val = raw.strip().lower()
-    if val not in allowed or val == 'none':
-        return None
-    return val
-
-
-def _resolve_affirmative(message: str, signal: str | None) -> bool:
-    """本轮用户是否「肯定」。LLM 信号优先，关键词兜底，规则保留否决权。
-
-    - 消息命中否定词 → 恒 False（规则一票否决，先于任何信号）
-    - signal == 'confirm' → True；'reject' → False
-    - signal 缺失（None）→ 回退 is_affirmative(message)，与 L1 改造前逐字一致
-
-    Args:
-        message: 用户本轮原始消息。
-        signal: _signal_arg 解析出的 confirmation 信号（可为 None）。
-
-    Returns:
-        是否视为肯定。
-    """
-    text = message or ''
-    if any(k in text for k in _NEGATIVE):
-        return False
-    if signal == 'confirm':
-        return True
-    if signal == 'reject':
-        return False
-    return is_affirmative(text)
-
-
-def _img_mentioned(text: str) -> bool:
-    """消息是否提到效果图/生图（仅用于「想要图」的关键词兜底）。"""
-    t = text or ''
-    return any(w in t for w in _IMAGE_TOPIC_WORDS) or '生成' in t
-
-
-def _resolve_image(message: str, signal: str | None) -> tuple[bool, bool]:
-    """解析用户对效果图的态度，返回 (want, decline)。
-
-    保守策略（生图要花钱，且「拒了又硬塞」是最伤体验的失败形态）：
-    - decline 取**并集**：模型说 decline，或关键词命中「不要效果图」 → 拒绝
-    - want 取值保守：模型说 want，或（关键词提到图相关 且 肯定）→ 想要；判定 decline 后恒 False
-    - signal 缺失 → 与改造前关键词判定完全等价（零回归）
-
-    Args:
-        message: 用户本轮原始消息。
-        signal: _signal_arg 解析出的 image 信号（可为 None）。
-
-    Returns:
-        (want, decline) 二元组，二者不会同时为 True。
-    """
-    text = message or ''
-    if signal == 'decline' or _decline_image(text):
-        return False, True
-    want = signal == 'want' or (_img_mentioned(text) and is_affirmative(text))
-    return want, False
-
-
-def _wants_alternative(respond_args: dict | None, message: str) -> bool:
-    """用户是否想「换一批 / 再看别的」。
-
-    取并集而非严格主从：关键词命中即 True，模型布尔信号可额外补充。
-    理由：清理 plan_ 标志是幂等无副作用的操作，多清一次不会出错；
-    若让模型的 False 覆盖关键词命中，反而可能漏清、导致旧方案顽固复用。
-
-    Args:
-        respond_args: respond_to_user 入参。
-        message: 用户本轮原始消息。
-
-    Returns:
-        是否需要清理「已推方案」标志。
-    """
-    if any(w in (message or '') for w in _ALTERNATIVE_WORDS):
-        return True
-    return isinstance(respond_args, dict) and respond_args.get('wants_alternative') is True
-
-
 # ── L3 澄清式追问：缺关键信息时不硬编方案 ──────────────────────────────────
 # 目标：把「模型缺信息也硬出一条猜的方案卡」变成「先问清楚再设计」。
 # 判据用模型自报的 missing（它读得到完整上下文），agent 只做白名单过滤 + 确定性拦截；
 # 关键词仅用于「用户是否已授权自行决定」这一豁免判断。
-_CLARIFY_PRIORITY = ('recipient', 'occasion', 'budget')
-# 用户已把这几个槽位交给系统决定 → 不再打断（否则会变成没完没了的表单式追问）
-_CLARIFY_EXEMPT = (
-    '随便', '你决定', '你定', '你看着办', '看着办', '都行', '都可以', '不用问',
-    '别问', '直接来', '直接出', '推荐就行', '你推荐', '帮我挑', '帮我选',
-)
-_SLOT_ASK = {
-    'recipient': '送给谁（妈妈 / 女朋友 / 朋友 / 长辈 / 同事…）',
-    'occasion': '什么场合（生日 / 纪念日 / 求婚 / 探病 / 开业 / 感谢…）',
-    'budget': '预算大概多少（100 以内 / 200 左右 / 300-500 / 500 以上）',
-}
-
-
 def _has_any_requirement(req: Any) -> bool:
     """会话累积需求里是否至少有一项有效信号（与 tools._req_clear 同语义）。
 
     仅用于 L3 追问的「模型漏报兜底」：一项都没有，说明用户其实什么都没说清。
     """
-    return bool(req and (req.recipient or req.occasion or req.budget_num is not None
-                         or req.budget_anchor or req.scene or req.style or req.colors))
+    return _clarification._has_any_requirement(req)
 
 
 def _clarify_slots(
@@ -1010,18 +791,8 @@ def _clarify_slots(
     Returns:
         需要追问的槽位列表（按 _CLARIFY_PRIORITY 顺序，最多 2 个）。
     """
-    if ui != UIType.PLAN_CARD or not diy_produced or asked_before:
-        return []
-    if any(w in (message or '') for w in _CLARIFY_EXEMPT):
-        return []
-    raw = respond_args.get('missing') if isinstance(respond_args, dict) else None
-    reported = {str(x).strip().lower() for x in raw} if isinstance(raw, list) else set()
-    slots = [s for s in _CLARIFY_PRIORITY if s in reported][:2]
-    if not slots and session_req is not None and not _has_any_requirement(session_req):
-        # 模型漏报兜底：会话累积需求里**一项有效信号都没有**（用户确实什么都没说清）→
-        # 只问最关键的两项。仅在「完全无信号」时触发，避免对已说清需求的用户唠叨。
-        slots = ['recipient', 'occasion']
-    return slots
+    return _clarification._clarify_slots(message, respond_args, ui, diy_produced,
+                                         asked_before, session_req)
 
 
 def _append_clarify(reply: str, slots: list[str]) -> str:
@@ -1034,18 +805,7 @@ def _append_clarify(reply: str, slots: list[str]) -> str:
     Returns:
         追加追问后的回复；无有效槽位时原样返回。
     """
-    asks = '；'.join(_SLOT_ASK[s] for s in slots if s in _SLOT_ASK)
-    if not asks:
-        return reply
-    base = (reply or '').strip()
-    # 模型**自己**已经把追问问出来了 → 不再追加模板句。
-    # 为什么（2026-09-16「要像真人对话，不要机械走流程」）：固定模板
-    # 「在给你定方案之前，想先确认一下：…？」会一轮一轮一字不差地重复，是我们最明显的
-    # 机械感来源；模型自己组织问法远好于模板。这里退化为「它忘了问」时的兜底。
-    if base and ('？' in base or '?' in base):
-        return base
-    tail = f'在给你定方案之前，想先确认一下：{asks}？'
-    return f'{base}\n{tail}' if base else tail
+    return _clarification._append_clarify(reply, slots)
 
 from backend.data_gateway.access import scoped_agent_run
 from backend.execution import run_worker, checkpoint
