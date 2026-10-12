@@ -7,6 +7,7 @@
 - 将 `agent.py` 的提示词模板、卡片回复兜底与平台工具证据，以及 `tools.py` 的预算/支数解析、花材支数分配、报价明细与卡片同步、DIY 操作指引与方案复制清单分别抽入 `agent/engine/`、`agent/safety/` 和 `agent/design/`；保留旧导入入口，新模块纳入 CI 类型检查。本批仅拆分低耦合逻辑，未改动核心 ReAct 和设计生成流程。
 - 将 DIY 局部视觉改版和改版输入解析拆入 `agent/design/`，依赖从兼容入口显式传入，保证既有模型替身测试真正命中；将 DIY 澄清判断、有序回复清理流水线、商品卡对齐和确认/生图意图信号拆入 `agent/engine/`，旧入口保持兼容。
 - 将需求理解规则层（关键词表、场景/风格索引、花名表、需求抽取与合并、支数防幻觉）抽入 `agent/design/requirement.py`；`agent.tools` 保留别名重导出，旧导入与测试契约不变。
+- 将回复发布前的确定性清洗（防编造商家电话、markdown 噪声清理与上游审核误伤兜底、工具报错脱敏）抽入 `agent/safety/reply_polish.py`，纳入 mypy 阻塞检查；`agent.agent` 保留别名重导出。
 - `update_order_address` 工具接入 customer_service_orders 路由（原注册后无任何路线可达，属死配置）。
 - CI 新增 ruff 硬门禁（默认规则集，忽略 E402 惰性导入）与 mypy：domain 硬门禁、agent/backend 顾问模式；requirements-dev 增加 ruff/mypy。
 - 知识域契约测试改为直接校验静态 JSON 与 knowledge_manifest 一致性（原断言依赖已归档的《知识库概览》文档）。
