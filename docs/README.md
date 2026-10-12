@@ -39,6 +39,7 @@
 | `dev-and-release-workflow.md` | 开发、版本和发布流程 |
 | `dependency-lock-linux.md` | Linux 依赖锁流程 |
 | `retention-policy.md` | 数据保留策略 |
+| `agent-development-guide.md` | 智能体开发十章标准（架构评估与改进的参照） |
 
 ## 接入与业务专题
 
