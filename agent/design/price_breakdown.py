@@ -101,7 +101,7 @@ def _enrich_plan_fees(plan: dict) -> dict:
         for _s in _steps:
             _t = str(_s)
             for _name, _q in stems.items():
-                _t = re.sub(f'{re.escape(_name)}\s*[×xX*]\s*\d+', f'{_name}×{_q}', _t)
+                _t = re.sub(rf'{re.escape(_name)}\s*[×xX*]\s*\d+', f'{_name}×{_q}', _t)
             _new_steps.append(_t)
         plan['diy_steps'] = _new_steps
     source_label = {'override': '商家设定的标准价', 'merchant': '本店在售商品',
