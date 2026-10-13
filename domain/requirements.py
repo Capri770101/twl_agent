@@ -18,6 +18,8 @@ class FlowerRequirement:
     scene: str | None = None
     colors: list[str] = field(default_factory=list)
     mood: str | None = None
+    gift_intent: str | None = None  # 想传达给收花人的心意类别，独立于花束 mood
+    gift_message: str | None = None  # 用户原话中明确表达的内容
     budget_num: float | None = None
     budget_min: float | None = None
     budget_max: float | None = None
@@ -43,6 +45,8 @@ class FlowerRequirement:
             scene=d.get("scene"),
             colors=list(d.get("colors") or []),
             mood=d.get("mood"),
+            gift_intent=d.get("gift_intent"),
+            gift_message=d.get("gift_message"),
             budget_num=d.get("budget_num"),
             budget_min=d.get("budget_min"),
             budget_max=d.get("budget_max"),
@@ -69,6 +73,10 @@ class FlowerRequirement:
             d["color"] = self.colors[0]
         if self.mood:
             d["mood"] = self.mood
+        if self.gift_intent:
+            d["gift_intent"] = self.gift_intent
+        if self.gift_message:
+            d["gift_message"] = self.gift_message
         if self.budget_num is not None:
             d["budget"] = str(int(self.budget_num))
         elif self.budget_anchor:
@@ -81,7 +89,7 @@ class FlowerRequirement:
 
     def merge(self, other: FlowerRequirement) -> FlowerRequirement:
         merged = FlowerRequirement(**asdict(self))
-        for f in ("recipient", "relationship", "occasion", "style", "substyle", "scene", "mood", "budget_anchor", "raw"):
+        for f in ("recipient", "relationship", "occasion", "style", "substyle", "scene", "mood", "gift_intent", "gift_message", "budget_anchor", "raw"):
             v = getattr(other, f)
             if v:
                 setattr(merged, f, v)
@@ -117,6 +125,11 @@ def accumulate(prev: FlowerRequirement | None, curr: FlowerRequirement | None) -
     base = prev if prev is not None else FlowerRequirement()
     cur = curr if curr is not None else FlowerRequirement()
     merged = base.merge(cur)
+    if base.gift_intent and not cur.gift_intent:
+        from agent.design.gift_intent import retracts_gift_intent
+        if retracts_gift_intent(cur.raw, base.gift_intent):
+            merged.gift_intent = None
+            merged.gift_message = None
     if cur.colors:
         merged.colors = list(dict.fromkeys(cur.colors))
     return merged

@@ -264,12 +264,16 @@ def _resolve_flowers(dims: dict[str, str], style: dict, budget_tier: dict, prefe
     rec_rec_set = set(rec_recipient)
     rec_occ_set = set(rec_occasion)
     prefer_set = set(prefer_flowers)
+    from agent.design.gift_intent import INTENT_LANGUAGE
+    desired_language = set(INTENT_LANGUAGE.get(dims.get('gift_intent', ''), ()))
     scored = []
     for idx, f in enumerate(main_candidates):
         if f['name'] in prefer_set:
             w = -1
         elif f['name'] in rec_rec_set:
             w = 0
+        elif desired_language and desired_language.intersection(f.get('flower_language') or []):
+            w = 0.5  # 花语契合优于风格默认项，但不能压过明确场景/收花人约束
         elif f['name'] in style_set:
             w = 1
         elif f['name'] in rec_occ_set:
@@ -402,6 +406,8 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
         style_label, packaging['name'] if packaging else '花束')
     occ_label = dims.get('occasion') or (scene['name'] if scene else '定制')
     notes = []
+    if dims.get('gift_intent'):
+        notes.append('送花心意：结合收花人与场合选花，花语仅作参考，不代替用户原话。')
     if scene:
         notes.append(f"场景模板：{scene['name']} —— {scene.get('notes', '')}")
     notes.append(f"风格：{style_label}（{style.get('description', '')}）")
@@ -429,6 +435,13 @@ def _build_plan(dims: dict[str, str], version: int=1, parent_id: str | None=None
     _source_label = {'override': '商家设定的标准价', 'merchant': '本店在售商品',
                      'baseline': '平台在售商品'}.get(table.source, '平台在售商品')
     plan = {'plan_id': 'DIY_' + uuid.uuid4().hex[:6], 'version': version, 'parent_id': parent_id, 'name': f'{style_label}·{occ_label}花束', 'diy': True, 'style': style_label, 'style_id': style_id, 'substyle_id': substyle_id, 'substyle': style.get('name') if substyle_id and resolved is not parent else None, 'recipient': dims.get('recipient', '通用'), 'occasion': occ_label, 'scene_id': scene['id'] if scene else None, 'scene': scene['name'] if scene else None, 'budget_num': budget_num, 'budget_tier': tier['label'], 'design': {'main_flowers': main_flowers, 'fillers': filler_flowers, 'foliage': foliage_flowers, 'color_scheme': color_scheme, 'packaging': packaging['name'] if packaging else '花束', 'meaning': meaning, 'notes': notes, 'difficulty': difficulty, 'est_time': est_time, 'shelf_life': shelf_life, 'suitable_for': suitable_for, 'caution': caution, 'mood_tags': mood_tags, 'fees': {'base_fee': base_fee, 'base_standard': f'包装、手工与基础服务 {base_fee:.0f} 元/束（按{_source_label}推算）', 'stem_count': _flower_qty_text, 'note': f'单支花材价按{_source_label}推算，已含包装与手工；下单前以门店确认为准。', 'price_source': table.source}}, 'estimated_price': est, 'effect_prompt': effect_prompt, 'desc': f"为你设计了一份{style_label}{occ_label}花束：花材共 {_flower_qty_text}，色调{'/'.join(color_scheme)}，寓意{meaning}。含包装与手工 {base_fee:.0f} 元，预算{est}。", 'diy_steps': _build_diy_steps(main, fillers, foliage, color_scheme, packaging), 'care_tips': _build_care_tips(main), 'card_message': _build_card_message(dims.get('recipient', '朋友'), scene['name'] if scene else occ_label, style_label, tone, short_meaning), 'budget_breakdown': _build_budget_breakdown(main, fillers, foliage, packaging, tier, budget_num, stem_count, table)}
+    if dims.get('gift_intent'):
+        plan['gift_intent'] = dims['gift_intent']
+        if dims['gift_intent'] == 'apology' and not dims.get('gift_message'):
+            plan['card_message'] = '这束花想传达我的歉意。我尊重你的感受，不需要你立刻回应。'
+    if dims.get('gift_message'):
+        plan['gift_message'] = dims['gift_message']
+        plan['card_message'] = plan['card_message'].rstrip('。') + f'。我想告诉你：{dims["gift_message"].rstrip("。")}。'
     if exclude_flowers:
         # 持久化「用户明确不要的花材」：改版时由 revise_with_llm 并集继承。
         # 不记的话，下一轮用户只说「换个配色」，被排除的花材就会**悄悄回来**
@@ -830,6 +843,9 @@ def _merge_plan(baseline: dict, llm_plan: dict, exclude_flowers: set[str] | None
                 plan['budget_breakdown'] = _build_budget_breakdown(real_main, real_fill, real_foli, pkg, tier, plan.get('budget_num'), plan.get('stem_count'))
         if ld.get('card_message') not in (None, '', []):
             plan['card_message'] = ld['card_message']
+        if baseline.get('gift_intent'):
+            # 贺卡里的第一人称承诺不能由模型转述工具参数自由补写。
+            plan['card_message'] = baseline['card_message']
         # 保持对外结构不变：2026-09-20 精简 prompt 后模型不再输出 design.diy_steps /
         # design.care_tips，但**以前这两项在 design 内层是有值的**，接入方可能直接读
         # （demo 是 `d.diy_steps || p.diy_steps` 双兜底，其他接入方不一定）。
@@ -914,7 +930,8 @@ _LLM_REQUIREMENT_HINT = (
     '"colors":["颜色（红/粉/白/香槟/紫/蓝/黄/橙/绿/多彩混合/亮），未明确则 []"],'
     '"mood":"情绪（温柔/温馨/浪漫/清新/热烈/活泼/高级/素雅/优雅/治愈/甜美 之一，未明确则 null）",'
     '"stem_count":"用户明确说出的支数，只填阿拉伯数字（用户说「11 朵」就填 11）；**用户没提就填 null**",'
-    '"single_flower":"用户要求只用一种花时填花名（「纯红玫瑰」→ 红玫瑰），否则 null"}。'
+    '"single_flower":"用户要求只用一种花时填花名（「纯红玫瑰」→ 红玫瑰），否则 null",'
+    '"gift_intent":"用户明确想向收花人表达的心意（gratitude/apology/affection/comfort/encouragement/celebration/remembrance 之一；否则 null）。这不是用户当前情绪或花束的 mood"}。'
     '严格按原话判断：**没有说的字段一律 null / []，绝不根据常识推测、也不要把示例里的数字当成默认值**'
     '——该对象会被系统用于校验（预算与支数会直接决定报价），填错比不填更糟。'
 )
@@ -931,6 +948,10 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
     # 会话累积需求 + 本轮抽取：把「前面几轮说过的」送谁 / 场合 / 预算也带进规则基线。
     # 此前只按当前这条消息抽取，一旦 LLM 失败回退 baseline，方案就会缺跨轮补充的信息。
     req = accumulate(session_requirement, extract_requirement(requirements))
+    # 模型的工具参数是转述，不能覆盖本轮用户原话中的心意，也不能凭空编贺卡原话。
+    if session_requirement is not None:
+        req.gift_intent = session_requirement.gift_intent
+        req.gift_message = session_requirement.gift_message
     # 用户在这句话里明确不要的花材（「不要满天星」）→ 规则基线直接排除。
     # ⚠️ 以前只有**改版**路径（revise_with_llm）解析排除，首轮设计完全不看，
     # 于是「帮我设计一束不要满天星的」照样给满天星（2026-09-20 实测）。
@@ -951,6 +972,8 @@ def design_with_llm(requirements: str, shop_id: str = '', session_requirement: F
             hard_constraints.append(_exclusion_rule(exclude))
         if shop_id:
             hard_constraints.append(_shop_scope_rule(shop_id))
+        if req.gift_intent:
+            hard_constraints.append('用户借花传达的心意已结构化为 ' + req.gift_intent + '；选花时优先考虑知识库花语及场合适宜性，不能改变用户明确的花材、预算或支数，也不能杜撰花语。')
         constraint_block = ('\n【硬性约束（必须严格遵守，违反即无效）】\n' + '\n'.join(hard_constraints)) if hard_constraints else ''
         # ⚠️ 只让模型输出**规则引擎做不到的语义部分**（方案名/文案/选花/配色/包装/寓意）。
         # 实测依据（2026-09-20 服务器实测）：LLM 耗时 ≈ 输出 token × 17~19ms，

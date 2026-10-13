@@ -12,6 +12,7 @@ from agent.design.quantities import (
     _AMOUNT_PAT, _MAGNITUDE_UNITS, _cn_to_int, _extract_budget,
     _extract_stem_count, _safe_float, _safe_int,
 )
+from agent.design.gift_intent import INTENT_LANGUAGE, understand_gift_message
 from agent.knowledge import get_by_id, query_knowledge
 from domain.requirements import FlowerRequirement
 
@@ -200,13 +201,17 @@ def extract_requirement(text: str) -> FlowerRequirement:
     DIY 设计、方案检索、店铺检索共用同一套维度识别，避免散落多处。
     """
     req = FlowerRequirement(raw=text)
+    # 用户明确改口时只从新决定提取软维度，避免「不是送女友，是送妈妈」仍被旧词命中。
+    corrected = re.search(r'不是[^，。；;]{1,40}?(?:，|,)?\s*(?:而)?是(?=送|给|想|要|为了|表达)', text)
+    current = text[corrected.end():] if corrected else text
+    req.gift_intent, req.gift_message = understand_gift_message(current)
     for table, key in ((_RECIPIENT_KW, 'recipient'), (_OCCASION_KW, 'occasion'), (_STYLE_KW, 'style'), (_COLOR_KW, 'color'), (_MOOD_KW, 'mood')):
         attr = 'colors' if key == 'color' else key
         if getattr(req, attr):
             continue
         best_kw = None
         for kw in table:
-            if kw in text and (best_kw is None or len(kw) > len(best_kw)):
+            if kw in current and (best_kw is None or len(kw) > len(best_kw)):
                 best_kw = kw
         if best_kw is not None:
             if key == 'color':
@@ -214,7 +219,7 @@ def extract_requirement(text: str) -> FlowerRequirement:
             else:
                 setattr(req, key, table[best_kw])
     for kw, sid in _get_scene_map().items():
-        if kw in text:
+        if kw in current:
             req.scene = sid
             break
     anchor, exact, bmin, bmax = _extract_budget(text)
@@ -272,6 +277,7 @@ def merge_requirement(req: FlowerRequirement, llm_req: dict | None) -> FlowerReq
     _apply_text('occasion', set(_OCCASION_KW.values()))
     _apply_text('style', set(_STYLE_KW.values()))
     _apply_text('mood', set(_MOOD_KW.values()))
+    _apply_text('gift_intent', set(INTENT_LANGUAGE))
 
     raw_colors = llm_req.get('colors')
     candidates = [c.strip() for c in raw_colors if isinstance(c, str)] if isinstance(raw_colors, list) else []
