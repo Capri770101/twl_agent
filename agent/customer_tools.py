@@ -19,6 +19,18 @@ from backend.customer_actions import (query_shop_reviews as _query_shop_reviews,
 #: 「思考得太久」空壳。工具层按名称关键词降级：拉列表→本地过滤。
 _SHOP_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,80}$')
 
+# 只认用户本轮明确给出的订单号；裸数字须足够长，避免把日期/金额当订单号。
+_EXPLICIT_ORDER_ID_RE = re.compile(r'(?:订单(?:号|编号)?|单号)\s*(?:是|为|[:：#])?\s*([a-zA-Z0-9][a-zA-Z0-9_-]{0,79})')
+_STANDALONE_ORDER_ID_RE = re.compile(r'(?<![a-zA-Z0-9_-])(?:[a-zA-Z][a-zA-Z0-9_-]{4,79}|\d{12,80})(?![a-zA-Z0-9_-])')
+
+
+def _user_order_ids(message: str) -> set[str]:
+    explicit = {m.group(1) for m in _EXPLICIT_ORDER_ID_RE.finditer(message) if any(c.isdigit() for c in m.group(1))}
+    recognizable = {m.group() for m in _STANDALONE_ORDER_ID_RE.finditer(message)
+                    if any(c.isdigit() for c in m.group()) and
+                    (m.group().upper().startswith(('TLOCAL', 'ORD-', 'ORD_')) or len(m.group()) >= 12)}
+    return explicit | recognizable
+
 
 async def _tracked(operation, call):
     started = time.perf_counter()
@@ -72,9 +84,14 @@ async def query_my_orders(order_id: str = '', page: int = 1, _context: dict | No
 
 
 @register_tool(name='query_my_after_sales', description='查询本人指定订单的售后审核及退款进度。必须先确定订单；商家审核通过不代表退款到账。只读，不提交退款申请。',
-               parameters={'type': 'object', 'properties': {'order_id': {'type': 'string'}}, 'required': ['order_id'], 'additionalProperties': False},
+               parameters={'type': 'object', 'properties': {'order_id': {'type': 'string', 'description': '订单编号，必须原样使用用户本轮明确给出的编号或已查询订单返回的 id，不得编造'}}, 'required': ['order_id'], 'additionalProperties': False},
                inject_context=True, tags=['customer_service'])
 async def query_my_after_sales(order_id: str, _context: dict | None = None) -> str:
+    user_ids = _user_order_ids(str((_context or {}).get('user_message') or ''))
+    if len(user_ids) > 1:
+        return json.dumps({'ok': False, 'code': 'INVALID_ARGUMENT', 'reason': '用户提到多个订单号，请先确认要查询哪一笔'}, ensure_ascii=False)
+    if user_ids:
+        order_id = next(iter(user_ids))
     result = await _tracked('after_sales', query_orders((_context or {}).get('customer_credential', ''), order_id=order_id, after_sales=True))
     return json.dumps(result, ensure_ascii=False, default=str)
 

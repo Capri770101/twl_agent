@@ -1358,6 +1358,8 @@ class ReActAgent:
         # 保证用户拿到的联系方式一定是真的。
         final_reply = _guard_merchant_phone(tool_log, final_reply)
         final_reply = _clean_reply(final_reply)
+        from agent.safety.customer_reply import align_after_sales_reply
+        final_reply = align_after_sales_reply(final_reply, tool_log)
         if preview_submission_failed:
             final_reply = final_reply.rstrip() + '\n预览图任务暂未提交成功，方案已保留。请稍后说“给当前方案生成效果图”重试。'
         if ui in (UIType.ORDER_CARD, UIType.PAY_JUMP):

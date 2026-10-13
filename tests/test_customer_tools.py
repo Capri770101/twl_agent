@@ -18,6 +18,47 @@ def test_credential_only_from_context(monkeypatch):
     assert not {'user_id', 'credential', 'token'} & props.keys()
 
 
+def test_after_sales_uses_only_explicit_user_order_id(monkeypatch):
+    call = AsyncMock(return_value={'ok': True, 'data': {'after_sales': {'state': 'pending_review', 'amount_cents': 15900}}})
+    monkeypatch.setattr(customer_tools, 'query_orders', call)
+    monkeypatch.setattr(customer_tools, 'record_customer_query', lambda *args: None)
+    result = json.loads(asyncio.run(customer_tools.query_my_after_sales(
+        'ORD-20260928-7741', _context={'user_message': '订单 TLOCAL2026100807 的退款审核通过了吗？',
+                                       'customer_credential': 'cs1.private'})))
+    assert result['ok'] is True
+    call.assert_awaited_once_with('cs1.private', order_id='TLOCAL2026100807', after_sales=True)
+    assert '原样' in TOOL_REGISTRY['query_my_after_sales'].parameters['properties']['order_id']['description']
+
+
+def test_after_sales_multiple_order_ids_requires_clarification(monkeypatch):
+    call = AsyncMock()
+    monkeypatch.setattr(customer_tools, 'query_orders', call)
+    result = json.loads(asyncio.run(customer_tools.query_my_after_sales(
+        'TLOCAL2026100807', _context={'user_message': '订单 TLOCAL2026100807 和 TLOCAL2026100811 哪笔退款了？'})))
+    assert result['code'] == 'INVALID_ARGUMENT'
+    call.assert_not_awaited()
+
+
+def test_after_sales_without_explicit_id_preserves_tool_argument(monkeypatch):
+    call = AsyncMock(return_value={'ok': False, 'code': 'NOT_FOUND'})
+    monkeypatch.setattr(customer_tools, 'query_orders', call)
+    monkeypatch.setattr(customer_tools, 'record_customer_query', lambda *args: None)
+    result = json.loads(asyncio.run(customer_tools.query_my_after_sales(
+        'TLOCAL2026100811', _context={'user_message': '这笔退款怎么样了？', 'customer_credential': 'cs1.private'})))
+    assert result['code'] == 'NOT_FOUND'
+    call.assert_awaited_once_with('cs1.private', order_id='TLOCAL2026100811', after_sales=True)
+
+
+def test_after_sales_does_not_treat_dates_as_order_ids(monkeypatch):
+    call = AsyncMock(return_value={'ok': True, 'data': {}})
+    monkeypatch.setattr(customer_tools, 'query_orders', call)
+    monkeypatch.setattr(customer_tools, 'record_customer_query', lambda *args: None)
+    asyncio.run(customer_tools.query_my_after_sales(
+        'wrong-id', _context={'user_message': '2026-10-08 订单号 ORD-20261008-1234 退款了吗？',
+                              'customer_credential': 'cs1.private'}))
+    call.assert_awaited_once_with('cs1.private', order_id='ORD-20261008-1234', after_sales=True)
+
+
 def test_feature_off_hides_private_tool(monkeypatch):
     monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_ENABLED', False)
     assert 'query_my_orders' not in {s.name for s in visible_tool_specs()}
