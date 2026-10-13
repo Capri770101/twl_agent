@@ -83,6 +83,10 @@ def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, repl
     # 用户明确只要在售现成品时，商品库无结果不能回落成一张擅自设计的 DIY 卡。
     if any(w in text for w in ('现成', '现货', '在售')) and not any(w in text for w in ('不要现成', '不用现成')):
         return False
+    # meta 追问（原因、是谁的问题、怎么回事）不是花艺需求，不该触发兜底出卡。
+    # 注意：不能依赖 _expresses_flower_need——「你自己的原因」里的「自己」会误命中 recipient='自己'。
+    if any(w in text for w in ('原因', '为什么', '怎么回事', '谁的问题', '什么原因')):
+        return False
     if any(w in text for w in ('我的订单', '查订单', '退款', '售后', '改地址', '取消订单')):
         return False
     if any(w in text for w in _PLAN_QUESTION_WORDS):
