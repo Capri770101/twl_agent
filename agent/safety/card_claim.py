@@ -80,6 +80,9 @@ def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, repl
                                                'update_order_address')) for tc in tool_log):
         return False
     text = message or ''
+    # 用户明确只要在售现成品时，商品库无结果不能回落成一张擅自设计的 DIY 卡。
+    if any(w in text for w in ('现成', '现货', '在售')) and not any(w in text for w in ('不要现成', '不用现成')):
+        return False
     if any(w in text for w in ('我的订单', '查订单', '退款', '售后', '改地址', '取消订单')):
         return False
     if any(w in text for w in _PLAN_QUESTION_WORDS):

@@ -63,9 +63,14 @@ def platform_db_query_entity(source_id: str, entity: str, keyword: str='', limit
     _diag: dict[str, Any] = {}
     try:
         rows = query_external_entity(source_id, entity, keyword, limit, shop_id=effective_shop,
-                                     row_id=effective_id, meta=_diag)
+                                      row_id=effective_id, meta=_diag)
     except Exception as exc:
         return tool_result(False, error=str(exc))
+    if entity == 'plan' and not effective_id and isinstance(rows, list):
+        from agent.design.gift_intent import rank_products_for_gift
+        from agent.design.requirement import extract_requirement
+        gift_req = extract_requirement(str((_context or {}).get('user_message') or ''))
+        rows = rank_products_for_gift(rows, gift_req.gift_intent, gift_req.budget_num)
     meta: dict[str, Any] = {}
     if _diag.get('match') in ('relaxed', 'partial'):
         # 关键词没完全命中：relaxed = 一个词都没命中，已放宽为「该范围内全部在售」；
