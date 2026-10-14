@@ -586,6 +586,9 @@ class ReActAgent:
 
     async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False) -> ChatResponse:
         """异步入口：用线程池跑同步主循环。"""
+        if settings.AGENT_ORCHESTRATION == 'v2':
+            from agent.spine import run_v2
+            return await run_worker(_AGENT_EXECUTOR, lambda: run_v2(self, user_id, message, session_id, location, None, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout)
         return await run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout)
 
     async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False):
@@ -615,10 +618,17 @@ class ReActAgent:
                 # 关键（P0）：无论成功 / 异常 / 超时，都必须补一个 None 结束哨兵，
                 # 否则消费端 `await queue.get()` 会永久阻塞 —— SSE 挂死、用户转圈不停。
                 try:
-                    result = await asyncio.wait_for(
-                        run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
-                        timeout=settings.request_timeout,
-                    )
+                    if settings.AGENT_ORCHESTRATION == 'v2':
+                        from agent.spine import run_v2
+                        result = await asyncio.wait_for(
+                            run_worker(_AGENT_EXECUTOR, lambda: run_v2(self, user_id, message, session_id, location, _on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
+                            timeout=settings.request_timeout,
+                        )
+                    else:
+                        result = await asyncio.wait_for(
+                            run_worker(_AGENT_EXECUTOR, lambda: self.run(user_id, message, session_id, location, on_event=_on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
+                            timeout=settings.request_timeout,
+                        )
                     # done.reply 与前面最终 text 事件采用同一份校验后回复；
                     # 保留完整回复供 SSE 客户端恢复/去重，不发布原始模型片段。
                     # ⚠️ 全部用 getattr 兜底：result 若是替身对象/异常路径可能缺字段，

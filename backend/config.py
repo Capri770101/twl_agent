@@ -280,6 +280,9 @@ class Settings(BaseSettings):
     HISTORY_LIMIT: int = 20
     CARE_TOOL_SCOPE_ENABLED: bool = False
     AGENT_INTENT_ROUTING_ENABLED: bool = False
+    # v2 编排脊柱（agent/spine.py）：模型先声明理解再查表路由，替代关键词分类。
+    # 绞杀者迁移期默认 v1；v2 验收达标后切默认并删旧路径。
+    AGENT_ORCHESTRATION: str = 'v1'
     # 0 保留完整历史窗口；启用前需验证长对话约束不丢失。
     HISTORY_CHAR_LIMIT: int = 0
     REQUEST_TIMEOUT: float = 180.0
