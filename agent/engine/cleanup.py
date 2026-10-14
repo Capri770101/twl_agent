@@ -10,6 +10,7 @@ from agent.safety.formatter import _strip_separator_lines, _strip_internal_leak,
 from agent.safety.image_claim import _finalize_image_claim
 from agent.safety.reasoning import _finalize_reasoning_leak
 from agent.safety.trade_claim import _finalize_trade_claim
+from agent.safety.card_claim import _finalize_phantom_card_claim
 from agent.engine.ui_protocol import UIType
 
 
@@ -51,6 +52,9 @@ def build_cleanup_pipeline(demo_trade_note: Callable[[str], str],
         _CleanupStep('finalize_trade_claim', _finalize_trade_claim,
                      '交易声称兜底：护栏纠正后仍谎称已下单/支付 → 整段换成如实说明'
                      '（不能让用户去找一张不存在的订单）', needs=('reply', 'tool_log')),
+        _CleanupStep('finalize_phantom_card_claim', _finalize_phantom_card_claim,
+                     '幻影卡片兜底：纠正后仍引用不存在的卡片 → 删除该分句，删空则诚实引导'
+                     '（与 image/trade 同族；须在 reasoning 整段替换之前）', needs=('reply', 'ui', 'data')),
         _CleanupStep('finalize_reasoning_leak', _finalize_reasoning_leak,
                      '独白兜底：纠正后仍是「我该怎么回答」→ 整段换成面向用户的话。'
                      '⚠️ 必须放最后：它是**整段替换**，放前面会把后面步骤的产出一起覆盖掉',

@@ -77,6 +77,7 @@ from agent.safety.image_claim import (
 from agent.safety.card_claim import (
     _card_produced as _card_produced, _expresses_flower_need as _expresses_flower_need,
     _looks_like_plan_prose as _looks_like_plan_prose, _needs_card_nudge, _card_nudge_text,
+    _phantom_card_claim, _phantom_card_nudge_text,
 )
 from agent.safety.trade_claim import (
     _needs_trade_nudge, _trade_nudge_text,
@@ -905,6 +906,16 @@ class ReActAgent:
         #   · 卡片服从文案的点名（上面那步）；
         #   · 数字服从卡片的实际条数（这一步）。
         final_reply = _align_reply_count_with_card(final_reply, ui, data)
+        # QA 意图 + 空回复兜底必须在清理链**之前**：清理链会删除/替换「请查看下方卡片」
+        # 这类空壳句（幻影卡片护栏），一旦换掉，这里的空壳识别条件就再也匹配不上，
+        # 检索到的实质内容就救不回来（2026-10-13 顺序冲突实测：用户最终只收到
+        # 「刚才那条回复出错了」而不是养护内容）。
+        _qa_route = route.name if route is not None else classify(message).name if classify(message) is not None else None
+        if _qa_route == 'qa' and ui == UIType.TEXT and (
+            not final_reply.strip() or final_reply in {_EMPTY_CARD_FALLBACK, _EMPTY_TEXT_FALLBACK}
+            or _phantom_card_claim(final_reply, tool_log)
+        ):
+            final_reply = _run_cleanup_pipeline(_knowledge_fallback_reply(tool_log), ui=ui, data=data, tool_log=tool_log)
         # 回复清理链：顺序、依赖与条件步骤统一在 _CLEANUP_PIPELINE 一张表里
         # （原先这 8 步是硬编码散在这里的，顺序语义只能靠读代码推断 —— review 第 2 条）。
         # ⚠️ 改清理逻辑请改那张表，不要在这里加调用。
@@ -939,16 +950,6 @@ class ReActAgent:
             if unavailable_products:
                 final_reply = unavailable_products
                 ui, data = UIType.TEXT, {}
-        # QA 意图 + 空回复兜底：不依赖 AGENT_INTENT_ROUTING_ENABLED（该开关只管是否
-        # 限制模型工具范围）。classify() 是纯正则、零成本；生产默认路由关闭时
-        # （route=None），知识问答的空壳回复此前没有任何兜底（2026-09-22 评测
-        # qa-care-001 实证：调对工具但回复为空模板）。此处用与 _post_process
-        # 相同的判定口径，在 run() 出口提前救回。
-        _qa_route = route.name if route is not None else classify(message).name if classify(message) is not None else None
-        if _qa_route == 'qa' and ui == UIType.TEXT and (
-            not final_reply.strip() or final_reply in {_EMPTY_CARD_FALLBACK, _EMPTY_TEXT_FALLBACK}
-        ):
-            final_reply = _run_cleanup_pipeline(_knowledge_fallback_reply(tool_log), ui=ui, data=data, tool_log=tool_log)
         # （原先此处重复计算过一个 _img_intent，从未被使用——生图意图判断已统一在
         #   _post_process 内经 _resolve_image 消费结构化信号，故删除。）
         new_msgs.append({'role': 'assistant', 'content': final_reply, 'ui': ui.value, 'data': data})
@@ -1017,10 +1018,16 @@ class ReActAgent:
             logger.warning('[agent] %s未查证即答平台事实（entity=%s），已注入纠正并要求重答',
                            _where, platform_facts)
             return 'platform', _platform_nudge_text(platform_facts)
-        if budget.card and _needs_card_nudge(message, tool_log, reply):
-            budget.card -= 1
-            logger.warning('[agent] %s本轮只产出文字、未生成方案卡，已注入纠正并要求重答', _where)
-            return 'card', _card_nudge_text()
+        if budget.card:
+            # 幻影卡片声称优先于「该出卡没出卡」：前者是更明确的发布违规。
+            if _phantom_card_claim(reply, tool_log):
+                budget.card -= 1
+                logger.warning('[agent] %s回复引用了不存在的卡片，已注入纠正并要求重答', _where)
+                return 'card', _phantom_card_nudge_text()
+            if _needs_card_nudge(message, tool_log, reply):
+                budget.card -= 1
+                logger.warning('[agent] %s本轮只产出文字、未生成方案卡，已注入纠正并要求重答', _where)
+                return 'card', _card_nudge_text()
         if budget.trade and _needs_trade_nudge(tool_log, reply):
             budget.trade -= 1
             logger.warning('[agent] %s回复谎称交易完成但无工具证据，已注入纠正并要求重答', _where)

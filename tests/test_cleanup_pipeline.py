@@ -30,6 +30,7 @@ EXPECTED_ORDER = [
     'demo_trade_note',              # 体验版边界说明（条件）
     'finalize_image_claim',         # 生图声明兜底
     'finalize_trade_claim',         # 交易声称兜底（与 image 同族并列；2026-10-13 新增，均须在 reasoning 之前）
+    'finalize_phantom_card_claim',  # 幻影卡片声称兜底（同族；须在 reasoning 之前）
     'finalize_reasoning_leak',      # 独白兜底（整段替换，必须最后）
 ]
 

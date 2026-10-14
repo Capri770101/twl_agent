@@ -11,8 +11,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger('agent')
 
 from agent.tools_meta import CARD_TOOLS as _CARD_TOOLS
 
@@ -94,6 +97,57 @@ def _needs_card_nudge(message: str, tool_log: list[Any], reply: str = '',
     if intent is not None:
         return intent == 'design'
     return _looks_like_plan_prose(reply)
+
+
+# ── 幻影卡片声称：回复引用了本轮不存在的卡片（2026-10-13 实测复现）──
+# 实测：模型零工具直接回「【该卡片已失效，请忽略】」——「卡片失效」是系统从未
+# 告知模型的状态，这类声称必假。检测对象是模型产出物，证据是工具日志/最终 UI，
+# 与意图理解无关（不猜用户想干什么，只查模型说的话有没有凭证）。
+_CARD_STATE_CLAIM_RE = re.compile(
+    r'卡片已(?:失效|删除|更新|生成|提交)'
+    r'|请忽略[^。！？\n]{0,8}卡片|卡片[^。！？\n]{0,8}请忽略'
+    r'|请查看下方卡片|见下方卡片|如下方卡片|上方卡片|这张卡片'
+)
+
+_CARD_UI_TYPES = ('plan_card', 'shop_card', 'order_card', 'greeting_card', 'image_task',
+                  'customer_orders', 'customer_shops')
+
+
+def _has_card_evidence(ui: Any, data: dict | None) -> bool:
+    """最终 UI 是卡片类且带数据，才算有卡片证据。"""
+    return str(getattr(ui, 'value', ui)) in _CARD_UI_TYPES and bool(data)
+
+
+def _phantom_card_claim(reply: str, tool_log: list[Any]) -> bool:
+    """本轮无任何卡片产出，回复却引用卡片状态/引导看卡 → 违规。"""
+    text = reply or ''
+    if not text or not _CARD_STATE_CLAIM_RE.search(text):
+        return False
+    return not _card_produced(tool_log)
+
+
+def _phantom_card_nudge_text() -> str:
+    """本轮纠正指令（不落库）。"""
+    return (
+        '[系统校验未通过] 你的回复提到了卡片（失效/请忽略/下方卡片等），但**本轮没有任何'
+        '真实的卡片产出**——用户会去找一张不存在或无法交互的卡片。\n'
+        '请直接回答用户的问题；确有必要出卡时，先调用产出卡片的工具，再引导用户查看。'
+    )
+
+
+def _finalize_phantom_card_claim(reply: str, *, ui: Any, data: dict | None) -> str:
+    """护栏重答后仍引用幻影卡片 → 删除该分句；删空则给诚实引导。"""
+    text = reply or ''
+    if not text or _has_card_evidence(ui, data) or not _CARD_STATE_CLAIM_RE.search(text):
+        return reply
+    clauses = [c for c in re.split(r'(?<=[。！？!?；;])|\n', text)
+               if c.strip() and not _CARD_STATE_CLAIM_RE.search(c)]
+    cleaned = ''.join(clauses).strip().strip('【】')
+    if cleaned:
+        logger.warning('[agent] 删除幻影卡片声称分句（本轮无卡片证据）')
+        return cleaned
+    logger.warning('[agent] 整段回复均为幻影卡片声称，替换为诚实引导')
+    return '刚才那条回复出错了，请忽略。你想让我做什么，直接说就好～'
 
 
 def _card_nudge_text() -> str:
