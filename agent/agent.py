@@ -846,6 +846,22 @@ class ReActAgent:
                 name=tc['name'], arguments=tc['arguments'], result=result, status=status, source='model'),
             guard=_guard, on_event=on_event,
         )
+        return await self._finalize_turn(
+            loop_result, message=message, user_id=user_id, sid=sid, location=location,
+            incoming=incoming, req_acc=req_acc, route=route,
+            platform_facts=platform_facts, platform_sources=platform_sources,
+            guards=_guards, t0=t0, on_event=on_event,
+        )
+
+    async def _finalize_turn(self, loop_result, *, message, user_id, sid, location,
+                             incoming, req_acc, route, platform_facts, platform_sources,
+                             guards, t0, on_event):
+        """ReAct 循环后的收尾：兜底出卡 → UI 定型 → 证据对齐 → 清理链 → 持久化与发布。
+
+        纯提取自 run()（2026-10-13，绞杀者改造的挂点）：行为零变化，
+        v2 脊柱（agent/spine.py）与 v1 共用本函数，保证两条编排路径的发布口径一致。
+        """
+        _guards = guards
         respond_args, final_reply = loop_result.response, loop_result.reply
         tool_log, new_msgs = loop_result.tool_log, loop_result.new_messages
         # ── 兜底出卡：纠正过一次后模型仍不肯出卡 → 用**规则引擎**确定性地补一张 ──
