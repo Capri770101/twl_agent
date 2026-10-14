@@ -4,7 +4,7 @@
     "tools": ["set_reminder", "manage_my_reminders", "query_my_orders", "respond_to_user", "show_options"]
   },
   {
-    "name": "customer_service_orders", "route_name": "customer_service", "max_iterations": 3,
+    "name": "customer_service_orders", "route_name": "customer_service", "max_iterations": 4,
     "tools": ["query_my_orders", "query_my_after_sales", "query_my_tickets", "contact_merchant", "cancel_my_order", "apply_refund", "update_order_address", "respond_to_user", "show_options"]
   },
   {
@@ -16,7 +16,7 @@
     "tools": ["query_shop_service", "query_shop_reviews", "respond_to_user", "show_options"]
   },
   {
-    "name": "customer_service_contact", "route_name": "customer_service", "max_iterations": 3,
+    "name": "customer_service_contact", "route_name": "customer_service", "max_iterations": 4,
     "tools": ["query_my_orders", "query_my_after_sales", "query_shop_service", "query_my_tickets", "contact_merchant", "respond_to_user", "show_options"]
   },
   {

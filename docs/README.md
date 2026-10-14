@@ -45,6 +45,7 @@
 
 - [小程序接入待办清单.md](小程序接入待办清单.md) —— 宿主接入契约与验收项；与 `05-前端对接契约` 冲突时**以该清单为准**
 - [INTEGRATION-v1.4.0.md](INTEGRATION-v1.4.0.md) —— 1.4.x 各组件接入总说明
+- [customer-service-contract.md](customer-service-contract.md) —— H5 业务后端客服契约（cs1 票据、订单/售后/门店/评价端点、错误码口径）
 - `DIY成交通道方案.md`（讨论稿）已归档至 [archive/](archive/)，当前不代表已接真实 DIY 订单
 
 ## 发布与历史记录

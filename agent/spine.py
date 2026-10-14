@@ -100,6 +100,32 @@ async def run_v2(agent, user_id: str, message: str, session_id: str | None,
                                                   product_title=product_title)
         stage = SessionStage.ANALYZE
 
+    # 阶段治理（v1 同款，2026-09-16 实测教训）：image_gen 只表示「图正在生成」这个事实，
+    # 不是话题锁定；没有待跑任务时必须退出，否则模型被「图正在生成」的假前提粘住。
+    if stage == SessionStage.IMAGE_GEN:
+        from agent.agent import _find_pending_image_task  # 延迟导入
+        try:
+            _pending_img = await _find_pending_image_task(user_id, sid)
+        except Exception:
+            _pending_img = None
+        if not _pending_img:
+            stage = SessionStage.DIY_DESIGN
+            logger.info('[spine] 无待处理的生图任务，阶段退出 image_gen')
+
+    # 无方案却要图：不进理解层、不烧 ReAct，直接如实说明（与 v1 口径一致）。
+    from agent.agent import _is_unbound_image_request, _missing_diy_image_response  # 延迟导入
+    if _is_unbound_image_request(message):
+        diy = await mem_store.get_session_json(user_id, sid, 'latest_diy_plan')
+        if not isinstance(diy, dict) or not diy.get('diy'):
+            reply = _missing_diy_image_response(user_id, sid, stage)
+            await mem_store.save_messages(sid, [{'role': 'user', 'content': message},
+                                                {'role': 'assistant', 'content': reply.reply,
+                                                 'ui': reply.ui.value, 'data': reply.data}])
+            await mem_store.update_stage(sid, stage.value)
+            if on_event:
+                on_event({'event': 'text', 'content': reply.reply})
+            return reply
+
     # ── 3. 理解层：模型声明意图与需求（白名单校验），规则抽取作精确字段兜底 ──
     u = understand(message, user_id=user_id)
     rule_req = extract_requirement(message)
