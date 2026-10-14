@@ -44,6 +44,20 @@ MCP_SAFE_TOOL_NAMES = frozenset({
 # 收益：① 收窄权限面；② 减少工具选择空间（21 → 13），提升选工具准确率；③ 减小 tools schema 体积。
 OPS_TOOL_TAG = 'ops'
 
+#: 客服写操作工具标签（cancel_my_order / apply_refund / update_order_address）。
+#: 能力保留（接口与确认流程完整），但写通道未配置时不对模型暴露——避免冗长
+#: schema 占用提示词预算并干扰工具选择（实测它们是订单号幻觉的干扰源之一）。
+CUSTOMER_WRITE_TAG = 'customer_write'
+
+
+def customer_write_enabled() -> bool:
+    """客服写通道是否已接通（默认关闭，fail-closed）。"""
+    try:
+        from backend.config import settings
+        return bool(settings.CUSTOMER_SERVICE_WRITE_ENABLED)
+    except Exception:
+        return False
+
 
 def ops_tools_enabled() -> bool:
     """运维工具是否对当前会话开放（由 ENABLE_OPS_TOOLS 控制，默认关闭）。"""
@@ -68,6 +82,8 @@ def visible_tool_specs() -> list[ToolSpec]:
     from backend.config import settings
     if not settings.CUSTOMER_SERVICE_ENABLED:
         specs = [s for s in specs if 'customer_service' not in s.tags]
+    if not customer_write_enabled():
+        specs = [s for s in specs if CUSTOMER_WRITE_TAG not in s.tags]
     from agent.engine.tool_scope import active_tools
     scope = active_tools.get()
     if scope is not None:
@@ -220,6 +236,9 @@ async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dic
     from backend.data_gateway.access import cache_scope
     if OPS_TOOL_TAG in spec.tags and (not ops_tools_enabled() or cache_scope() is not None):
         return ('该工具当前不可用', 'error')
+    # 客服写通道同理：未配置写通道时，取消/退款/改址不接受调用。
+    if CUSTOMER_WRITE_TAG in spec.tags and not customer_write_enabled():
+        return ('该功能暂未开放：服务端写通道未配置，请引导用户到平台订单页办理', 'error')
     try:
         kwargs = dict(arguments or {})
         if spec.inject_context:

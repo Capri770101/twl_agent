@@ -6,7 +6,7 @@
 
 - 版本号：`VERSION=1.4.1`。准确源码由 Git 提交定位，不能只依靠版本号；现网 1.4.0 未经本轮更新。
 - 本仓库只交付智能体源码、schema 定义及接口；启动默认执行完整 schema DDL，现有 `001_image_tasks.sql` 仅含图任务表，不足以作为 DBA 限权部署的完整迁移。不包含 H5 浏览器 JWT、真实交易写端点、商家 IM、外部推送通道或服务器密钥。
-- `cancel_my_order`、`apply_refund`、`update_order_address` 均明确返回 `CHANNEL_UNAVAILABLE`；不可对接方展示为已取消/已退款/已改址。
+- `cancel_my_order`、`apply_refund`、`update_order_address` 的能力与确认流程已内置，但默认 `CUSTOMER_SERVICE_WRITE_ENABLED=false`（fail-closed）：未配置写通道时不对模型暴露、执行层拒绝调用，模型如实引导用户去平台订单页。接入真实写端点后置 true，并同步扩展 cs1 票据的 write scope（当前仅 orders:read）。
 - `contact_merchant` 仅在智能体本地留痕，`merchant_notified=false`；带订单号的工单须用 cs1 票据查到本人订单，否则拒绝关联。没有商家主动通知承诺。
 - 提醒按北京时间解释、以 UTC 入库存储；到点只写 `/api/notifications` 收件箱。接入方须自己消费并展示/推送，未接入前不能保证消费者收到通知。
 - 流式接口会流式读取模型和执行工具，但只有验证、清理后的最终文字才发给客户端；不再逐字显示未经证实的付款、工单投递和出图承诺。接入方须接受首字延迟可能上升，并以最终 `text`/`done` 事件为准。

@@ -75,6 +75,17 @@ Git 当前跟踪的环境文件只有 `.env.example`，未跟踪 `.pem/.key/.p12
 
 本地 `.env.production` 未发现上述客户服务配置；默认关闭是预期。完整验收见 [HANDOFF-CHECKLIST](../releases/v1.4.0/HANDOFF-CHECKLIST.md)。
 
+客服写通道（取消/退款/改地址）：能力已内置，默认 `CUSTOMER_SERVICE_WRITE_ENABLED=false`（fail-closed）。未开启时三个写工具不对模型暴露、执行层也拒绝调用；模型此时如实告知"渠道暂未打通"并引导平台订单页。接入方接通真实写端点后置 true，并同步完成 cs1 票据的 write scope 扩展（当前票据只有 orders:read）。
+
+## 5.1 画像/记忆存储替换位（上线另建库时）
+
+用户画像、长期偏好、会话需求与历史的全部读写都收敛在 `backend/storage/memory.py`（端口契约 `agent/ports.py::SessionStore`，契约测试 `tests/test_storage_port_contract.py` 锁定）。默认实现走 `DATABASE_URL` 的 PostgreSQL。上线另建库时两条路：
+
+1. **同引擎换库**：给智能体单独配一个 `DATABASE_URL`（该库与平台业务库隔离，这是既定设计）；
+2. **异构存储**：实现一个满足 `SessionStore` 协议的适配器模块，替换 `agent/agent.py` 与 `agent/memory_consolidator.py` 中的 `mem_store` 导入绑定即可，agent 其余代码零改动（测试套件长期以替身注入该位置，注入点有效性有回归门）。
+
+用户隔离约束（不可协商）：所有用户态方法首参数必须是 `user_id`；模型/前端传入的身份一律以服务端鉴权结果为准，工具不得接受用户态身份参数（有测试锁定）。
+
 ## 6. 按需配置
 
 - 微信直登：`WECHAT_APPID/WECHAT_SECRET`（兼容 `WX_APPID/WX_SECRET`）；本地两项为空。宿主自己完成登录时不要求智能体直连微信。

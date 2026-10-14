@@ -183,7 +183,7 @@ async def query_shop_reviews(shop_id: str = '', shop_name: str = '', limit: int 
                parameters={'type': 'object', 'properties': {
                    'order_id': {'type': 'string', 'description': '要取消的订单号'}},
                    'required': ['order_id'], 'additionalProperties': False},
-               inject_context=True, tags=['customer_service'])
+                inject_context=True, tags=['customer_service', 'customer_write'])
 async def cancel_my_order(order_id: str, _context: dict | None = None) -> str:
     result = await _tracked('cancel_order', _cancel_my_order(
         (_context or {}).get('customer_credential', ''), order_id))
@@ -195,8 +195,8 @@ async def cancel_my_order(order_id: str, _context: dict | None = None) -> str:
                    'order_id': {'type': 'string', 'description': '要退款的订单号'},
                    'reason': {'type': 'string', 'description': '退款原因（用户原话，≤255字）'},
                    'amount_cents': {'type': 'integer', 'minimum': 1, 'description': '退款金额（分）；不传默认整单'}},
-                   'required': ['order_id'], 'additionalProperties': False},
-               inject_context=True, tags=['customer_service'])
+                    'required': ['order_id'], 'additionalProperties': False},
+                inject_context=True, tags=['customer_service', 'customer_write'])
 async def apply_refund(order_id: str, reason: str = '', amount_cents: int = 0, _context: dict | None = None) -> str:
     result = await _tracked('apply_refund', _apply_refund(
         (_context or {}).get('customer_credential', ''), order_id, reason, amount_cents))
@@ -210,8 +210,8 @@ async def apply_refund(order_id: str, reason: str = '', amount_cents: int = 0, _
                        'name': {'type': 'string'}, 'phone': {'type': 'string'},
                        'region': {'type': 'string', 'description': '省市区'}, 'detail': {'type': 'string', 'description': '详细地址'}},
                        'description': '新地址'}},
-                   'required': ['order_id', 'address'], 'additionalProperties': False},
-               inject_context=True, tags=['customer_service'])
+                    'required': ['order_id', 'address'], 'additionalProperties': False},
+                inject_context=True, tags=['customer_service', 'customer_write'])
 async def update_order_address(order_id: str, address: dict | None = None, _context: dict | None = None) -> str:
     result = await _tracked('update_address', _update_order_address(
         (_context or {}).get('customer_credential', ''), order_id, address or {}))

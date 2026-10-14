@@ -280,6 +280,9 @@ class Settings(BaseSettings):
     HISTORY_LIMIT: int = 20
     CARE_TOOL_SCOPE_ENABLED: bool = False
     AGENT_INTENT_ROUTING_ENABLED: bool = False
+    # 客服写通道（取消/退款/改地址）：能力已内置，通道未配置时不暴露给模型。
+    # 接入方接通真实写端点后置 true；默认关闭（fail-closed），模型此时如实说渠道未打通。
+    CUSTOMER_SERVICE_WRITE_ENABLED: bool = False
     # v2 编排脊柱（agent/spine.py）：模型先声明理解再查表路由，替代关键词分类。
     # 2026-10-13 起 v2 为默认（39 场景对照评测 v2 不差于 v1 且多场景更优，无回归）；
     # v1 保留一个版本周期作回退通道，下个大版本删除。

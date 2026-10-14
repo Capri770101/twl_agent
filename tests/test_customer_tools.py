@@ -64,6 +64,23 @@ def test_feature_off_hides_private_tool(monkeypatch):
     assert 'query_my_orders' not in {s.name for s in visible_tool_specs()}
 
 
+def test_write_tools_hidden_until_channel_configured(monkeypatch):
+    """写通道未配置时，取消/退款/改址不出现在工具面（fail-closed）。"""
+    import asyncio
+    from agent.toolkit import execute_tool
+    monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_WRITE_ENABLED', False)
+    names = {s.name for s in visible_tool_specs()}
+    assert not {'cancel_my_order', 'apply_refund', 'update_order_address'} & names
+    # 执行层兜底：模型硬调也被拒
+    result, status = asyncio.run(execute_tool('apply_refund', {'order_id': 'X1'}, {}))
+    assert status == 'error' and '暂未开放' in result
+    # 配置后恢复可见（客服总开关 + 写通道开关都需开启）
+    monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_ENABLED', True)
+    monkeypatch.setattr(settings, 'CUSTOMER_SERVICE_WRITE_ENABLED', True)
+    names2 = {s.name for s in visible_tool_specs()}
+    assert {'cancel_my_order', 'apply_refund', 'update_order_address'} <= names2
+
+
 def _shop(name: str, sid: str = 's001', city: str = '福州') -> dict:
     return {'id': sid, 'name': name, 'city': city, 'address': 'x', 'business_hours': '08:00-22:00',
             'delivery_policy': None, 'service_phone': None, 'updated_at': None}
