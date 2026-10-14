@@ -24,4 +24,6 @@ def test_successful_query_or_unrelated_tool_does_not_replace_reply():
 
 
 def test_explicit_off_the_shelf_request_does_not_trigger_diy_card_fallback():
-    assert not _needs_card_nudge('预算200买现成的送妈妈', [], True, '送妈妈一束粉色花束，约199元')
+    # buying 意图下不造 DIY 卡（即使回复里出现了价格字样）；
+    # intent 由模型自报，不靠「现成」关键词。
+    assert not _needs_card_nudge('预算200买现成的送妈妈', [], intent='buying')

@@ -78,6 +78,10 @@ from agent.safety.card_claim import (
     _card_produced as _card_produced, _expresses_flower_need as _expresses_flower_need,
     _looks_like_plan_prose as _looks_like_plan_prose, _needs_card_nudge, _card_nudge_text,
 )
+from agent.safety.trade_claim import (
+    _needs_trade_nudge, _trade_nudge_text,
+    _finalize_trade_claim as _finalize_trade_claim,
+)
 from agent.safety.platform_evidence import (
     _platform_queried, _platform_rows_found, _unavailable_write_action,
     _local_merchant_ticket,
@@ -127,7 +131,6 @@ from backend.storage import memory as mem_store
 # | `_IMAGE_TOPIC_WORDS` | 提到生图话题 | — |
 # | `_IMAGE_CLAIM_PATTERNS` / `_IMAGE_FAIL_WORDS` | 谎称已出图识别 | 仅 image 护栏用 |
 # | `_PLATFORM_SHOP_WORDS` / `_PLATFORM_PLAN_WORDS` | 平台事实类提问 | 决定 platform 护栏是否启用 |
-# | `_PLAN_QUESTION_WORDS`（safety/card_claim.py） | 方案类追问（应按问答作答） | **优先级高于「强制出卡」** |
 # | `_REASONING_META_MARKERS` / `_PROCESS_NARRATION_MARKERS` | 内部独白识别 | 仅 reasoning 护栏用 |
 # | `_RECIPIENT_KW` / `_OCCASION_KW` / `_STYLE_KW` / `_COLOR_KW` / `_MOOD_KW` / `_BUDGET_ORAL` | 需求槽位抽取（在 agent/tools.py） | 同词多义时靠 dict 单一映射，无冲突 |
 #
@@ -449,6 +452,7 @@ class _GuardBudget:
     card: int = 1
     image: int = 1
     reasoning: int = 1
+    trade: int = 1
 
 
 _CLEANUP_PIPELINE = build_cleanup_pipeline(_demo_trade_note, _shop_entity_enabled)
@@ -783,16 +787,8 @@ class ReActAgent:
         platform_sources = _platform_source_ids()
         # 四项确定性护栏的剩余额度（逻辑统一在 _check_guards()，这里只管状态）。
         _guards = _GuardBudget()
-        # 「只有文字没出卡」的判定上下文。三条任一成立即算「该出卡了」：
-        #   ① 历史里已有方案卡；② 本会话已追问过一轮；③ **用户已经说过话（非首轮）**。
-        # ③ 是必需的兜底：实测模型在纯文字追问时**并不填 `missing`**，也不产出卡片，
-        #    于是 ② 永远落不上标记（2026-09-16 二次复现），只能按轮次兜住。
-        _prior_user_turns = sum(1 for m in history if str(m.get('role')) == 'user')
-        _has_plan_context = (
-            bool(current_plan)
-            or await mem_store.get_session_flag(user_id, sid, _FLAG_CLARIFY_ASKED) == '1'
-            or _prior_user_turns >= 1
-        )
+        # 出卡护栏的意图判据已由模型自报 intent 承担（见 safety/card_claim.py），
+        # 不再按「会话轮次 / 关键词」猜用户是否提了花艺需求。
         system = self._build_system(stage, long_term, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, current_plan=current_plan, platform_facts=platform_facts)
         route = classify(message) if settings.AGENT_INTENT_ROUTING_ENABLED else None
         if discussion_only:
@@ -828,7 +824,7 @@ class ReActAgent:
         def _guard(tool_log: list[ToolCallRecord], reply: str, zero_tool_call: bool) -> tuple[str, str] | None:
             return self._check_guards(
                 budget=_guards, tool_log=tool_log, message=message,
-                has_plan_context=_has_plan_context, reply=reply,
+                reply=reply,
                 platform_facts=platform_facts, platform_sources=platform_sources,
                 zero_tool_call=zero_tool_call,
             )
@@ -855,8 +851,9 @@ class ReActAgent:
         # ── 兜底出卡：纠正过一次后模型仍不肯出卡 → 用**规则引擎**确定性地补一张 ──
         # 线上实测（2026-09-16）：模型连续两轮都只写文字，还谎称「明细在卡片里」。
         # 与其让客户看到一张不存在的卡，不如给一张朴素但真实的方案卡（零 LLM 成本）。
-        if (_guards.card == 0 and (not route or route.name != 'buying') and not _card_produced(tool_log)
-                and _needs_card_nudge(message, tool_log, _has_plan_context, final_reply)):
+        _respond_intent = str((respond_args or {}).get('intent') or '') or None
+        if (_guards.card == 0 and not _card_produced(tool_log)
+                and _needs_card_nudge(message, tool_log, final_reply, intent=_respond_intent)):
             try:
                 from agent.tools import _build_plan, extract_requirement
                 _dims = req_acc.to_legacy_dict() if req_acc is not None else extract_requirement(message).to_legacy_dict()
@@ -960,7 +957,7 @@ class ReActAgent:
 
     def _check_guards(
         self, *, budget: '_GuardBudget', tool_log: list[ToolCallRecord], message: str,
-        has_plan_context: bool, reply: str, platform_facts: str,
+        reply: str, platform_facts: str,
         platform_sources: list[str], zero_tool_call: bool,
     ) -> tuple[str, str] | None:
         """检查四项确定性护栏；命中则扣额度并返回 ``(护栏名, 纠正文案)``。
@@ -985,7 +982,6 @@ class ReActAgent:
             budget: 四项护栏的剩余额度（命中后原地扣减）。
             tool_log: 本轮工具调用记录（判断是否查过平台 / 出过卡 / 提交过生图）。
             message: 用户原话。
-            has_plan_context: 会话是否已有方案上下文（出卡护栏的判据之一）。
             reply: 模型本轮给出的回复文本。
             platform_facts: 本轮提问涉及的平台实体（空串表示不是平台事实类提问）。
             platform_sources: 可用的平台数据源（空列表表示没接平台，不该拦）。
@@ -1001,10 +997,14 @@ class ReActAgent:
             logger.warning('[agent] %s未查证即答平台事实（entity=%s），已注入纠正并要求重答',
                            _where, platform_facts)
             return 'platform', _platform_nudge_text(platform_facts)
-        if budget.card and _needs_card_nudge(message, tool_log, has_plan_context, reply):
+        if budget.card and _needs_card_nudge(message, tool_log, reply):
             budget.card -= 1
             logger.warning('[agent] %s本轮只产出文字、未生成方案卡，已注入纠正并要求重答', _where)
             return 'card', _card_nudge_text()
+        if budget.trade and _needs_trade_nudge(tool_log, reply):
+            budget.trade -= 1
+            logger.warning('[agent] %s回复谎称交易完成但无工具证据，已注入纠正并要求重答', _where)
+            return 'trade', _trade_nudge_text()
         if budget.image and _needs_image_nudge(tool_log, reply):
             budget.image -= 1
             logger.warning('[agent] %s未提交生图任务却声称已出图，已注入纠正并要求重答', _where)

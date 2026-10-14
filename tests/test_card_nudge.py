@@ -66,32 +66,41 @@ def test_card_produced_ignores_failures_and_other_tools():
 
 
 # ── _needs_card_nudge ─────────────────────────────────────────────────
+# 意图判断交给模型自报的 intent 信号；护栏只保留事实校验（是否真出了卡、
+# 回复是否口述了支数/价格实锤）。不用关键词猜用户意图。
 
-def test_nudge_fires_when_context_exists_and_need_expressed():
-    """线上复现的那一轮：有方案上下文 + 用户表达需求 + 没出卡 → 必须拦。"""
-    assert _needs_card_nudge('生日，粉色系，你决定就好', [], has_context=True)
+def test_nudge_fires_when_model_declares_design_without_card():
+    """模型自己判定为设计需求却没出卡 = 真缺陷，必须拦。"""
+    assert _needs_card_nudge('生日，粉色系，你决定就好', [], intent='design')
 
 
-def test_nudge_silent_without_context():
-    """没有方案上下文时不拦——首次提问用文字追问是合理行为。"""
-    assert not _needs_card_nudge('生日，粉色系，你决定就好', [], has_context=False)
+def test_nudge_silent_for_other_intents():
+    """qa/chitchat/other 意图不出花束卡；buying 的商品卡只能来自真实查询，
+    查不到时不能用 DIY 卡冒充（buying 侧另有如实说明兜底）。"""
+    for intent in ('buying', 'qa', 'chitchat', 'other'):
+        assert not _needs_card_nudge('生日，粉色系，你决定就好', [], intent=intent), intent
+
+
+def test_nudge_silent_for_meta_questions_about_failures():
+    """2026-10-13 实测：「你查不到的具体原因是什么？」这类 meta 追问被
+    关键词「自己」误命中悦己场景，强行补了一张 DIY 卡。intent 驱动后，
+    模型自报 other/qa，永不补卡。"""
+    msg = '你查不到的具体原因是什么？是接通原因还是你agent自己的原因？'
+    assert not _needs_card_nudge(msg, [], intent='other')
+    assert not _needs_card_nudge(msg, [], intent='qa')
+    # 模型没报意图且没口述方案明细时，也不补卡
+    assert not _needs_card_nudge(msg, [], reply='可能是平台数据还没接通。')
 
 
 def test_nudge_silent_when_card_produced():
-    assert not _needs_card_nudge('换成粉色', [_TC('revise_diy_plan')], has_context=True)
+    assert not _needs_card_nudge('换成粉色', [_TC('revise_diy_plan')], intent='design')
     assert not _needs_card_nudge('推荐送妈妈的', [_TC('platform_db_query_entity', entity='plan')],
-                                 has_context=True)
+                                 intent='buying')
 
 
-def test_nudge_silent_for_knowledge_questions():
-    """知识类问句本来就该用文字答，不能被拉回去出卡。"""
-    for q in ('这束花的花语是什么', '为什么选康乃馨', '怎么养护能开更久', '这个方案和那个有什么区别'):
-        assert not _needs_card_nudge(q, [], has_context=True), q
-
-
-def test_nudge_silent_for_chitchat():
-    assert not _needs_card_nudge('谢谢，很满意', [], has_context=True)
-    assert not _needs_card_nudge('好的', [], has_context=True)
+def test_nudge_silent_for_customer_service_turns():
+    """客服工具轮产出的是订单/店铺卡，不是花艺方案卡。"""
+    assert not _needs_card_nudge('查一下我的订单', [_TC('query_my_orders')], intent='other')
 
 
 # ── 纠正文案 ──────────────────────────────────────────────────────────
@@ -122,20 +131,21 @@ def test_looks_like_plan_prose_ignores_clarifying_question():
 
 
 def test_nudge_fires_on_first_turn_when_model_dictates_plan():
-    """首轮 + 口述方案 → 必须拦（此前整体豁免，实测两轮都这么走）。"""
+    """首轮 + 口述方案 → 必须拦（此前整体豁免，实测两轮都这么走）。
+    模型没报 intent 时按口述证据拦。"""
     oral = '给你女朋友设计了一份方案：香槟色洋桔梗×5 + 紫色风信子×5，预算318元'
-    assert _needs_card_nudge('送女朋友生日花，预算300左右', [], has_context=False, reply=oral)
+    assert _needs_card_nudge('送女朋友生日花，预算300左右', [], reply=oral)
 
 
 def test_nudge_silent_on_first_turn_for_real_clarification():
     """首轮 + 老实追问 → 放行。"""
     ask = '方便告诉我送给谁、什么场合吗？预算大概多少呢？'
-    assert not _needs_card_nudge('想买花', [], has_context=False, reply=ask)
+    assert not _needs_card_nudge('想买花', [], reply=ask)
 
 
 def test_nudge_silent_on_first_turn_without_reply_text():
-    """不传 reply 时行为与改动前一致（首轮不拦），保证既有调用点语义不变。"""
-    assert not _needs_card_nudge('生日，粉色系，你决定就好', [], has_context=False)
+    """模型既没报意图也没口述方案 → 放行（宁可漏补，不可错补）。"""
+    assert not _needs_card_nudge('生日，粉色系，你决定就好', [])
 
 
 def test_nudge_fires_on_dictated_plan_without_any_user_keywords():
@@ -146,8 +156,7 @@ def test_nudge_fires_on_dictated_plan_without_any_user_keywords():
     护栏判定不能只认「用户话里的关键词」，否则最自然的那类表达恰好会被漏掉。
     """
     oral = '我按这个思路配了一束：主花 向日葵4支 + 非洲菊3支，预算约150元，含人工和装饰费。'
-    assert _needs_card_nudge('她最近心情不太好，我想让她开心一下', [],
-                             has_context=False, reply=oral)
+    assert _needs_card_nudge('她最近心情不太好，我想让她开心一下', [], reply=oral)
     # 对照：模型只是在追问时不该被拦
-    assert not _needs_card_nudge('她最近心情不太好', [], has_context=False,
+    assert not _needs_card_nudge('她最近心情不太好', [],
                                  reply='想让她开心的话，方便告诉我预算大概多少吗？')

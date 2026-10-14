@@ -1,4 +1,13 @@
-"""方案卡证据护栏：有实际花艺需求时防止只口述不存在的卡片。"""
+"""方案卡证据护栏：有实际花艺需求时防止只口述不存在的卡片。
+
+意图判断交给模型自报的 ``intent`` 信号（respond_to_user 的结构化理解），
+本模块只保留两类**事实校验**：
+- 卡片是否真的由工具产出（``_card_produced``）；
+- 回复是否口述了方案明细实锤（支数/价格——防「谎称有卡」）。
+
+不用关键词猜用户意图：实测「你agent自己的原因」里的「自己」会误命中
+悦己场景关键词，导致 meta 追问被强行出卡（2026-10-13 线上复现）。
+"""
 from __future__ import annotations
 
 import json
@@ -6,11 +15,6 @@ import re
 from typing import Any
 
 from agent.tools_meta import CARD_TOOLS as _CARD_TOOLS
-
-_PLAN_QUESTION_WORDS = (
-    '为什么', '为何', '怎么养', '如何养', '养护', '寓意', '花语', '有毒', '能吃',
-    '区别', '什么是', '什么意思', '能放多久', '几天', '怎么保存', '真的吗',
-)
 
 
 def _card_produced(tool_log: list[Any]) -> bool:
@@ -70,35 +74,26 @@ def _looks_like_plan_prose(reply: str) -> bool:
     return '方案' in text and bool(_PROSE_PRICE_RE.search(text))
 
 
-def _needs_card_nudge(message: str, tool_log: list[Any], has_context: bool, reply: str = '') -> bool:
-    """仅有口述方案、没有可信卡片证据时要求模型重答。"""
+def _needs_card_nudge(message: str, tool_log: list[Any], reply: str = '',
+                      intent: str | None = None) -> bool:
+    """仅在「模型声明了设计意图却没出卡」或「回复口述方案明细」时要求补卡。
+
+    - 模型自报 intent 时以它为准：``design`` 且没出卡 = 真缺陷，补；
+      其余意图（buying/qa/chitchat/other）一律不补——buying 的商品卡只能
+      来自真实查询，查不到有专门的如实说明兜底，不能用 DIY 卡冒充。
+    - 模型没报 intent（没调终结工具）时不猜意图，只看回复里有没有口述
+      支数/价格的实锤——这是防「谎称有方案」的证据检测，不是意图理解。
+    """
     if _card_produced(tool_log):
         return False
-    # 客服与订单金额不是花束设计，不能因此强制生成 DIY 卡片。
+    # 客服工具轮产出的是订单/店铺/登录卡，不是花艺方案卡。
     if any(getattr(tc, 'name', '').startswith(('query_my_', 'contact_merchant',
                                                'cancel_my_order', 'apply_refund',
                                                'update_order_address')) for tc in tool_log):
         return False
-    text = message or ''
-    # 用户明确只要在售现成品时，商品库无结果不能回落成一张擅自设计的 DIY 卡。
-    if any(w in text for w in ('现成', '现货', '在售')) and not any(w in text for w in ('不要现成', '不用现成')):
-        return False
-    # meta 追问（原因、是谁的问题、怎么回事）不是花艺需求，不该触发兜底出卡。
-    # 注意：不能依赖 _expresses_flower_need——「你自己的原因」里的「自己」会误命中 recipient='自己'。
-    if any(w in text for w in ('原因', '为什么', '怎么回事', '谁的问题', '什么原因')):
-        return False
-    if any(w in text for w in ('我的订单', '查订单', '退款', '售后', '改地址', '取消订单')):
-        return False
-    if any(w in text for w in _PLAN_QUESTION_WORDS):
-        return False
-    from agent.engine.discussion import is_plan_discussion
-    if is_plan_discussion(text):
-        return False
-    if _looks_like_plan_prose(reply):
-        return True
-    if not _expresses_flower_need(text):
-        return False
-    return has_context
+    if intent is not None:
+        return intent == 'design'
+    return _looks_like_plan_prose(reply)
 
 
 def _card_nudge_text() -> str:
