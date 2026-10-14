@@ -18,6 +18,8 @@ def test_claims_trade_done_matches_only_completed_claims():
     assert _claims_trade_done('支付成功！')
     assert _claims_trade_done('订单已生成，请查收')
     assert not _claims_trade_done('可以点卡片去下单')
+    assert not _claims_trade_done('购买请在小程序的商品页完成下单')
+    assert not _claims_trade_done('这笔订单待支付，请尽快下单')
     assert not _claims_trade_done('本系统不能下单，请在小程序完成')
     assert not _claims_trade_done('尚未下单，需要我先帮你查在售商品吗？')
     assert not _claims_trade_done('')

@@ -35,9 +35,11 @@ def test_eval_main_exchanges_customer_credential_inside_live_client(tmp_path, mo
             sent.append((url, headers))
             if url.endswith('/credential'):
                 return Response({'data': {'access_token': 'cs-test'}})
-            if url.endswith('/auth/token'):
-                return Response({'access_token': 'jwt-test', 'user_id': 'u-test'})
+            if url.endswith('/auth/customer-token'):
+                # 契约 §6：cs1 票据换客服命名空间 token，不与平台 token 混用
+                return Response({'access_token': 'jwt-customer', 'user_id': 'customer_h5_x'})
             assert headers['X-Customer-Credential'] == 'cs-test'
+            assert headers['Authorization'] == 'Bearer jwt-customer'
             return Response({'ui': 'text', 'reply': '请登录平台查询订单。', 'tool_calls': []})
 
     monkeypatch.setattr(run_eval.httpx, 'Client', Client)
@@ -45,5 +47,5 @@ def test_eval_main_exchanges_customer_credential_inside_live_client(tmp_path, mo
                                       '--customer-mock', 'http://mock', '--cases', str(cases),
                                       '--output', str(output), '--strict'])
     assert run_eval.main() == 0
-    assert [url.rsplit('/', 1)[-1] for url, _ in sent] == ['credential', 'token', 'chat']
+    assert [url.rsplit('/', 1)[-1] for url, _ in sent] == ['credential', 'customer-token', 'chat']
     assert json.loads(output.read_text(encoding='utf-8'))['summary']['passed'] == 1

@@ -43,6 +43,10 @@ def test_stream_terminates_when_run_raises(monkeypatch):
 
 def test_stream_happy_path_terminates(monkeypatch):
     """正常返回 → 流给出 done 事件并结束。"""
+    from backend.config import settings
+    # 本测试只验证 SSE 包装层的终结语义，与编排版本无关——显式钉在 v1，
+    # 避免默认 v2 走 spine（该路径不经被 mock 的实例方法 run）。
+    monkeypatch.setattr(settings, 'AGENT_ORCHESTRATION', 'v1')
     agent = ReActAgent()
 
     async def fake_run(*args, **kwargs):
