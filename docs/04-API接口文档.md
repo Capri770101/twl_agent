@@ -168,6 +168,7 @@ X-API-Key: <平台密钥，仅宿主服务端持有>
 
 | 事件 | 载荷 | 前端动作 |
 |---|---|---|
+| `status` | `phase`, `content` | 可选：阶段状态提示（`understand`/`react`，1.5.0 新增，未适配可忽略） |
 | `tool_call` | `name`, `status` | 显示「正在查询…」（体感改善最大，强烈建议） |
 | `text` | `content` | **追加**到当前气泡（不是替换） |
 | `card` | `ui`, `data` | 按 `ui` 渲染；**收到 card 后不要再解析 text** |

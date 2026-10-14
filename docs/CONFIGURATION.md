@@ -94,7 +94,8 @@ Git 当前跟踪的环境文件只有 `.env.example`，未跟踪 `.pem/.key/.p12
 - Token 预算：`REDIS_URL` + `LLM_COST_ENABLED=true` + 正数预算；缺少任一项不实施预算限制。
 - 腾讯模型备用：`HY_API_KEY` 与 `LLM_HY_FALLBACK_ENABLED`；默认不开启。
 - 智谱视觉、地图：`ZHIPU_API_KEY`、`TENCENT_MAP_KEY`，按实际功能需要提供。
-- `PLATFORM_ORDER_API_*`：不配置，智能体不直接下单。
+- `PLATFORM_ORDER_ENABLED` + `PLATFORM_ORDER_API_URL/KEY`：下单写通道，默认关闭（fail-closed）。开关与 URL 同时配置后 `create_order` 才对模型暴露、执行层才放行；任一缺失视为未接通，模型按成交契约引导用户去小程序结算页。体验版（`PLATFORM_ALLOWED_ENTITIES=plan`）即使配置也不注入下单话术。
+- `AGENT_UNDERSTAND_ENABLED` / `UNDERSTAND_TIMEOUT`：v2 理解层开关与单次超时（默认 true / 10s，与本轮剩余预算取小）。关闭或超时均降级为「不缩圈」全量工具，事实护栏不受影响；仅建议延迟极端敏感场景关闭。
 
 ## 7. 服务器、证书与数据迁移
 

@@ -1,5 +1,31 @@
 # 智能体版本记录
 
+## [1.5.0 源码候选 — v1 退役 + 交易闭环批次] — 2026-10-14，未部署
+
+编排收敛与交易闭环准备。1.4.x 从未部署，v1 回退通道在生产上没有价值（回退手段是 Git revert），故按 1.4.1 既定的「下个大版本删除」提前执行，升 1.5.0。
+
+验收证据：全量 pytest 与 1.4.1 基线持平（本机无 PostgreSQL，28 个 DB 依赖用例环境性 ERROR，与基线完全一致；其余全绿 0 失败）；ruff 全仓通过；CI mypy 阻塞门（domain + 抽取模块 21 文件）通过；validate_eval_set 39 场景、validate_knowledge 7 知识域通过。
+
+### v1 编排退役（破坏性变更）
+
+- 删除 v1 关键词主循环与整层关键词意图猜测：`engine/intent.py`（classify）、`tool_scope.scoped_tools`/`is_standalone_care`、`_platform_fact_hint` 及 `_PLATFORM_SHOP_WORDS`/`_PLATFORM_PLAN_WORDS`/`_CHITCHAT_WORDS` 词表、`_is_chitchat`。`ReActAgent.run/arun/arun_stream` 一律走 v2 脊柱（`agent/spine.py::run_v2`），`run()` 保留历史签名作兼容入口。
+- 删除配置项：`AGENT_ORCHESTRATION`、`AGENT_INTENT_ROUTING_ENABLED`、`CARE_TOOL_SCOPE_ENABLED`（旧 .env 含这些变量不报错，pydantic 忽略未知键，但不再有回退语义）。
+- `_finalize_turn` 的两处 classify 关键词兜底改为**工具证据判据**（与 v2「护栏只校验产出」哲学一致）：QA 空壳兜底在 route 缺失时以「本轮有成功 retrieve_knowledge」触发；现成品空手收口在 route 缺失时依赖 missing_product_reply 自带的「尝试过 plan 查询且全部空手」证据门。
+- 测试靶点随迁移：e2e 脚手架改钉 `agent.spine.understand` 与 `agent.toolkit.execute_tool`；删除 v1 专属测试（test_intent_routing / test_care_tool_scope / test_care_routing_consistency）；评测路由契约改为「场景 ↔ routing.json 策略组」校验（route_name 分组，窄域变体工具圈约束保留）。
+
+### 交易闭环代码侧（默认仍关闭）
+
+- `create_order` 恢复注册并纳入 `order_write` 门禁（与客服写通道同款 fail-closed）：仅当 `PLATFORM_ORDER_ENABLED=true` **且** `PLATFORM_ORDER_API_URL` 已配置时对模型暴露、执行层放行；默认关闭时模型按 base.md 成交契约引导小程序结算页，行为与 1.4.1 完全一致。ADR-2「智能体不直接下单」仍是默认口径，本批只是把「接通」从改代码变成改配置。
+- routing.json：`create_order` 进 buying/design 两个策略圈（通道关闭时注册表门禁先生效，圈内有名不可见不可调）；qa/客服/提醒等策略明确不带下单能力（测试锁定）。
+- 新增提示词 `order_channel.md`：仅通道接通且非体验版时注入，声明覆盖 base.md/shop_lock 的「不下单」表述；给出「先确认后下单、order_id 落地才算已下单、失败照实说」的成交纪律。base.md 成交契约改为条件表述。
+- trade_claim 护栏口径随通道自适应：通道接通时纠正文案指向「先调 create_order 拿 order_id」，未接通时维持「本系统不支持代客下单」；证据判据不变（始终只看本轮工具日志）。
+
+### 延迟优化
+
+- 寒暄零 LLM 快速通道进脊柱：`_is_simple_chitchat` 精确匹配的独立寒暄（你好/谢谢/再见）在理解层之前直接返回，省 2 次模型往返（v1 有此路径，v2 初版遗漏，属体验回归修复）。
+- 理解层预算收紧：超时从固定 30s 改为 `UNDERSTAND_TIMEOUT`（默认 10s）与本轮剩余预算取小；新增 `AGENT_UNDERSTAND_ENABLED` 开关（默认开），关闭等价理解失败降级（不缩圈全量工具，事实护栏不受影响）。
+- SSE 新增 `status` 阶段事件（`phase: understand/react`）：纯增量，未适配的前端可忽略；docs/04、docs/05 事件表已登记。最终文本仍只在护栏与清理链之后整段发布，逐字流承诺不变。
+
 ## [1.4.1 源码候选 — 编排升级批次] — 2026-10-13，未部署
 
 编排架构升级：v2 脊柱成为默认。1.4.0 从未上线，本批并入 1.4.1 候选而非另起 1.5.0；v1 脊柱保留一个版本周期作回退通道（`AGENT_ORCHESTRATION=v1` 可切回）。
