@@ -337,7 +337,50 @@ def test_platform_guard_triggers_retry(monkeypatch):
     resp, events = _run('平台上有哪些店铺？')
     assert fake.llm_calls['n'] >= 2, '护栏应注入纠正并要求重答（LLM 被调 ≥ 2 次）'
     assert '未能核实' in resp.reply and '我查了一下' not in resp.reply
-    assert getattr(resp.ui, 'value', resp.ui) == 'text'
+
+
+# ── 护栏用尽后的收口：诚实说明，不替模型造卡（2026-10-13 行为变更）──
+
+def test_card_fallback_is_honest_not_fabricated(monkeypatch):
+    """模型连续口述方案却不出卡、护栏重试已用尽 → 诚实收口。
+
+    历史行为：规则引擎代造一张方案卡 + 伪造一条 system 来源的 generate_diy_plan 记录。
+    2026-10-13 实测该路径在 meta 追问轮产出答非所问的方案卡 → 改为不出卡、如实说明。
+    """
+    oral = '给你设计好了：粉玫瑰11支配满天星，预算约158元'
+    turns = [
+        _terminal('respond_to_user',
+                  '{"reply": "' + oral + '", "ui": "text", "data": {}, "intent": "design"}', 'c1'),
+        _terminal('respond_to_user',
+                  '{"reply": "' + oral + '", "ui": "text", "data": {}, "intent": "design"}', 'c2'),
+    ]
+    _install(monkeypatch, turns)
+    resp, events = _run('送女朋友生日的花，预算150')
+    assert getattr(resp.ui, 'value', resp.ui) != 'plan_card', '护栏用尽后不得替模型造方案卡'
+    assert '没把握' in resp.reply or '重新' in resp.reply
+    assert oral not in resp.reply, '口述方案无工具证据，不得原样发布'
+    assert not any(getattr(tc, 'source', '') == 'system' and getattr(tc, 'name', '') == 'generate_diy_plan'
+                   for tc in resp.tool_calls), '不得伪造 system 来源的工具记录'
+
+
+def test_no_auto_image_when_user_did_not_ask(monkeypatch):
+    """出方案卡但用户/模型都没说要图 → 不得自动触发生图（2026-10-13 行为变更）。"""
+    plan = {'plan_id': 'DIY_noimg', 'name': '测试花束', 'price': 100,
+            'design': {'main_flowers': [{'name': '玫瑰', 'qty': 9}], 'color_scheme': ['红']}}
+    import json as _json
+    turns = [
+        _terminal('generate_diy_plan', '{"requirements": "送妈妈的花"}', 'c1'),
+        _terminal('show_plan_card',
+                  '{"plans": [' + _json.dumps(plan, ensure_ascii=False) + '], '
+                  '"reply": "配好了～", "stage": "view_plan", "image": "none"}', 'c2'),
+    ]
+    _install(monkeypatch, turns, tool_results={'generate_diy_plan': _json.dumps(plan, ensure_ascii=False)})
+    resp, events = _run('送妈妈一束花，先不要效果图')
+    assert not any(getattr(tc, 'name', '') == 'generate_effect_image' for tc in resp.tool_calls), \
+        '用户明确不要图时不得自动触发生图'
+    # 不要图 ≠ 不要卡：方案卡照出，但不得携带生图任务
+    assert getattr(resp.ui, 'value', resp.ui) == 'plan_card'
+    assert not (resp.data or {}).get('task_id')
 
 
 # ── 场景 4：清理链端到端生效 ──

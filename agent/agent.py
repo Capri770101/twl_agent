@@ -880,23 +880,17 @@ class ReActAgent:
         _respond_intent = str((respond_args or {}).get('intent') or '') or None
         if (_guards.card == 0 and not _card_produced(tool_log)
                 and _needs_card_nudge(message, tool_log, final_reply, intent=_respond_intent)):
-            try:
-                from agent.tools import _build_plan, extract_requirement
-                _dims = req_acc.to_legacy_dict() if req_acc is not None else extract_requirement(message).to_legacy_dict()
-                _fb = _build_plan(_dims or {})
-                respond_args = {
-                    'reply': '按你的要求配好了这束，细节都在卡片里，想调整随时说～',
-                    'ui': UIType.PLAN_CARD.value,
-                    'data': {'plans': [_fb]},
-                    'stage': SessionStage.VIEW_PLAN.value,
-                    'intent': 'design',
-                }
-                tool_log.append(ToolCallRecord(name='generate_diy_plan', arguments={},
-                                               result=json.dumps(_fb, ensure_ascii=False),
-                                               status='ok', source='system'))
-                logger.warning('[agent] 模型未出卡，已用规则引擎兜底生成方案卡 plan_id=%s', _fb.get('plan_id'))
-            except Exception:
-                logger.exception('[agent] 兜底出卡失败（不影响主流程）')
+            # 护栏重试已用尽、模型仍声称/声称过方案却出不了卡 → 不替它造卡。
+            # 历史教训：规则引擎代造卡片曾在 meta 追问轮产出答非所问的方案卡
+            # （2026-10-13 实测）；「没出卡」的正确收口是诚实说明，把控制权还给用户。
+            logger.warning('[agent] 模型声称方案但未出卡且重试已用尽，改为诚实收口（不代造卡）')
+            honest = ('这版方案我没能顺利整理出来，不想给你一张没把握的卡片。'
+                      '把需求（送谁、什么场合、预算）再跟我说一遍，我重新认真出一版～')
+            final_reply = honest
+            if isinstance(respond_args, dict):
+                respond_args['reply'] = honest
+                respond_args['ui'] = UIType.TEXT.value
+                respond_args['data'] = {}
         new_stage, ui, data, final_reply, llm_intent = await self._post_process(
             respond_args, tool_log, incoming, message, final_reply, user_id, sid, location, new_msgs,
             session_req=req_acc,
@@ -1263,7 +1257,11 @@ class ReActAgent:
             await mem_store.set_session_flag(user_id, sid, _FLAG_CLARIFY_ASKED, '1')
             logger.info('[agent] 模型自报缺信息 %s，标记本会话已追问一次', respond_args.get('missing'))
 
-        # ── 6. 方案即生图 ──
+        # ── 6. 方案即生图：仅当模型信号明确「要图」时触发 ──
+        # 越界修复（2026-10-13）：原逻辑「出方案卡 → 无条件补调生图 + 顺手把已确认标记置位」，
+        # 用户没要图也烧生图 API、还污染了补调段的 confirmed 语义。
+        # 现在：_img_want（模型 image 信号 ∪ 关键词）是必要条件；confirmed 置位统一由
+        # 第 2 段的信号驱动路径负责，这里不再代置。
         preview_submission_failed = False
         diy_done = _diy_produced
         eff_done = bool(_extract_image_task(tool_log).get('task_id'))
@@ -1273,10 +1271,9 @@ class ReActAgent:
             # 本轮没有追问 = 需求已完整成立，允许将来（新需求）再追问一次
             if not _clarified:
                 await mem_store.clear_session_flags(user_id, sid, prefix=_FLAG_PREFIX_CLARIFY)
-        if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and (not _img_optout) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
+        if diy_done and (not eff_done) and (ui == UIType.PLAN_CARD) and _img_want and (not _img_optout) and (new_stage not in (SessionStage.DONE, SessionStage.ORDER_CONFIRM)):
             try:
                 from agent.tools import generate_effect_image as _gei
-                await mem_store.set_session_flag(user_id, sid, _FLAG_IMAGE_CONFIRMED, '1')
                 raw = await _gei('latest_diy', {'user_id': user_id, 'session_id': sid, 'location': location})
                 eff = raw if isinstance(raw, dict) else json.loads(raw) if isinstance(raw, str) else {}
                 if isinstance(eff, dict) and eff.get('task_id'):

@@ -14,9 +14,11 @@ def record(name, data):
     return ToolCallRecord(name=name, arguments={}, result=json.dumps(data), status='ok')
 
 
-@pytest.mark.parametrize('respond', [None, {'ui': 'plan_card', 'data': {}, 'reply': '方案完成'}])
+@pytest.mark.parametrize('respond', [None, {'ui': 'plan_card', 'data': {}, 'reply': '方案完成', 'image': 'want'}])
 @pytest.mark.parametrize('image_result', [{'error': 'upstream failed'}, {'task_id': 'existing'}])
 def test_plan_always_exposes_real_preview_task(monkeypatch, respond, image_result):
+    """用户/模型明确要图（image=want）时，失败的预览任务必须补调恢复。
+    2026-10-13 起「方案即生图」要求 _img_want 信号——没要图不自动烧 API。"""
     for method in ('get_session_flag', 'set_session_flag', 'clear_session_flags'):
         monkeypatch.setattr(module.mem_store, method, AsyncMock(return_value=None))
     monkeypatch.setattr(module, '_clarify_slots', lambda *a, **k: [])
@@ -25,7 +27,7 @@ def test_plan_always_exposes_real_preview_task(monkeypatch, respond, image_resul
     log = [record('generate_diy_plan', {'plan_id': 'DIY_1', 'diy': True, 'name': '方案'}),
            record('generate_effect_image', image_result)]
     _, ui, data, _, _ = asyncio.run(ReActAgent()._post_process(
-        respond, log, SessionStage.DIY_DESIGN, '设计花束', '方案完成', 'u', 's', None, []))
+        respond, log, SessionStage.DIY_DESIGN, '设计花束并生成效果图', '方案完成', 'u', 's', None, []))
     assert ui == UIType.PLAN_CARD
     expected = 'existing' if image_result.get('task_id') else 'recovered'
     assert data['task_id'] == expected
@@ -62,8 +64,8 @@ def test_real_diy_overrides_non_plan_ui_and_submits_preview(monkeypatch, reply_u
     monkeypatch.setattr(tools, 'generate_effect_image', generate)
     log = [record('generate_diy_plan', {'plan_id':'DIY_valid', 'diy':True, 'name':'真实方案'})]
     _, ui, data, _, _ = asyncio.run(ReActAgent()._post_process(
-        {'ui':reply_ui,'data':reply_data,'reply':'方案完成'}, log, SessionStage.DIY_DESIGN,
-        '设计花束', '', 'u','s',None,[]))
+        {'ui':reply_ui,'data':reply_data,'reply':'方案完成','image':'want'}, log, SessionStage.DIY_DESIGN,
+        '设计花束并出效果图', '', 'u','s',None,[]))
     assert ui == UIType.PLAN_CARD
     assert data['task_id'] == 'real-task'
     assert data['plans'][0]['plan_id'] == 'DIY_valid'
@@ -77,7 +79,7 @@ def test_failed_submission_is_visible(monkeypatch):
     monkeypatch.setattr(tools, 'generate_effect_image', AsyncMock(return_value='{"error":"unavailable"}'))
     _, ui, data, reply, _ = asyncio.run(ReActAgent()._post_process(
         None, [record('generate_diy_plan', {'plan_id':'DIY_valid','diy':True})],
-        SessionStage.DIY_DESIGN, '设计花束', '方案完成', 'u','s',None,[]))
+        SessionStage.DIY_DESIGN, '设计花束并生成效果图', '方案完成', 'u','s',None,[]))
     assert ui == UIType.PLAN_CARD
     assert not data.get('task_id')
     assert '未提交成功' in reply
