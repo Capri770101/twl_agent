@@ -197,6 +197,7 @@ async def run_v2(agent, user_id: str, message: str, session_id: str | None,
                 budget=_guards, tool_log=tool_log, message=message, reply=reply,
                 platform_facts=platform_facts, platform_sources=_platform_source_ids(),
                 zero_tool_call=zero_tool_call,
+                cs_route=bool(policy and policy.name.startswith('customer_service')),
             )
 
         tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,

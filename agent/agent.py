@@ -454,6 +454,7 @@ class _GuardBudget:
     image: int = 1
     reasoning: int = 1
     trade: int = 1
+    cs: int = 1
 
 
 _CLEANUP_PIPELINE = build_cleanup_pipeline(_demo_trade_note, _shop_entity_enabled)
@@ -833,11 +834,15 @@ class ReActAgent:
             return response.choices[0].message
 
         def _guard(tool_log: list[ToolCallRecord], reply: str, zero_tool_call: bool) -> tuple[str, str] | None:
+            # 客服路由口径与 _qa_route 一致：路由开关关闭时（生产默认）也按 classify 判定，
+            # 否则客服事实护栏在默认配置下永不触发。
+            _route_name = route.name if route is not None else (classify(message).name if classify(message) is not None else None)
             return self._check_guards(
                 budget=_guards, tool_log=tool_log, message=message,
                 reply=reply,
                 platform_facts=platform_facts, platform_sources=platform_sources,
                 zero_tool_call=zero_tool_call,
+                cs_route=_route_name == 'customer_service',
             )
 
         tool_ctx = {'user_id': user_id, 'session_id': sid, 'location': location,
@@ -979,7 +984,7 @@ class ReActAgent:
     def _check_guards(
         self, *, budget: '_GuardBudget', tool_log: list[ToolCallRecord], message: str,
         reply: str, platform_facts: str,
-        platform_sources: list[str], zero_tool_call: bool,
+        platform_sources: list[str], zero_tool_call: bool, cs_route: bool = False,
     ) -> tuple[str, str] | None:
         """检查四项确定性护栏；命中则扣额度并返回 ``(护栏名, 纠正文案)``。
 
@@ -1032,6 +1037,13 @@ class ReActAgent:
             budget.trade -= 1
             logger.warning('[agent] %s回复谎称交易完成但无工具证据，已注入纠正并要求重答', _where)
             return 'trade', _trade_nudge_text()
+        # 客服事实护栏（2026-10-14，v2 实测缺口）：客服路由下零工具断言订单/售后状态。
+        if budget.cs and cs_route:
+            from agent.safety.customer_reply import cs_claim_without_evidence, cs_nudge_text
+            if cs_claim_without_evidence(reply, tool_log):
+                budget.cs -= 1
+                logger.warning('[agent] %s客服场景零证据断言订单/售后状态，已注入纠正并要求重答', _where)
+                return 'cs', cs_nudge_text()
         if budget.image and _needs_image_nudge(tool_log, reply):
             budget.image -= 1
             logger.warning('[agent] %s未提交生图任务却声称已出图，已注入纠正并要求重答', _where)
