@@ -1,6 +1,8 @@
 import asyncio
 
 import agent.agent as A
+import agent.engine.llm as LLM
+import agent.engine.understand as UND
 from agent.agent import ReActAgent, _is_simple_chitchat
 
 
@@ -28,8 +30,13 @@ def test_fast_path_skips_llm_and_preserves_contract(monkeypatch):
 
     mem = Memory()
     monkeypatch.setattr(A, 'mem_store', mem)
-    monkeypatch.setattr(A, 'call_llm', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('LLM called')))
-    monkeypatch.setattr(A, 'call_llm_stream', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('LLM called')))
+    # v2 靶点（2026-10-14 v1 退役）：LLM 入口分散在 engine.llm（脊柱非流式，调用时读模块属性）
+    # 与 engine.understand（理解层，模块级绑定）；寒暄快速通道必须在触达两者之前返回。
+    def _boom(*args, **kwargs):
+        raise AssertionError('LLM called')
+    monkeypatch.setattr(LLM, 'call_llm', _boom)
+    monkeypatch.setattr(UND, 'call_llm', _boom)
+    monkeypatch.setattr(A, 'call_llm_stream', _boom)
     events = []
     result = asyncio.run(ReActAgent().run('u', '你好', None, None, on_event=events.append))
     assert result.ui.value == 'text'

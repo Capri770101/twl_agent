@@ -13,7 +13,6 @@ from agent.agent import (
     ReActAgent,
     _ensure_card_summary,
     _ensure_non_empty_reply,
-    _platform_fact_hint,
     _platform_nudge_text,
     _platform_queried,
     _strip_internal_leak,
@@ -149,24 +148,11 @@ def test_age_seconds_bad_input():
     assert _age_seconds("not-a-date") == 0.0
 
 
-# ── 平台事实类「按轮注入」指令：防「未查证即作答」编造店铺/价格 ──
+# ── 平台事实「先查证再回答」的按轮注入与护栏 ──
 # 线上实测：问「有哪些店铺可以送花？」时模型一轮零工具调用，编造了 3 家不存在的店铺。
-
-def test_platform_fact_hint_shop():
-    for msg in ('有哪些店铺可以送花？', '这家店几点关门', '配送费多少', '现在开门吗', '起送价是多少'):
-        assert _platform_fact_hint(msg) == 'shop', msg
-
-
-def test_platform_fact_hint_plan():
-    for msg in ('推荐一款送妈妈的花', '这个多少钱', '有货吗', '有哪些方案'):
-        assert _platform_fact_hint(msg) == 'plan', msg
-
-
-def test_platform_fact_hint_none():
-    assert _platform_fact_hint('你好') == ''
-    assert _platform_fact_hint('') == ''
-    assert _platform_fact_hint(None) == ''  # type: ignore[arg-type]
-
+# v1 退役（2026-10-14）：按轮判定（原 _platform_fact_hint 关键词层）已删除，
+# platform_facts 信号来自理解层模型自报（engine/understand.py needs_platform）；
+# 注入与护栏逻辑不变，由下列测试锁定。
 
 def test_build_system_injects_platform_facts(monkeypatch):
     monkeypatch.setenv('PLATFORM_API_DEMO_URL', 'https://example.com')

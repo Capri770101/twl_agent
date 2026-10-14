@@ -1,15 +1,16 @@
-"""spine.py —— v2 编排脊柱：模型先理解，路由再查表。
+"""spine.py —— v2 编排脊柱：模型先理解，路由再查表。2026-10-14 起为唯一编排路径。
 
-与 v1（agent.py::run）的根本区别：
-- v1：关键词分类（classify）→ 缩工具圈 → 模型在圈内 ReAct → 关键词护栏补丁
+与已退役的 v1（原 agent.py::run 关键词主循环）的根本区别：
+- v1（已删除）：关键词分类（classify）→ 缩工具圈 → 模型在圈内 ReAct → 关键词护栏补丁
 - v2：模型声明理解（understand）→ 查表取策略 → 模型在圈内 ReAct → 事实护栏校验
 
 代码层只保留两类东西：
-1. **确定性硬路径**：按钮语义（改版确认）、快照恢复、会话/需求持久化 —— 这些不是"理解"，
-   是协议，永远不该交给模型自由发挥。
+1. **确定性硬路径**：按钮语义（改版确认）、快照恢复、寒暄快速通道、会话/需求持久化 ——
+   这些不是"理解"，是协议，永远不该交给模型自由发挥。
 2. **事实校验**：现有 safety/ 护栏与清理链原样复用（编造电话/价格/订单/图片/卡片证据）。
 
 理解层（engine/understand.py）输出过白名单；失败降级为不缩圈（全量工具）。
+ReAct 后的收尾（兜底/对齐/清理/持久化/发布）统一走 agent.py::_finalize_turn。
 """
 from __future__ import annotations
 
@@ -94,6 +95,20 @@ async def run_v2(agent, user_id: str, message: str, session_id: str | None,
                 on_event({'event': 'card', 'ui': restored.ui.value, 'data': restored.data})
         return restored
 
+    # 纯寒暄快速路径（v1 同款，延迟优化）：「你好/谢谢/再见」这类**精确匹配**的独立寒暄
+    # 是协议级语义，不需要理解层也不需要 ReAct——零 LLM 成本直接回，省 2 次模型往返。
+    # 混合业务请求（「你好，我想送妈妈一束花」）不命中，照常走完整流程。
+    from agent.agent import _is_simple_chitchat, _simple_chitchat_response  # 延迟导入
+    if _is_simple_chitchat(message):
+        reply = _simple_chitchat_response(user_id, sid, stage, message)
+        await mem_store.save_messages(sid, [{'role': 'user', 'content': message},
+                                            {'role': 'assistant', 'content': reply.reply,
+                                             'ui': reply.ui.value, 'data': reply.data}])
+        await mem_store.update_stage(sid, stage.value)
+        if on_event:
+            on_event({'event': 'text', 'content': reply.reply})
+        return reply
+
     if stage == SessionStage.DONE:
         sid = await mem_store.create_conversation(user_id, title=message[:20], shop_id=shop_id,
                                                   entry=entry, product_id=product_id,
@@ -127,7 +142,14 @@ async def run_v2(agent, user_id: str, message: str, session_id: str | None,
             return reply
 
     # ── 3. 理解层：模型声明意图与需求（白名单校验），规则抽取作精确字段兜底 ──
-    u = understand(message, user_id=user_id)
+    # 延迟体验：理解层是本轮第一次模型往返，先推一个 status 事件让前端有「正在理解」
+    # 的展示锚点（SSE 消费端可选渲染，见 docs/05-前端对接契约 §3.1）；超时按**本轮剩余
+    # 预算**收口（UNDERSTAND_TIMEOUT 与剩余时间取小），慢 provider 挂住时快速降级。
+    if on_event:
+        on_event({'event': 'status', 'phase': 'understand', 'content': '正在理解你的需求…'})
+    u = understand(message, timeout=min(settings.UNDERSTAND_TIMEOUT,
+                                        max(1.0, _deadline - time.perf_counter())),
+                   user_id=user_id)
     rule_req = extract_requirement(message)
     if u and u.requirement:
         rule_req = merge_requirement(rule_req, u.requirement)
@@ -177,6 +199,8 @@ async def run_v2(agent, user_id: str, message: str, session_id: str | None,
     messages.append({'role': 'user', 'content': message})
 
     # ── 6. ReAct 循环（工具圈按策略收窄；无策略 = 全量）──
+    if on_event:
+        on_event({'event': 'status', 'phase': 'react', 'content': '正在处理…'})
     scope_token = active_tools.set(policy.tools if policy else None)
     try:
         from agent.agent import _TERMINAL_TOOLS, _DEFERRED_TOOLS, _GuardBudget  # 延迟导入

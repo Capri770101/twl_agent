@@ -7,7 +7,8 @@
   平台侧负责库存校验、履约与支付；智能体只负责组装订单信息并提交。
 
 部署契约（需按平台 API 文档对齐，未配置时工具明确报错、绝不静默）：
-- ``PLATFORM_ORDER_API_URL``：下单接口地址（必填）
+- ``PLATFORM_ORDER_ENABLED``：下单写通道开关（默认 false，fail-closed；见 toolkit.order_write_enabled）
+- ``PLATFORM_ORDER_API_URL``：下单接口地址（开关开启时必填，两者缺一工具不暴露/不放行）
 - ``PLATFORM_ORDER_API_KEY``：可选；配置后以 ``Authorization: Bearer <key>`` 发送
 - 请求：``POST {url}``，JSON body 见 :func:`_build_payload`
 - 响应（期望 JSON，字段名不匹配时在 :func:`_parse_platform_order` 处对齐）::
@@ -25,6 +26,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from agent.toolkit import register_tool
 from agent.tools import _resolve_session_plan
 from backend.config import settings
 
@@ -175,7 +177,10 @@ async def _submit_platform_order(payload: dict) -> dict[str, Any]:
     if (settings.PLATFORM_ORDER_API_KEY or '').strip():
         headers['Authorization'] = f"Bearer {settings.PLATFORM_ORDER_API_KEY.strip()}"
     timeout = httpx.Timeout(max(10.0, settings.REQUEST_TIMEOUT or 30.0))
-    async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+    # trust_env=False（与 llm.py / customer_service.py 同一约定）：下单端点是运维配置的
+    # 固定源，绝不跟随部署机系统代理——开发机代理会劫持 127.0.0.1 请求成 502 空 body
+    # （2026-10-08 客服链路实测教训），下单被劫持等于用户付了钱看不到订单。
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as client:
         resp = await client.post(url, json=payload)
     if resp.status_code >= 400:
         body = resp.text[:500]
@@ -192,11 +197,14 @@ async def _submit_platform_order(payload: dict) -> dict[str, Any]:
     return data
 
 
-# 2026-09-05 架构决定：关闭智能体「直接下单」能力（详见 MEMORY.md）。
-# 订单改由客户在微信小程序侧点击商品卡片进入现有结算页完成（微信支付/分账/配送范围/订单导入复用平台现有逻辑）。
-# 智能体只负责推荐结构化商品（reply + products 数组），不创建订单、不调用任何下单接口、不配置 PLATFORM_ORDER_API_URL。
-# 如需恢复直连下单，取消下方注释即可（并同步恢复 agent.py system prompt 中「用户要买→create_order」的指引）。
-# @register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。会话从某店铺进入（已锁定店铺）时无需再查店铺列表，直接下单即可；此时若传入其他 shop_id 会被拒绝。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自平台查询返回的店铺 ID）。会话已锁定店铺时可省略，会自动使用锁定的店铺'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order'])
+# 2026-09-05 架构决定：默认关闭智能体「直接下单」能力（详见 MEMORY.md），
+# 订单由客户在微信小程序侧点商品卡片进入现有结算页完成（微信支付/分账/配送范围复用平台逻辑）。
+# 2026-10-14 起能力改为**配置门控**（与客服写通道同款 fail-closed 门禁）：
+# 工具始终注册（routing.json 校验依赖注册表），但带 order_write 标签——
+# 仅当 PLATFORM_ORDER_ENABLED=true 且 PLATFORM_ORDER_API_URL 已配置时才对模型暴露、
+# 执行层才放行（见 agent/toolkit.py::order_write_enabled）；未接通时模型按 base.md
+# 成交契约引导用户去小程序结算页，绝不代客下单。
+@register_tool(name='create_order', description='向用户确认后调用「平台自有下单 API」提交订单，生成支付跳转信息。智能体不写任何本地订单库：需部署方已配置 PLATFORM_ORDER_API_URL（平台下单接口），未配置时明确报错并引导用户去平台下单。会话从某店铺进入（已锁定店铺）时无需再查店铺列表，直接下单即可；此时若传入其他 shop_id 会被拒绝。', parameters={'type': 'object', 'properties': {'shop_id': {'type': 'string', 'description': '平台店铺 ID（来自平台查询返回的店铺 ID）。会话已锁定店铺时可省略，会自动使用锁定的店铺'}, 'plan_id': {'type': 'string', 'description': "方案引用：'latest' 表示会话当前方案；DIY_xxx 表示会话内 DIY 方案；平台在售方案 ID（需传 source_id）"}, 'plan_type': {'type': 'string', 'description': 'existing（平台在售方案）| diy（会话内 DIY 方案）'}, 'source_id': {'type': 'string', 'description': '可选：平台数据源 ID；plan_id 为平台在售方案时用来回读方案信息'}}, 'required': ['shop_id', 'plan_id', 'plan_type']}, inject_context=True, tags=['order', 'order_write'])
 async def create_order(shop_id: str, plan_id: str, plan_type: str, source_id: str = '', _context: dict | None = None) -> str:
     """组装订单信息 → 调用平台自有下单 API → 返回 order_card / pay_jump 数据。"""
     user_id = (_context or {}).get('user_id', '')

@@ -1,6 +1,8 @@
 import asyncio
 
 import agent.agent as A
+import agent.engine.llm as LLM
+import agent.engine.understand as UND
 from agent.agent import ReActAgent, _is_unbound_image_request
 
 
@@ -26,7 +28,11 @@ def test_missing_diy_image_request_skips_llm_and_product_recommendation(monkeypa
 
     mem = Memory()
     monkeypatch.setattr(A, 'mem_store', mem)
-    monkeypatch.setattr(A, 'call_llm', lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('LLM called')))
+    # v2 靶点（2026-10-14 v1 退役）：无方案要图的硬路径必须在理解层/ReAct 之前返回。
+    def _boom(*args, **kwargs):
+        raise AssertionError('LLM called')
+    monkeypatch.setattr(LLM, 'call_llm', _boom)
+    monkeypatch.setattr(UND, 'call_llm', _boom)
     result = asyncio.run(ReActAgent().run('u', '给这个方案生成效果图', None, None))
     assert result.ui.value == 'text'
     assert '还没有可生成效果图' in result.reply

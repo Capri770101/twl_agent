@@ -2,6 +2,8 @@ import asyncio
 import copy
 from unittest.mock import AsyncMock
 import agent.agent as module
+import agent.engine.llm as LLM
+import agent.engine.understand as UND
 import agent.tools as tools
 from agent.agent import ReActAgent
 
@@ -16,7 +18,11 @@ def test_switch_restores_exact_snapshot_and_emits_card_without_llm(monkeypatch):
     monkeypatch.setattr(memory, 'save_messages', AsyncMock())
     monkeypatch.setattr(memory, 'set_session_json', AsyncMock())
     monkeypatch.setattr(memory, 'update_stage', AsyncMock())
-    monkeypatch.setattr(module, 'call_llm', lambda *a, **k: (_ for _ in ()).throw(AssertionError('must not call model')))
+    # v2 靶点（2026-10-14 v1 退役）：版本恢复是协议硬路径，必须在理解层/ReAct 之前返回。
+    def _boom(*a, **k):
+        raise AssertionError('must not call model')
+    monkeypatch.setattr(LLM, 'call_llm', _boom)
+    monkeypatch.setattr(UND, 'call_llm', _boom)
     image = AsyncMock(return_value='{"task_id":"old-image","result_url":"/generated/old-image.png","reused":true}')
     monkeypatch.setattr(tools, 'generate_effect_image', image)
     events = []

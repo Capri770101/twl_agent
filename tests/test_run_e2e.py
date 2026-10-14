@@ -3,24 +3,28 @@
 ## 为什么需要这个文件
 
 review 指出的最严重问题不是「函数长」，而是**组合爆炸没有测试兜底**：
-`run()` 362 行 + `_post_process()` 276 行 + 16 个护栏函数 + 10+ 个 session flag，
-任何一处改动都可能引发连锁反应，而当时**没有任何测试真正跑过完整 `run()`**
-（`test_stream_hang.py` 把 `run` 本身 mock 掉了，其余测试都是纯函数单测）。
+编排 + `_post_process()` + `_finalize_turn()` + 16 个护栏函数 + 10+ 个 session flag，
+任何一处改动都可能引发连锁反应。
 
 本文件是**后续所有重构的安全网**：mock 掉 LLM 与存储，但**让主循环真跑**，
 从用户消息一路走到 `ChatResponse`，断言最终 `ui / data / reply`。
+
+2026-10-14 v1 退役后，`run()` 委托 v2 脊柱（agent/spine.py::run_v2），
+本文件随之改为**钉 v2 编排**：理解层（agent.spine.understand）与工具执行
+（agent.toolkit.execute_tool）是新的 mock 靶点。
 
 ## 与其它测试的分工
 
 - `test_stream_llm.py`：只测 `_stream_llm` 这一个环节（工具轮独白不推送）
 - `test_card_nudge.py` 等：只测单个护栏**纯函数**
-- **本文件**：测「编排」—— 多轮 LLM → 工具 → 护栏 → 清理链 → 出参 的完整链路
+- **本文件**：测「编排」—— 理解 → 多轮 LLM → 工具 → 护栏 → 清理链 → 出参 的完整链路
 
 ## mock 边界
 
 - `mem_store`（15 个方法）→ 内存实现，不连 DB
+- `agent.spine.understand` → 固定 Understanding（intent/needs_platform 可参数化），不调理解层 LLM
 - `call_llm_stream` → 按调用次数返回预置轮次，不调 LLM
-- `execute_tool` → 固定返回，不连平台/不发网络
+- `agent.toolkit.execute_tool` → 固定返回，不连平台/不发网络
 """
 from __future__ import annotations
 
@@ -34,7 +38,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import agent.agent as A  # noqa: E402
+import agent.spine as SPINE  # noqa: E402
+import agent.toolkit as TK  # noqa: E402
 from agent.agent import ReActAgent  # noqa: E402
+from agent.engine.understand import Understanding  # noqa: E402
 
 
 # ── chunk / tool_call 构造（与 test_stream_llm 同款，保持独立不互相依赖）──
@@ -122,14 +129,24 @@ class FakeMemory:
 # ── 测试脚手架 ──
 
 def _install(monkeypatch, turns: list[list], *, tool_results: dict | None = None,
-             facts: str = '') -> FakeMemory:
-    """装好 mock：内存存储 / 轮次化 LLM / 固定工具结果。返回 FakeMemory 供断言。"""
+             facts: str = '', intent: str | None = None) -> FakeMemory:
+    """装好 mock：内存存储 / 理解层替身 / 轮次化 LLM / 固定工具结果。
+
+    Args:
+        facts: 理解层 needs_platform 信号（''/'shop'/'plan'），驱动平台事实护栏；
+               非空时同时桩 `_platform_source_ids`（模拟已配置数据源）。
+        intent: 理解层声明的意图（None = 理解降级，全量工具不缩圈）。
+    """
     fake = FakeMemory()
     monkeypatch.setattr(A, 'mem_store', fake, raising=False)
     monkeypatch.setattr(A, '_find_pending_image_task',
                         lambda *a, **k: _async_none(), raising=False)
-    monkeypatch.setattr(A, '_platform_fact_hint', lambda m: facts, raising=False)
     monkeypatch.setattr(A, '_platform_source_ids', lambda: (['aistore'] if facts else []), raising=False)
+    # v2 靶点：理解层由脊柱在模块级导入（agent.spine.understand），替身按参数返回
+    # 固定 Understanding——不真调 LLM，且与生产降级语义一致（None = 不缩圈）。
+    monkeypatch.setattr(SPINE, 'understand',
+                        lambda *a, **k: Understanding(intent=intent, needs_platform=facts),
+                        raising=True)
 
     calls = {'n': 0}
 
@@ -141,7 +158,7 @@ def _install(monkeypatch, turns: list[list], *, tool_results: dict | None = None
     monkeypatch.setattr(A, 'call_llm_stream', fake_stream, raising=False)
 
     async def fake_execute(name, arguments, ctx=None):
-        # ⚠️ execute_tool 的契约是返回 (result, status) 二元组（run() 里直接解包），
+        # ⚠️ execute_tool 的契约是返回 (result, status) 二元组（脊柱里直接解包），
         # 不是裸的结果字符串 —— 集成测试第一次就因为这里少了一层而报
         # "too many values to unpack"，正好说明这类测试能逼出真实的接口契约。
         val = (tool_results or {}).get(name)
@@ -153,7 +170,8 @@ def _install(monkeypatch, turns: list[list], *, tool_results: dict | None = None
             return val, 'ok'
         return '{}', 'ok'
 
-    monkeypatch.setattr(A, 'execute_tool', fake_execute, raising=False)
+    # v2 靶点：脊柱从 agent.toolkit 延迟导入 execute_tool（不再是 agent.agent 的绑定）。
+    monkeypatch.setattr(TK, 'execute_tool', fake_execute, raising=True)
     fake.llm_calls = calls  # type: ignore[attr-defined]
     return fake
 
@@ -187,15 +205,22 @@ def _terminal(name: str, payload: str, call_id: str = 'c1') -> list:
 # ── 场景 1：纯文字回复（happy path）──
 
 def test_plain_text_reply(monkeypatch):
-    """LLM 调 respond_to_user → 出参 ui=text、reply 原样保留、session_id 有值。"""
+    """LLM 调 respond_to_user → 出参 ui=text、reply 原样保留、session_id 有值。
+
+    消息不用裸「你好」：精确寒暄走脊柱零 LLM 快速通道（见 test_simple_chitchat），
+    这里要测的是完整 ReAct 链路的文字回复。
+    """
     turns = [_terminal('respond_to_user',
                        '{"reply": "你好呀，我是你的专属花艺小助手～", "ui": "text", "data": {}, '
                        '"stage": "analyze", "intent": "chitchat"}')]
     _install(monkeypatch, turns)
-    resp, events = _run('你好')
+    resp, events = _run('你好，今天想随便聊两句')
     assert resp.session_id, 'run() 必须回填 session_id'
     assert getattr(resp.ui, 'value', resp.ui) == 'text'
     assert '花艺小助手' in (resp.reply or '')
+    # 完整链路应经历理解/ReAct 阶段（status 事件），最终 text 事件发布校验后回复
+    assert any(e.get('event') == 'status' for e in events)
+    assert [e['content'] for e in events if e.get('event') == 'text'][-1] == resp.reply
 
 
 def test_terminal_only_forged_plan_card_is_rejected(monkeypatch):

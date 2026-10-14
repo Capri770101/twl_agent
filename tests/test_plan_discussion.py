@@ -1,7 +1,5 @@
-import asyncio
 import pytest
 from agent.engine.discussion import is_plan_discussion
-from agent.engine.tool_scope import scoped_tools, active_tools
 from agent.agent import _needs_card_nudge
 
 
@@ -11,13 +9,6 @@ def test_discussion_does_not_force_card_or_mutating_tools(message):
     # 讨论既有方案：模型应自报 qa/other 意图，护栏据此放行
     # （回复复述了既有方案的支数/价格，不等于谎称新卡）。
     assert not _needs_card_nudge(message, [], intent='qa')
-    @scoped_tools
-    async def run(self, uid, message):
-        assert 'generate_diy_plan' not in active_tools.get()
-        assert 'platform_db_query_entity' not in active_tools.get()
-        assert 'generate_effect_image' not in active_tools.get()
-    asyncio.run(run(None, 'u', message))
-    assert active_tools.get() is None
 
 
 @pytest.mark.parametrize('message', ['请改成白色', '帮我重新设计一束花', '直接换成玫瑰', '为什么这么贵？请帮我改成100元的方案', '现在生成效果图'])

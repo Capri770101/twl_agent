@@ -49,12 +49,30 @@ OPS_TOOL_TAG = 'ops'
 #: schema 占用提示词预算并干扰工具选择（实测它们是订单号幻觉的干扰源之一）。
 CUSTOMER_WRITE_TAG = 'customer_write'
 
+#: 下单写操作工具标签（create_order）。与客服写通道同款 fail-closed 门禁：
+#: PLATFORM_ORDER_ENABLED=true 且 PLATFORM_ORDER_API_URL 已配置时才暴露/放行；
+#: 未开启时模型按 base.md 成交契约引导用户去小程序结算页（2026-09-05 架构默认口径）。
+ORDER_WRITE_TAG = 'order_write'
+
 
 def customer_write_enabled() -> bool:
     """客服写通道是否已接通（默认关闭，fail-closed）。"""
     try:
         from backend.config import settings
         return bool(settings.CUSTOMER_SERVICE_WRITE_ENABLED)
+    except Exception:
+        return False
+
+
+def order_write_enabled() -> bool:
+    """平台下单写通道是否已接通（默认关闭，fail-closed）。
+
+    显式开关与真实端点缺一不可：只开开关不配 URL 会让模型调用后收到
+    「接口未配置」报错，白烧一轮 ReAct；只配 URL 不开开关视为未验收，不暴露。
+    """
+    try:
+        from backend.config import settings
+        return bool(settings.PLATFORM_ORDER_ENABLED) and bool((settings.PLATFORM_ORDER_API_URL or '').strip())
     except Exception:
         return False
 
@@ -84,6 +102,8 @@ def visible_tool_specs() -> list[ToolSpec]:
         specs = [s for s in specs if 'customer_service' not in s.tags]
     if not customer_write_enabled():
         specs = [s for s in specs if CUSTOMER_WRITE_TAG not in s.tags]
+    if not order_write_enabled():
+        specs = [s for s in specs if ORDER_WRITE_TAG not in s.tags]
     from agent.engine.tool_scope import active_tools
     scope = active_tools.get()
     if scope is not None:
@@ -239,6 +259,9 @@ async def execute_tool(name: str, arguments: dict[str, Any] | None, context: dic
     # 客服写通道同理：未配置写通道时，取消/退款/改址不接受调用。
     if CUSTOMER_WRITE_TAG in spec.tags and not customer_write_enabled():
         return ('该功能暂未开放：服务端写通道未配置，请引导用户到平台订单页办理', 'error')
+    # 下单写通道同理：未接通平台下单 API 时，create_order 不接受调用（fail-closed）。
+    if ORDER_WRITE_TAG in spec.tags and not order_write_enabled():
+        return ('该功能暂未开放：平台下单通道未配置，请引导用户在小程序商品页完成下单', 'error')
     try:
         kwargs = dict(arguments or {})
         if spec.inject_context:

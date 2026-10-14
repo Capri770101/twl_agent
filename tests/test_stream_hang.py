@@ -5,6 +5,9 @@
 
 本测试用 `asyncio.wait_for` 兜底语义：若实现回归（挂起），wait_for 抛 `TimeoutError`
 使测试**失败**，而不是把整个测试进程吊死。
+
+2026-10-14 v1 退役：编排统一走 agent/spine.py::run_v2（arun_stream 在调用时从
+agent.spine 模块读取），mock 靶点随之改为 `agent.spine.run_v2`。
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import agent.spine as SPINE
 from agent.agent import ReActAgent
 
 
@@ -28,13 +32,13 @@ async def _consume(agent: ReActAgent, user_id: str = "u", message: str = "hi", s
 
 
 def test_stream_terminates_when_run_raises(monkeypatch):
-    """run() 抛异常 → 流必须给出 error 事件并正常结束（不挂起）。"""
+    """run_v2 抛异常 → 流必须给出 error 事件并正常结束（不挂起）。"""
     agent = ReActAgent()
 
     async def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(agent, "run", boom)
+    monkeypatch.setattr(SPINE, "run_v2", boom)
     events = asyncio.run(asyncio.wait_for(_consume(agent), timeout=5))
     assert events, "流应至少产出一个事件"
     assert any(e.get("event") == "error" for e in events), "异常应转为 error 事件"
@@ -43,16 +47,12 @@ def test_stream_terminates_when_run_raises(monkeypatch):
 
 def test_stream_happy_path_terminates(monkeypatch):
     """正常返回 → 流给出 done 事件并结束。"""
-    from backend.config import settings
-    # 本测试只验证 SSE 包装层的终结语义，与编排版本无关——显式钉在 v1，
-    # 避免默认 v2 走 spine（该路径不经被 mock 的实例方法 run）。
-    monkeypatch.setattr(settings, 'AGENT_ORCHESTRATION', 'v1')
     agent = ReActAgent()
 
     async def fake_run(*args, **kwargs):
         return SimpleNamespace(session_id="s1")
 
-    monkeypatch.setattr(agent, "run", fake_run)
+    monkeypatch.setattr(SPINE, "run_v2", fake_run)
     events = asyncio.run(asyncio.wait_for(_consume(agent), timeout=5))
     assert any(e.get("event") == "done" for e in events)
     assert events[-1].get("event") == "done"

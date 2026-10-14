@@ -164,7 +164,10 @@ def test_run_llm_stream_and_nonstream_both_produce_final_reply(monkeypatch) -> N
             name='respond_to_user', arguments='{"reply":"你好呀","ui":"text","data":{},"stage":"analyze"}'))
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
             content='', tool_calls=[tool_call]))])
-    monkeypatch.setattr(A, 'call_llm', fake_llm)
+    # v2 靶点：脊柱非流式路径在 run_v2 内延迟导入 agent.engine.llm.call_llm
+    #（调用时读模块属性），不再是 agent.agent 的模块级绑定。
+    import agent.engine.llm as LLM
+    monkeypatch.setattr(LLM, 'call_llm', fake_llm)
     response = asyncio.run(A.ReActAgent().run('u_test', '今天心情不太好，可以陪我聊两句吗？', 'sid_test', None))
     assert response.reply.startswith('你好呀')
     assert calls and calls[0]['timeout'] > 0

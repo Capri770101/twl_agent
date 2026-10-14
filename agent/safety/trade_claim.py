@@ -1,8 +1,11 @@
 """交易声称护栏：没有真实交易工具证据时，不得声称下单/支付已完成。
 
 与 image_claim（谎称已出图）同构：检测对象是**模型的回复**（产出物），
-证据来源是**本轮工具日志**——create_order 当前被禁用（skills/skill_order.py），
-任何「已下单/支付成功」的声称都不可能有工具支撑，必假。
+证据来源是**本轮工具日志**——create_order 受配置门禁（skills/skill_order.py +
+toolkit.order_write_enabled，默认关闭）：
+- 通道未接通（默认）：任何「已下单/支付成功」的声称都不可能有工具支撑，必假；
+- 通道已接通：声称完成的**那一个**必须有本轮 create_order 成功记录背书，
+  没调工具就说已下单仍然是谎称（护栏判据不变，始终只看证据）。
 这与关键词意图分类无关：用户说什么是模型去理解的，我们只校验模型自己说了什么。
 """
 from __future__ import annotations
@@ -29,6 +32,20 @@ _TRADE_UNVERIFIED_REPLY = (
     '也没有任何订单真的被创建。购买请在平台/小程序的商品页完成；'
     '需要的话我可以帮你查在售商品或定制方案。'
 )
+
+_TRADE_UNVERIFIED_REPLY_CHANNEL_OPEN = (
+    '抱歉，我刚才的说法不准确——本轮并没有真正提交订单，没有任何订单被创建。'
+    '如果确认要买，我可以通过下单通道为你提交；也可以到平台/小程序的商品页自行完成。'
+)
+
+
+def _order_channel_open() -> bool:
+    """平台下单写通道是否已接通（决定纠正文案口径，不影响证据判据）。"""
+    try:
+        from agent.toolkit import order_write_enabled
+        return order_write_enabled()
+    except Exception:
+        return False
 
 
 def _trade_tool_succeeded(tool_log: list[Any]) -> bool:
@@ -62,7 +79,13 @@ def _needs_trade_nudge(tool_log: list[Any], reply: str) -> bool:
 
 
 def _trade_nudge_text() -> str:
-    """本轮纠正指令（不落库）。"""
+    """本轮纠正指令（不落库）；口径按下单通道是否接通区分。"""
+    if _order_channel_open():
+        return (
+            '[系统校验未通过] 你刚才声称「已下单 / 支付成功」，但**本轮没有 create_order 成功记录**'
+            '——用户会拿着这句假话去找不存在的订单，这是最严重的错误。\n'
+            '请如实告知尚未提交订单；用户确认要买时再调用 create_order，拿到 order_id 后才能说已下单。'
+        )
     return (
         '[系统校验未通过] 你刚才声称「已下单 / 支付成功」，但**本轮没有任何真实交易工具被调用**'
         '（本系统也不支持代客下单）——用户会拿着这句假话去找不存在的订单，这是最严重的错误。\n'
@@ -76,4 +99,4 @@ def _finalize_trade_claim(reply: str, tool_log: list[Any]) -> str:
     if _trade_tool_succeeded(tool_log) or not _claims_trade_done(reply):
         return reply
     logger.warning('[agent] 回复谎称交易完成但本轮无交易工具证据，已替换为如实说明')
-    return _TRADE_UNVERIFIED_REPLY
+    return _TRADE_UNVERIFIED_REPLY_CHANNEL_OPEN if _order_channel_open() else _TRADE_UNVERIFIED_REPLY

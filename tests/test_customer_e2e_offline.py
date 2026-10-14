@@ -77,11 +77,16 @@ class _Mem:
 
 
 def _install_llm(monkeypatch, turns):
-    """轮次脚本驱动 LLM；工具与内存不打桩（工具层走真实实现）。"""
+    """轮次脚本驱动 LLM；工具与内存不打桩（工具层走真实实现）。
+
+    v2 靶点（2026-10-14 v1 退役）：理解层替身固定返回 None（降级 = 全量工具，
+    与生产理解失败语义一致），保证离线测试不依赖理解层 LLM 也不受环境 Key 影响。
+    """
     monkeypatch.setattr(A, 'mem_store', _Mem(), raising=False)
     monkeypatch.setattr(A, '_find_pending_image_task', lambda *a, **k: _none(), raising=False)
-    monkeypatch.setattr(A, '_platform_fact_hint', lambda m: '', raising=False)
     monkeypatch.setattr(A, '_platform_source_ids', lambda: [], raising=False)
+    import agent.spine as SPINE
+    monkeypatch.setattr(SPINE, 'understand', lambda *a, **k: None, raising=True)
     calls = {'n': 0}
 
     def fake_stream(*a, **k):

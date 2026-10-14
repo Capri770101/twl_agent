@@ -33,7 +33,7 @@
   },
   {
     "name": "design", "route_name": "design", "max_iterations": 4,
-    "tools": ["retrieve_knowledge", "generate_diy_plan", "revise_diy_plan", "prepare_revision", "generate_effect_image", "respond_to_user", "show_plan_card", "show_options", "get_user_profile"]
+    "tools": ["retrieve_knowledge", "generate_diy_plan", "revise_diy_plan", "prepare_revision", "generate_effect_image", "create_order", "respond_to_user", "show_plan_card", "show_options", "get_user_profile"]
   },
   {
     "name": "qa", "route_name": "qa", "max_iterations": 2,
@@ -41,6 +41,6 @@
   },
   {
     "name": "buying", "route_name": "buying", "max_iterations": 3,
-    "tools": ["platform_db_query_entity", "retrieve_knowledge", "respond_to_user", "show_plan_card", "show_options", "search_history", "get_user_profile"]
+    "tools": ["platform_db_query_entity", "retrieve_knowledge", "create_order", "respond_to_user", "show_plan_card", "show_options", "search_history", "get_user_profile"]
   }
 ]

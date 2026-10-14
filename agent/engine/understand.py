@@ -91,15 +91,23 @@ def _validate(payload: Any) -> Understanding | None:
     )
 
 
-def understand(message: str, *, timeout: float = 30.0, user_id: str | None = None) -> Understanding | None:
+def understand(message: str, *, timeout: float | None = None, user_id: str | None = None) -> Understanding | None:
     """让模型声明本轮意图与需求槽位；失败返回 None（降级为不缩圈）。
+
+    timeout 未显式传入时用 ``settings.UNDERSTAND_TIMEOUT``（默认 10s）：
+    理解层输出只是一个几百 token 的 JSON，不该按整轮 LLM 预算（120s）等待——
+    慢 provider 挂住理解层时，快速降级为全量工具比拖着整轮更符合用户利益。
 
     故意不发工具、不用会话历史：理解器只判断「这句话本身要什么」，
     跨轮上下文由 requirement 累积层负责（与 v1 口径一致）。
     """
     from backend.config import settings
+    if not settings.AGENT_UNDERSTAND_ENABLED:
+        return None
     if not settings.llm_api_key:
         return None
+    if timeout is None:
+        timeout = settings.UNDERSTAND_TIMEOUT
     try:
         resp = call_llm(
             [{'role': 'user', 'content': _PROMPT + message}],

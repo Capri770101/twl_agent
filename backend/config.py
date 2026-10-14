@@ -210,6 +210,11 @@ class Settings(BaseSettings):
     # 由部署方 / 平台方申请开通并配置；未配置时 create_order 明确报错，不静默、不落本地订单表。
     PLATFORM_ORDER_API_URL: str = ""  # 例 https://api.flower-platform.com/v1/orders
     PLATFORM_ORDER_API_KEY: str = ""  # 可选，下单 API 鉴权凭据（如 Bearer token）
+    # 下单写通道（create_order）：能力已内置，默认关闭（fail-closed，与客服写通道同款门禁）。
+    # 开启条件（两者同时满足才对模型暴露、执行层才放行）：
+    #   PLATFORM_ORDER_ENABLED=true 且 PLATFORM_ORDER_API_URL 已配置。
+    # 未开启时模型如实引导用户去小程序结算页（2026-09-05 架构决定的默认口径）。
+    PLATFORM_ORDER_ENABLED: bool = False
 
     # ── 学习回调鉴权（平台真实订单 → 智能体 proven 域；L2 成交即学）──
     # 平台在真实订单落定时回调 POST /api/learning/order，带此密钥（X-Learning-Key 头）。
@@ -278,15 +283,16 @@ class Settings(BaseSettings):
     # ── 智能体参数 ──
     MAX_ITERATIONS: int = 8
     HISTORY_LIMIT: int = 20
-    CARE_TOOL_SCOPE_ENABLED: bool = False
-    AGENT_INTENT_ROUTING_ENABLED: bool = False
     # 客服写通道（取消/退款/改地址）：能力已内置，通道未配置时不暴露给模型。
     # 接入方接通真实写端点后置 true；默认关闭（fail-closed），模型此时如实说渠道未打通。
     CUSTOMER_SERVICE_WRITE_ENABLED: bool = False
-    # v2 编排脊柱（agent/spine.py）：模型先声明理解再查表路由，替代关键词分类。
-    # 2026-10-13 起 v2 为默认（39 场景对照评测 v2 不差于 v1 且多场景更优，无回归）；
-    # v1 保留一个版本周期作回退通道，下个大版本删除。
-    AGENT_ORCHESTRATION: str = 'v2'
+    # 理解层（engine/understand.py）开关与预算：每轮前置一次轻量 LLM 调用换意图声明。
+    # 关闭后等价「理解失败降级」：不缩圈（全量工具）、无 platform_facts/discussion 信号，
+    # 事实护栏仍在工作，但路由精度回退——只建议在对延迟极端敏感的场景临时关闭。
+    AGENT_UNDERSTAND_ENABLED: bool = True
+    # 理解层单次调用超时（秒）。理解层输出只是一个几百 token 的 JSON，正常 1-3s；
+    # 给到 10s 已覆盖慢 provider 冷启动，超过则放弃理解降级为全量工具，不拖整轮。
+    UNDERSTAND_TIMEOUT: float = 10.0
     # 0 保留完整历史窗口；启用前需验证长对话约束不丢失。
     HISTORY_CHAR_LIMIT: int = 0
     REQUEST_TIMEOUT: float = 180.0
