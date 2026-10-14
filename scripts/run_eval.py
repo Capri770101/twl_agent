@@ -132,6 +132,14 @@ def customer_credential(client: httpx.Client, mock_base: str) -> str:
     return str((response.json().get('data') or {}).get('access_token') or '')
 
 
+def customer_identity(client: httpx.Client, base: str, cs_token: str) -> dict[str, str]:
+    """cs1 票据 → 客服命名空间的智能体 token（契约 §6：不能与平台 token 混用）。"""
+    response = client.post(base + '/auth/customer-token', json={'credential': cs_token})
+    response.raise_for_status()
+    data = response.json()
+    return {'token': str(data['access_token']), 'user_id': str(data['user_id'])}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--base-url', required=True, help='例如 http://127.0.0.1:8000 或 http://H5-IP/agent')
@@ -155,10 +163,14 @@ def main() -> int:
             started = time.perf_counter()
             row: dict[str, Any] = {'id': case['id'], 'message': case['message']}
             try:
-                identity = exchange_token(client, base, f'eval_{run_id}_{case["id"]}_{uuid.uuid4().hex[:6]}', api_key)
-                chat_headers = {'Authorization': 'Bearer ' + identity['token']}
                 if cs_token and case.get('customer_credential'):
-                    chat_headers['X-Customer-Credential'] = cs_token
+                    # 客服场景必须走契约 §6 的身份链：cs1 → customer-token，不得与平台 token 混用。
+                    identity = customer_identity(client, base, cs_token)
+                    chat_headers = {'Authorization': 'Bearer ' + identity['token'],
+                                    'X-Customer-Credential': cs_token}
+                else:
+                    identity = exchange_token(client, base, f'eval_{run_id}_{case["id"]}_{uuid.uuid4().hex[:6]}', api_key)
+                    chat_headers = {'Authorization': 'Bearer ' + identity['token']}
                 response = client.post(
                     base + '/chat', headers=chat_headers,
                     json={'user_id': identity['user_id'], 'message': case['message']},
