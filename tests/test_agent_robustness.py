@@ -189,6 +189,28 @@ def test_platform_queried_requires_matching_success():
     assert _platform_queried([rec('shop', status='error')], 'shop') is False
 
 
+def test_shop_service_tools_count_as_shop_evidence():
+    """shop_service 路由经客服后端查店铺：query_shop_service 成功即构成店铺事实证据。
+
+    2026-10-15 真实模型评测实测：needs_platform=shop 时旧判据只认平台网关查询，
+    而 shop_service_* 策略圈里没有 platform_db_query_entity → 真实查询被出口误拒。
+    """
+    from agent.engine.ui_protocol import ToolCallRecord
+    from agent.safety.platform_evidence import _platform_rows_found
+
+    ok_rec = ToolCallRecord(name='query_shop_service', arguments={}, status='ok',
+                            result='{"ok":true,"data":{"shops":[{"id":"s007","name":"花诺花艺"}]}}')
+    err_rec = ToolCallRecord(name='query_shop_service', arguments={}, status='error', result='{}')
+    empty_rec = ToolCallRecord(name='query_shop_reviews', arguments={}, status='ok',
+                               result='{"ok":true,"data":{}}')
+    assert _platform_queried([ok_rec], 'shop') is True
+    assert _platform_rows_found([ok_rec], 'shop') is True
+    # 失败/空数据不构成证据；plan 实体不受店铺工具影响
+    assert _platform_queried([err_rec], 'shop') is False
+    assert _platform_rows_found([empty_rec], 'shop') is False
+    assert _platform_queried([ok_rec], 'plan') is False
+
+
 def test_platform_nudge_text_mentions_source_and_entity(monkeypatch):
     monkeypatch.setenv('PLATFORM_API_DEMO_URL', 'https://example.com')
     text = _platform_nudge_text('plan')

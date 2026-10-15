@@ -4,9 +4,36 @@ from __future__ import annotations
 import json
 from typing import Any
 
+#: 店铺事实的等价证据工具：shop_service 路由经客服业务后端查店铺
+#: （query_shop_service / query_shop_reviews），与平台网关查询同为真实店铺证据。
+#: 2026-10-15 本机真实模型评测实测：理解层声明 needs_platform=shop 时，旧判据
+#: 只认 platform_db_query_entity——而 shop_service_* 策略圈里没有该工具，模型
+#: 拿着 query_shop_service 的真实返回也会被出口按「未查证」整段拒绝。
+_SHOP_EVIDENCE_TOOLS = ('query_shop_service', 'query_shop_reviews')
+
+
+def _shop_service_evidence(tool_log: list[Any], want_rows: bool) -> bool:
+    """店铺类工具是否给出可信证据；want_rows 时要求返回体带非空 data。"""
+    for tc in tool_log or []:
+        if getattr(tc, 'name', '') not in _SHOP_EVIDENCE_TOOLS:
+            continue
+        if getattr(tc, 'status', '') != 'ok':
+            continue
+        if not want_rows:
+            return True
+        try:
+            result = json.loads(tc.result) if isinstance(tc.result, str) else tc.result
+        except (ValueError, TypeError):
+            continue
+        if isinstance(result, dict) and result.get('ok') is True and result.get('data'):
+            return True
+    return False
+
 
 def _platform_queried(tool_log: list[Any], entity: str) -> bool:
-    """本轮是否成功查询过目标平台实体。"""
+    """本轮是否成功查询过目标平台实体（店铺亦认客服后端的店铺工具证据）。"""
+    if entity == 'shop' and _shop_service_evidence(tool_log, want_rows=False):
+        return True
     for tc in tool_log or []:
         if getattr(tc, 'name', '') != 'platform_db_query_entity':
             continue
@@ -18,7 +45,9 @@ def _platform_queried(tool_log: list[Any], entity: str) -> bool:
 
 
 def _platform_rows_found(tool_log: list[Any], entity: str) -> bool:
-    """目标实体的成功平台查询是否实际返回了非空记录。"""
+    """目标实体的成功平台查询是否实际返回了非空记录（店铺证据同上）。"""
+    if entity == 'shop' and _shop_service_evidence(tool_log, want_rows=True):
+        return True
     for tc in tool_log or []:
         if (getattr(tc, 'name', '') != 'platform_db_query_entity'
                 or getattr(tc, 'status', '') != 'ok'

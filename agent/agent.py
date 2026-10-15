@@ -549,9 +549,15 @@ class ReActAgent:
     """基于 ReAct + 状态机的导购智能体（编排统一走 v2 脊柱 agent/spine.py）。"""
 
     async def arun(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False) -> ChatResponse:
-        """异步入口：用线程池跑 v2 脊柱（platform_id 为兼容签名保留，编排不消费）。"""
+        """异步入口：用线程池跑 v2 脊柱。
+
+        platform_id 由 @scoped_agent_run（run_v2 的装饰器）消费，建立本请求的
+        平台数据源作用域（PLATFORM_SOURCE_ACCESS 多平台映射的隔离依据）。
+        ⚠️ 1.4.1 的 v2 分支曾漏传该参数 → 映射模式下作用域恒为空集、平台查询
+        全被拒（本机评测实测复现）；v1 退役后此为唯一路径，必须保持透传。
+        """
         from agent.spine import run_v2
-        return await run_worker(_AGENT_EXECUTOR, lambda: run_v2(self, user_id, message, session_id, location, None, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout)
+        return await run_worker(_AGENT_EXECUTOR, lambda: run_v2(self, user_id, message, session_id, location, None, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout)
 
     async def arun_stream(self, user_id: str, message: str, session_id: str | None=None, location: dict[str, float] | None=None, shop_id: str | None=None, entry: str | None=None, product_id: str | None=None, product_title: str | None=None, platform_id: str | None=None, customer_credential: str='', ticket_access_verified: bool=False):
         """流式异步入口：yield SSE 事件字典，供 /chat/stream 消费。
@@ -584,7 +590,7 @@ class ReActAgent:
                 try:
                     from agent.spine import run_v2
                     result = await asyncio.wait_for(
-                        run_worker(_AGENT_EXECUTOR, lambda: run_v2(self, user_id, message, session_id, location, _on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
+                        run_worker(_AGENT_EXECUTOR, lambda: run_v2(self, user_id, message, session_id, location, _on_event, shop_id=shop_id, entry=entry, product_id=product_id, product_title=product_title, platform_id=platform_id, customer_credential=customer_credential, ticket_access_verified=ticket_access_verified), user_id, settings.request_timeout),
                         timeout=settings.request_timeout,
                     )
                     # done.reply 与前面最终 text 事件采用同一份校验后回复；

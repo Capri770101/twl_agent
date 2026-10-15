@@ -19,6 +19,14 @@
 - routing.json：`create_order` 进 buying/design 两个策略圈（通道关闭时注册表门禁先生效，圈内有名不可见不可调）；qa/客服/提醒等策略明确不带下单能力（测试锁定）。
 - 新增提示词 `order_channel.md`：仅通道接通且非体验版时注入，声明覆盖 base.md/shop_lock 的「不下单」表述；给出「先确认后下单、order_id 落地才算已下单、失败照实说」的成交纪律。base.md 成交契约改为条件表述。
 - trade_claim 护栏口径随通道自适应：通道接通时纠正文案指向「先调 create_order 拿 order_id」，未接通时维持「本系统不支持代客下单」；证据判据不变（始终只看本轮工具日志）。
+- `skill_order` 提交平台订单的 httpx 客户端改 `trust_env=False`（与 llm.py / customer_service.py 同一约定）：部署机系统代理会劫持固定端点与回环请求（502 空 body 实测教训），下单被劫持等于用户付了钱看不到订单。
+
+### 真实模型实测修复（2026-10-15 本机冒烟发现）
+
+- **修复 v2 平台数据源授权断链（1.4.1 潜在缺陷）**：`arun/arun_stream` 从未把 `platform_id` 传入 `run_v2`，`PLATFORM_SOURCE_ACCESS` 多平台映射下作用域恒为空集、平台查询全被拒（v1 靠 `run()` 的 `@scoped_agent_run` 装饰器消费该参数，v2 分支漏传）。现由 run_v2 的装饰器正常消费，按平台隔离恢复；v1 退役后此为唯一路径，缺陷不再有一条腿能绕过。
+- **店铺事实证据扩容**：`query_shop_service` / `query_shop_reviews` 成功即构成店铺证据（`safety/platform_evidence.py`，单测锁定）。此前 needs_platform=shop 时判据只认平台网关查询，而 shop_service_* 策略圈里没有 `platform_db_query_entity`——模型拿着客服后端的真实店铺数据也会被出口按「未查证」整段拒绝。
+- **理解层 needs_platform 提示词消歧**：问在售商品（含「现成的/想买/推荐」）→ plan，问店铺本体（营业/地址/配送/评价）才 → shop；实测降低商品问题被误报为 shop 的概率。
+- 新增 `scripts/mock_platform_source.py`：平台只读 REST 源 mock（与 mock_customer_service 同族，含 8 商品/3 店铺演示数据），评测 buying 场景可离线复现。
 
 ### 延迟优化
 
